@@ -223,6 +223,11 @@ THEME_COVERAGE = [
     ("搜索结果卡 · 来源行 hover", 'html[data-theme="lumei"] .book .srow:hover'),
     ("搜索状态栏 · 关键词暖色", 'html[data-theme="lumei"] .statbar b'),
     ("加载骨架 · 暖白流光", 'html[data-theme="lumei"] .skel i::after'),
+    # 移动端底部标签栏：**每一屏都在**，是除顶栏外出现频率最高的元素。
+    # 它的背景/选中色走主题变量（自动适配），缺的只是品牌痕迹。
+    ("底部标签栏 · 暖色顶线", 'html[data-theme="lumei"] .tabbar'),
+    ("底部标签栏 · 选中暖点", 'html[data-theme="lumei"] .tabbar button.on::after'),
+    ("筛选条 · 胶囊 hover 暖边", 'html[data-theme="lumei"] .filters .chip:hover'),
 ]
 
 

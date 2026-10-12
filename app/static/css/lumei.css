@@ -518,6 +518,43 @@ html[data-theme="lumei-night"] .skel i::after{
              rgba(255,240,220,.42),transparent);
 }
 
+/* ---- 6.10 移动端底部标签栏（.tabbar）：全局常驻，每一屏都在 ---- */
+/* 为什么它值得单独一条：**移动端用户每一屏都会看到它** —— 是除顶栏之外
+   出现频率最高的元素。但它在 app.css 里只用 `--s-bg`（背景）和
+   `--a-1`（选中态），这两个是主题变量，所以**颜色上自动是对的**；
+   缺的只是"品牌痕迹"。加一条暖色顶线，和抽屉 / 确认框同一套语言
+   —— 用户从抽屉滑到底部，会看到同一道线，形成"这就是一家"的连续感。
+
+   ⚠ 这里**不套 @media (max-width:820px)**：`.tabbar` 自己的
+   `display:none` 就在那个查询里（app.css:90），桌面上它根本不显示，
+   所以给它的样式无需再判屏宽 —— 多套一层反而容易和那边的断点写岔
+   （app.css 里同时有 560/600/700/820 四个断点，写错了不报错、
+   只是样式不生效）。 */
+html[data-theme="lumei"] .tabbar,
+html[data-theme="lumei-night"] .tabbar{
+  border-top-color:color-mix(in srgb,var(--a-1) 34%,var(--s-line-2));
+}
+/* 选中项底部一个小暖点 —— 比只换文字颜色更"抓得住的"落点，
+   而且它不占高度（用 ::after 绝对定位，不推挤布局） */
+html[data-theme="lumei"] .tabbar button.on,
+html[data-theme="lumei-night"] .tabbar button.on{position:relative}
+html[data-theme="lumei"] .tabbar button.on::after,
+html[data-theme="lumei-night"] .tabbar button.on::after{
+  content:"";position:absolute;left:50%;bottom:1px;
+  width:14px;height:2.5px;border-radius:var(--r-full);
+  transform:translateX(-50%);
+  background:var(--a-1);
+}
+
+/* ---- 6.11 筛选条（.filters）：搜索后那张"来源 / 状态"控制台 ---- */
+/* 它本身有卡片外观（底色/描边走主题变量，已自动适配）。
+   这里只补：来源小胶囊 hover 时的暖调 —— 用户在筛选时反复点这些胶囊，
+   暖色让"我在操作哪个筛选"更明确。 */
+html[data-theme="lumei"] .filters .chip:hover,
+html[data-theme="lumei-night"] .filters .chip:hover{
+  border-color:color-mix(in srgb,var(--a-1) 32%,var(--s-line-2));
+}
+
 /* ==========================================================================
    7. 移动端：小屏少放动效（电池 + 性能）
    ========================================================================== */
