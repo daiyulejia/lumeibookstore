@@ -1,0 +1,107 @@
+[
+  {
+    "name": "b5200",
+    "url": "https://www.b5200.net",
+    "status": 200,
+    "size": 27134,
+    "encoding": "gb18030",
+    "error": "",
+    "search": {
+      "forms": [],
+      "search_urls": []
+    }
+  },
+  {
+    "name": "qbwx",
+    "url": "https://www.qbwx.cc",
+    "status": 200,
+    "size": 42254,
+    "encoding": "utf-8",
+    "error": "",
+    "search": {
+      "forms": [
+        {
+          "action": "/mybook.html",
+          "method": "POST",
+          "inputs": [
+            "LoginForm[username]",
+            "LoginForm[password]"
+          ]
+        }
+      ],
+      "search_urls": [
+        "/search.html"
+      ]
+    }
+  },
+  {
+    "name": "biqudu",
+    "url": "https://www.biqudu.cc",
+    "status": 200,
+    "size": 41871,
+    "encoding": "utf-8",
+    "error": "",
+    "search": {
+      "forms": [
+        {
+          "action": "/search/",
+          "method": "GET",
+          "inputs": [
+            "searchkey"
+          ]
+        }
+      ],
+      "search_urls": [
+        "/search/"
+      ]
+    }
+  },
+  {
+    "name": "书海阁",
+    "url": "https://www.shuhaige.net",
+    "status": 200,
+    "size": 34466,
+    "encoding": "utf-8",
+    "error": "",
+    "search": {
+      "forms": [],
+      "search_urls": []
+    }
+  },
+  {
+    "name": "69yuedu",
+    "url": "https://www.69yuedu.net",
+    "status": 200,
+    "size": 5583,
+    "encoding": "utf-8",
+    "error": "",
+    "search": {
+      "forms": [],
+      "search_urls": []
+    }
+  },
+  {
+    "name": "biquge365",
+    "url": "https://www.biquge365.net",
+    "status": 200,
+    "size": 26489,
+    "encoding": "utf-8",
+    "error": "",
+    "search": {
+      "forms": [],
+      "search_urls": []
+    }
+  },
+  {
+    "name": "全本小说网",
+    "url": "https://www.qb5200.com",
+    "status": 200,
+    "size": 32017,
+    "encoding": "utf-8",
+    "error": "",
+    "search": {
+      "forms": [],
+      "search_urls": []
+    }
+  }
+]

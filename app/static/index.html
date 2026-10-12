@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="lumei" data-bg="lumei">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+<meta name="theme-color" content="#fdf9f2"/>
+<meta name="color-scheme" content="light dark"/>
+<meta name="description" content="噜妹书院 · 本地部署的小说搜索 / 下载 / 阅读工具"/>
+<title>噜妹书院 · 噜噜噜，找书 / 下载 / 阅读</title>
+<!-- favicon：只有 16~32px，真实素材在这尺寸下会糊，所以这一处保留手绘 SVG。
+     形态按真实 IP 来：橙黄身体 + 头顶橘子 + 两只小圆耳 + 针尖豆眼 + 圆撅嘴。 -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%23f7a93b'/><circle cx='50' cy='84' r='30' fill='%23f2a93b'/><circle cx='50' cy='52' r='30' fill='%23f7b247'/><ellipse cx='24' cy='26' rx='9' ry='9' fill='%23e8962c'/><ellipse cx='76' cy='26' rx='9' ry='9' fill='%23e8962c'/><circle cx='50' cy='20' r='12' fill='%23f5a623'/><path d='M50 8q2-6 7-7' stroke='%237fa88c' stroke-width='3' fill='none' stroke-linecap='round'/><circle cx='39' cy='52' r='5.5' fill='%2333241a'/><circle cx='61' cy='52' r='5.5' fill='%2333241a'/><ellipse cx='50' cy='68' rx='7' ry='5.5' fill='%23d4732a'/></svg>"/>
+
+<link rel="stylesheet" href="/static/css/tokens.css"/>
+<link rel="stylesheet" href="/static/css/backgrounds.css"/>
+<link rel="stylesheet" href="/static/css/app.css"/>
+<link rel="stylesheet" href="/static/css/reader.css"/>
+<!-- 动效层：中性，不含品牌元素。放在 app.css 之后、lumei.css 之前 ——
+     业务样式定义"长什么样"，动效层定义"怎么动"，品牌层最后覆盖视觉。 -->
+<link rel="stylesheet" href="/static/css/motion.css"/>
+<link rel="stylesheet" href="/static/css/lumei.css"/>
+
+<!-- 仿真翻页用 StPageFlip（本地副本，局域网离线也能用）。
+     它是 UMD，暴露全局 St；经典脚本会在下面的 module 之前执行。 -->
+<script src="/static/vendor/page-flip.js"></script>
+</head>
+<body>
+
+<!-- 背景层 -->
+<div class="bg" aria-hidden="true"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
+
+<!-- 噜妹氛围层：极少、极慢地飘过一片叶子 / 一颗橘子
+     （上一版是满屏飘「噜」字，廉价且无意义，已废弃 —— 见 docs/design-spec-lumei.md） -->
+<div class="lu-pets" aria-hidden="true">
+  <span class="lu-pet is-leaf" style="--d:0s;--x:8vw"></span>
+  <span class="lu-pet is-orange" style="--d:14s;--x:88vw"></span>
+  <span class="lu-pet is-leaf" style="--d:27s;--x:22vw"></span>
+  <span class="lu-pet is-orange" style="--d:37s;--x:72vw"></span>
+</div>
+
+<!-- ==================== 顶栏 ==================== -->
+<!-- 顶栏图标统一为一套 20×20 线性图标：
+     描边 1.6px、圆角端点、无填充、currentColor 上色。
+     上一版是 🛰️🔌📡📥🎨 五个彩色 emoji —— 风格各异、跨平台渲染还不一致，
+     看起来像「随便凑的功能按钮」而不是设计过的工具条。 -->
+<header class="topbar">
+  <div class="brand">
+    <!-- 品牌标记：水豚头像剪影（不是「噜」字 —— 字与吉祥物是两套语言，放在一起会打架）
+         形态按真实 IP：橙黄身体 + 头顶橘子 + 小圆耳 + 针尖豆眼 + 圆撅嘴。
+         26px 下真实素材会糊成一团，所以这一处保留手绘。 -->
+    <span class="mark" aria-hidden="true">
+      <svg viewBox="0 0 40 40" width="26" height="26" xmlns="http://www.w3.org/2000/svg">
+        <ellipse cx="10" cy="12" rx="4.4" ry="4.4" fill="#e8962c"/>
+        <ellipse cx="30" cy="12" rx="4.4" ry="4.4" fill="#e8962c"/>
+        <circle cx="20" cy="9" r="5" fill="#f5a623"/>
+        <path d="M20 4q1-3 3.5-3.4" stroke="#7fa88c" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+        <ellipse cx="20" cy="24" rx="15" ry="14" fill="#f2a93b"/>
+        <ellipse cx="20" cy="28" rx="9.5" ry="8" fill="#ffd88a" opacity=".55"/>
+        <ellipse cx="14" cy="21" rx="2.5" ry="2.3" fill="#33241a"/>
+        <ellipse cx="26" cy="21" rx="2.5" ry="2.3" fill="#33241a"/>
+        <ellipse cx="20" cy="28.5" rx="3.4" ry="2.6" fill="#d4732a"/>
+      </svg>
+    </span>
+    <span>噜妹书院<br><small>lumei · novel dock</small></span>
+  </div>
+  <nav class="tabs">
+    <button data-nav="home" class="on">发现</button>
+    <button data-nav="shelf">书架 <span id="shelfN"></span></button>
+    <button data-nav="files">文件</button>
+  </nav>
+  <div class="spacer"></div>
+  <div class="tools">
+    <button class="iconbtn" id="btnSources" title="来源健康检查" aria-label="来源健康检查">
+      <svg viewBox="0 0 20 20" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10" cy="10" r="7"/>
+        <path d="M3.4 7.6h13.2M3.4 12.4h13.2"/>
+        <path d="M10 3a13 13 0 0 0 0 14 13 13 0 0 0 0-14z"/>
+      </svg>
+    </button>
+    <button class="iconbtn" id="btnAdapt" title="接入新网站" aria-label="接入新网站">
+      <svg viewBox="0 0 20 20" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8 12l4-4"/>
+        <path d="M7.5 6.5l1.8-1.8a3.2 3.2 0 0 1 4.5 4.5l-1.8 1.8"/>
+        <path d="M12.5 13.5l-1.8 1.8a3.2 3.2 0 0 1-4.5-4.5l1.8-1.8"/>
+      </svg>
+    </button>
+    <button class="iconbtn" id="btnNet" title="在别的设备上打开" aria-label="在别的设备上打开">
+      <svg viewBox="0 0 20 20" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2.5" y="4" width="12" height="9" rx="1.6"/>
+        <path d="M5.5 16.5h6"/>
+        <path d="M8.5 13v3.5"/>
+        <path d="M16 7.5l1.5 2-1.5 2" opacity=".55"/>
+      </svg>
+    </button>
+    <button class="iconbtn" id="btnTasks" title="任务" aria-label="任务">
+      <svg viewBox="0 0 20 20" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10 2.8v8.4"/>
+        <path d="M6.6 8l3.4 3.4L13.4 8"/>
+        <path d="M3.5 13.2v2.2a1.6 1.6 0 0 0 1.6 1.6h9.8a1.6 1.6 0 0 0 1.6-1.6v-2.2"/>
+      </svg><span class="dot hidden" id="taskDot"></span>
+    </button>
+    <button class="iconbtn" id="btnTheme" title="外观" aria-label="外观">
+      <svg viewBox="0 0 20 20" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10" cy="10" r="7"/>
+        <path d="M10 3v14"/>
+        <path d="M10 3a7 7 0 0 1 0 14z" fill="currentColor" stroke="none" opacity=".32"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<!-- ==================== 发现 ==================== -->
+<section id="view-home" data-view>
+  <div class="wrap">
+    <div class="hero">
+      <div class="eyebrow">数据都在你自己电脑上</div>
+      <h1>说一本书名<br class="lu-br">噜噜去把它找回来</h1>
+      <p>全网搜索 → 逐本验证真有正文 → 收进书架，边读边缓存，随时导出</p>
+
+      <!-- 噜噜与噜妹：一对情侣水豚。
+           设计依据 docs/design-spec-lumei.md §3 —— 必须成对出现（品牌承诺是「陪伴」）。
+
+           ⚠ 这里**不再手绘 SVG**。v0/v1 两版手绘（粉色圆脸、棕色水墨水豚）
+             都被判定为「望文生义」的产物 —— 形态与真实 IP 相去甚远。
+             现在直接用**真实 IP 素材**（由 tools/build_assets.py 从公开表情包
+             图集切格、去水印、压缩而来），见 app/static/img/lumei/。
+
+           选「两张贴近的图」而不是「一张合影」：真实素材里同时出现两只能用的
+           合影几乎没有（要么带梗图文字、要么构图不适合横幅），所以改为
+           左右各一张、距离贴得很近，看起来就是一对。 -->
+      <div class="lu-duo" aria-hidden="true">
+        <img class="lu-capy" src="/static/img/lumei/hero_lulu@480.webp"
+             width="480" height="300" alt="" decoding="async" fetchpriority="high">
+        <img class="lu-capy is-lumei" src="/static/img/lumei/hero_lumei@480.webp"
+             width="480" height="300" alt="" decoding="async">
+        <span class="lu-say">没事就是呗</span>
+      </div>
+
+      <div class="searchbox">
+        <label class="sr" for="q">书名</label>
+        <input id="q" type="search"
+               placeholder="书名，例如：微微一笑很倾城 / 三体 —— 也可以直接粘一个书页地址"
+               autocomplete="off" spellcheck="false"/>
+        <button class="btn primary" id="btnSearch">噜噜去找</button>
+      </div>
+      <div id="confirmBox"></div>
+    </div>
+
+    <div class="statbar" id="statbar"></div>
+
+    <!-- 热门榜单：不知道读什么的时候，看看别人都在读什么。
+         数据来自已适配站点的公开榜单（见 app/ranks.py）。 -->
+    <section class="ranks" id="ranksBox" hidden>
+      <div class="rk-head">
+        <h2>🔥 热门榜单</h2>
+        <span class="rk-sub">来源：公开榜单</span>
+        <span class="rk-age" id="ranksAge"></span>
+        <span class="grow"></span>
+        <button class="btn ghost sm" id="ranksRefresh" title="立刻抓一次最新榜单">刷新</button>
+        <button class="btn ghost sm" id="ranksFold">收起</button>
+      </div>
+      <div class="rk-tabs" id="ranksTabs" role="tablist"></div>
+      <div class="rk-desc" id="ranksDesc"></div>
+      <div class="rk-list" id="ranksList"></div>
+      <div class="rk-foot">
+        榜单来自公开榜单页，后台每 30 分钟自动刷新 ·
+        <button class="rk-link" id="ranksToLib" type="button">去看我的书架 ›</button>
+      </div>
+    </section>
+
+    <!-- 联网发现实况：本地来源都搜不到时，这里一步步显示「出去找」的过程 -->
+    <div class="netlive hidden" id="netLive" aria-live="polite">
+      <div class="nl-head">
+        <span class="nl-spin" id="netLiveSpin"></span>
+        <b id="netLiveTitle">正在联网找书…</b>
+        <span class="nl-sub" id="netLiveSub"></span>
+        <span class="grow"></span>
+        <button class="btn ghost sm" id="netLiveToggle">收起</button>
+      </div>
+      <ol class="nl-steps" id="netLiveSteps"></ol>
+    </div>
+
+    <div class="filters hidden" id="filters">
+      <label class="switch"><input type="checkbox" id="onlyOk" checked><span class="track"></span>只看能读的</label>
+      <span style="width:1px;height:15px;background:var(--s-line)"></span>
+      <div class="srcchips" id="srcChips"></div>
+      <div class="spacer"></div>
+      <button class="btn ghost sm" id="btnClearSearch">清空结果</button>
+    </div>
+
+    <div class="grid" id="results"></div>
+    <div id="homeEmpty" class="empty">
+      <!-- 状态 → 素材的对应关系见 js/art.js（那里是唯一的事实来源） -->
+      <img class="empty-art" src="/static/img/lumei/empty_wait@480.webp"
+           width="480" height="360" alt="" loading="lazy" decoding="async">
+      <h3>说个书名，噜噜就跑去找</h3>
+      <p>搜到的每一本都会先验证一遍，确认真能读到正文，才敢说它「能读」。</p>
+    </div>  </div>
+</section>
+
+<!-- ==================== 书架 ==================== -->
+<section id="view-shelf" class="hidden" data-view>
+  <div class="wrap">
+    <div class="filters">
+      <div style="font-size:19px;font-weight:800">我的书架</div>
+      <span id="shelfStat" style="font-size:13px;color:var(--t-3)"></span>
+      <div class="spacer"></div>
+      <button class="btn ghost sm" id="btnShelfReload">刷新</button>
+    </div>
+    <div class="shelfgrid" id="shelfList"></div>
+    <div id="shelfEmpty" class="empty">
+      <img class="empty-art" src="/static/img/lumei/empty_sleep@480.webp"
+           width="480" height="360" alt="" loading="lazy" decoding="async">
+      <h3>书架空空，噜噜睡得正香</h3>
+      <p>在「发现」里点「开始阅读」，书就会落到这里 —— 之后打开秒进，断网也能看。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== 文件 ==================== -->
+<section id="view-files" class="hidden" data-view>
+  <div class="wrap">
+    <div class="filters">
+      <div style="font-size:19px;font-weight:800">导出文件</div>
+      <div class="spacer"></div>
+      <label class="sr" for="fmtPick">导出格式</label>
+      <select id="fmtPick" style="width:auto">
+        <option value="txt">TXT（哪里都能开）</option>
+        <option value="epub">EPUB（Kindle / 阅读器）</option>
+        <option value="html">HTML（自带小阅读器的单文件）</option>
+      </select>
+      <button class="btn ghost sm" id="btnFilesReload">刷新</button>
+    </div>
+    <div id="fileList"></div>
+    <div id="fileEmpty" class="empty">
+      <img class="empty-art" src="/static/img/lumei/loading_drink@480.webp"
+           width="480" height="360" alt="" loading="lazy" decoding="async">
+      <h3>还没导出过</h3>
+      <p>在书籍卡片上点「导出」，或者在书架里导出整本 —— 打包好就能带走。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 移动端底部标签栏 -->
+<nav class="tabbar">
+  <button data-nav="home" class="on"><i>🔍</i>发现</button>
+  <button data-nav="shelf"><i>📚</i>书架</button>
+  <button data-nav="files"><i>📄</i>文件</button>
+</nav>
+
+<div id="toasts"></div>
+
+<!-- ==================== 阅读器 ==================== -->
+<div id="reader" data-rd-theme="day" data-rd-mode="slide">
+  <div class="rd-prog" id="rdProg"></div>
+
+  <div class="rd-top">
+    <button class="rd-btn" id="rdBack" title="退出 (Esc)" aria-label="退出">←</button>
+    <!-- 阅读页的品牌标记：只在噜妹阅读配色下出现（见 lumei.css §5）。
+         看书时 UI 应该尽量消失，所以它极小、极淡、只是"认得出来"而已。 -->
+    <span class="rd-capy-mark" aria-hidden="true"></span>
+    <div class="ttl"><b id="rdTitle">—</b><small id="rdSub"></small></div>
+    <button class="rd-btn" id="rdTocBtn" title="目录 (T)" aria-label="目录">☰</button>
+    <button class="rd-btn" id="rdCacheBtn" title="缓存全书" aria-label="缓存全书">⤓</button>
+    <button class="rd-btn" id="rdSetBtn" title="设置 (S)" aria-label="设置">Aa</button>
+    <button class="rd-btn" id="rdExportBtn" title="导出" aria-label="导出">↧</button>
+  </div>
+
+  <div class="rd-stage">
+    <!-- 滚动模式 -->
+    <div class="rd-view rd-view-scroll" id="rdScroll">
+      <div class="rd-article" id="rdScrollBody"></div>
+    </div>
+
+    <!-- 平移翻页 -->
+    <div class="rd-view rd-view-slide">
+      <div class="rd-strip" id="rdSlideStrip"></div>
+    </div>
+
+    <!-- 仿真翻页 -->
+    <div class="rd-view rd-view-flip">
+      <div class="flipbook" id="rdFlipBook"></div>
+    </div>
+
+    <!-- 点按分区：左翻 / 中间出工具栏 / 右翻 -->
+    <div class="rd-zones" aria-hidden="true">
+      <div class="rd-zone l"><span class="arw">‹</span></div>
+      <div class="rd-zone c"></div>
+      <div class="rd-zone r"><span class="arw">›</span></div>
+    </div>
+
+    <div class="rd-flash" id="rdFlash"></div>
+
+    <!-- 目录 -->
+    <aside class="rd-panel" id="rdToc">
+      <header>
+        <h4>目录</h4>
+        <button class="rd-btn" id="rdTocClose" data-rdtoc-close aria-label="关闭目录">✕</button>
+      </header>
+      <div style="padding:11px;border-bottom:1px solid var(--rd-line)">
+        <input id="rdTocQ" type="search" placeholder="搜索章节名…" style="font-size:13.5px"/>
+      </div>
+      <div class="list" id="rdTocList"></div>
+    </aside>
+
+    <!-- 设置 -->
+    <aside class="rd-panel right" id="rdSet">
+      <header>
+        <h4>阅读设置</h4>
+        <button class="rd-btn" id="rdSetClose" aria-label="关闭设置">✕</button>
+      </header>
+      <div class="list">
+        <div class="rd-set-row">
+          <div class="gl">配色</div>
+          <div class="rd-thermos" id="rdThemes"></div>
+        </div>
+        <div class="rd-set-row">
+          <div class="gl">字号</div>
+          <div class="rd-stepper" id="rdFsRow">
+            <button data-fs="-1" aria-label="减小字号">A－</button>
+            <span class="v" id="rdFsV">19px</span>
+            <button data-fs="1" aria-label="增大字号">A＋</button>
+          </div>
+        </div>
+        <div class="rd-set-row">
+          <div class="gl">行距</div>
+          <div class="rd-seg" id="rdLhRow">
+            <button data-lh="1.6">紧凑</button>
+            <button data-lh="1.85">标准</button>
+            <button data-lh="2.2">宽松</button>
+          </div>
+        </div>
+        <div class="rd-set-row">
+          <div class="gl">字体</div>
+          <div class="rd-seg" id="rdFfRow">
+            <button data-ff="serif">宋体</button>
+            <button data-ff="sans">黑体</button>
+            <button data-ff="kai">楷体</button>
+          </div>
+        </div>
+        <div class="rd-set-row">
+          <div class="gl">每行宽度</div>
+          <div class="rd-seg" id="rdWRow">
+            <button data-w="32">窄</button>
+            <button data-w="40">中</button>
+            <button data-w="50">宽</button>
+          </div>
+        </div>
+        <div class="rd-set-row">
+          <div class="gl">翻页方式</div>
+          <div class="rd-seg" id="rdModeRow">
+            <button data-mode="slide">左右平移</button>
+            <button data-mode="flip">仿真翻页</button>
+            <button data-mode="scroll">上下滚动</button>
+          </div>
+        </div>
+        <div class="rd-set-row">
+          <div class="gl">快捷键</div>
+          <div class="rd-kbd">
+            <kbd>←</kbd><kbd>→</kbd> 翻页 · <kbd>空格</kbd> 下翻 · <kbd>[</kbd><kbd>]</kbd> 上下章<br>
+            <kbd>T</kbd> 目录 · <kbd>S</kbd> 设置 · <kbd>F</kbd> 沉浸 · <kbd>Esc</kbd> 退出<br>
+            手机上：点屏幕<b>左右两侧</b>翻页，点<b>中间</b>唤出工具栏；也可以左右滑动。
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="rd-bottom">
+    <div class="rd-btns">
+      <button class="rd-btn wide" id="rdPrevCh">⟵ 上一章</button>
+    </div>
+    <div class="rd-seekbar" id="rdSeek">
+      <div class="t"><div class="f" id="rdSeekF"></div></div>
+      <div class="h" id="rdSeekH"></div>
+      <div class="rd-tip" id="rdTip">第 1 章</div>
+    </div>
+    <div class="rd-info"><span class="ch" id="rdChap">—</span><span class="sep"> · </span><span class="pct" id="rdPct">0%</span></div>
+    <div class="rd-btns">
+      <button class="rd-btn wide" id="rdNextCh">下一章 ⟶</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

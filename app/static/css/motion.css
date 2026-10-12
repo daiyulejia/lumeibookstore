@@ -1,0 +1,228 @@
+/* ==========================================================================
+   动效层
+   --------------------------------------------------------------------------
+   这一层解决的问题：**动效散落在各处、各写各的曲线**，于是同一个界面里
+   有的顺、有的顿，看起来像几个人拼出来的。
+
+   参考对象给了两条可借鉴的做法（不是抄样式，是抄纪律）：
+     · 反馈必须**跟手** —— 按下去的瞬间就要有回应，不能等状态回来
+     · 位移要**分层** —— 背景动得慢、卡片动得快，形成纵深
+
+   三条纪律（写死在这里，别在业务文件里另加曲线）：
+     1. 所有过渡用 --mo-* 变量，不写裸 cubic-bezier
+     2. 点到即反馈：按压位移 ≤ 3px，时长 ≤ 200ms
+     3. 尊重 prefers-reduced-motion —— 这是可访问性要求，不是可选项
+
+   ⚠ 本层是**中性**的：不含任何噜妹专有元素，
+      删掉它站点动效会变朴素，但不会坏。
+   ========================================================================== */
+
+:root{
+  /* 时长阶梯。命名按"用途"而不是按数值 —— 改节奏时不用全局找 0.32s */
+  --mo-instant:90ms;    /* 按下 / 抬起 */
+  --mo-quick:170ms;     /* hover、小控件 */
+  --mo-flow:280ms;      /* 卡片、抽屉、状态切换 */
+  --mo-scene:460ms;     /* 页面级转场 */
+
+  /* 缓动。三条就够，多了会花 */
+  --mo-standard:cubic-bezier(.2,.65,.3,1);      /* 通用：快出慢收 */
+  --mo-decel:cubic-bezier(.05,.7,.1,1);         /* 入场：强收尾 */
+  --mo-spring:cubic-bezier(.34,1.4,.5,1);       /* 回弹：仅用于小控件 */
+
+  /* 错峰步长。列表逐个入场靠它，不逐条写 animation-delay */
+  --mo-stagger:38ms;
+}
+
+/* ==========================================================================
+   1. 点到即反馈
+   --------------------------------------------------------------------------
+   「跟手」的本质是：**不等服务端**。手指碰到就位移，抬起就回弹。
+   所以这一层全部挂在 :active 上，不依赖任何 JS 状态。
+   ========================================================================== */
+
+/* 通用可按元素：按下缩一点。范围克制 —— 超过 3px 会像"闪一下" */
+.btn:not(:disabled),
+.chip,
+.rk-tab,
+.rk-item,
+.stab,
+.rtab,
+.mini,
+.themecard,
+.bgcard,
+.iconbtn,
+.tabbar button{
+  transition:
+    transform var(--mo-instant) var(--mo-standard),
+    background-color var(--mo-quick) var(--mo-standard),
+    border-color var(--mo-quick) var(--mo-standard),
+    box-shadow var(--mo-quick) var(--mo-standard),
+    color var(--mo-quick) var(--mo-standard);
+}
+
+.btn:not(:disabled):active,
+.chip:active,
+.rk-tab:active,
+.stab:active,
+.rtab:active,
+.mini:active,
+.themecard:active,
+.bgcard:active,
+.iconbtn:active{
+  transform:scale(.965);
+}
+/* 行式元素（榜单条目、来源卡）按下时**不缩放** —— 整行缩放看起来像抖动，
+   改成压暗背景，这是更符合"列表项"语义的反馈 */
+.rk-item:active{background:var(--s-sunk);transform:none}
+
+/* 一次性涟漪：由 JS 打上 .mo-rip 并附 --rx/--ry，动画结束自行移除。
+   用伪元素而不是真插入 DOM —— 不污染业务节点，也不会被 innerHTML 冲掉。 */
+.mo-rip{position:relative;overflow:hidden}
+.mo-rip::after{
+  content:"";position:absolute;left:var(--rx,50%);top:var(--ry,50%);
+  width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;
+  background:currentColor;opacity:.16;pointer-events:none;
+  animation:mo-ripple 520ms var(--mo-decel) forwards;
+}
+@keyframes mo-ripple{
+  from{transform:scale(0);opacity:.20}
+  to{transform:scale(26);opacity:0}
+}
+
+/* ==========================================================================
+   2. 入场：分层 + 错峰
+   --------------------------------------------------------------------------
+   分层的意思是「同一次出现，不同的元素走不同的距离」：
+     外层容器走得少（8px）、内部主元素走得多（14px）。
+   如果全都走同一段距离，看起来像一整块被推上来，没有纵深。
+
+   错峰用 --mo-i（第幾個），由 JS 或 CSS nth-child 注入。
+   ⚠ 上限 12 个 —— 第 20 张卡片还在延迟入场是很糟的体验。
+   ========================================================================== */
+:root{
+  --mo-shift-s:8px;    /* 容器层位移 */
+  --mo-shift-m:14px;   /* 主元素位移 */
+}
+
+@keyframes mo-rise{
+  from{opacity:0;transform:translateY(var(--mo-shift-m))}
+  to{opacity:1;transform:none}
+}
+@keyframes mo-fade{
+  from{opacity:0}
+  to{opacity:1}
+}
+@keyframes mo-pop{
+  from{opacity:0;transform:scale(.96)}
+  to{opacity:1;transform:none}
+}
+
+/* 卡片类：走 14px + 轻微缩放，是"被放上去"的感觉 */
+.book,.shelf,.file,.task,.hcard,.verdict{
+  animation:mo-rise var(--mo-scene) var(--mo-decel) both;
+  animation-delay:calc(min(var(--mo-i,0),12) * var(--mo-stagger));
+}
+/* 容器类：只淡入，不位移 —— 避免"容器和内容一起动"的叠影 */
+.grid,.shelfgrid,#fileList,.steps,.rk-list{
+  animation:mo-fade var(--mo-flow) var(--mo-standard) both;
+}
+
+/* 视图切换：整页上来时，容器先到、卡片后到 */
+section[data-view]{
+  animation:mo-fade var(--mo-quick) var(--mo-standard) both;
+}
+
+/* ==========================================================================
+   3. 状态连续性
+   --------------------------------------------------------------------------
+   主题切换 / 配色切换是**同一个界面的两个状态**，不该是硬切。
+   做法：给根元素挂一个短暂的过渡类，让色值在 280ms 内插值过去。
+   为什么不用全局 transition？那会让滚动、翻页之类的高频重绘也被插值，
+   在低端机上直接掉帧。所以只在切换那一刻挂上，切完就摘。
+   ========================================================================== */
+html.mo-theming,
+html.mo-theming *,
+html.mo-theming *::before,
+html.mo-theming *::after{
+  transition:
+    background-color var(--mo-flow) var(--mo-standard),
+    border-color var(--mo-flow) var(--mo-standard),
+    color var(--mo-flow) var(--mo-standard),
+    fill var(--mo-flow) var(--mo-standard) !important;
+}
+/* 切换期间禁掉位移动画：色值在动的同时元素也在动，会晕 */
+html.mo-theming *{animation-play-state:paused}
+
+/* 主题切换时的"呼吸"：一次极短的整体亮度波动，
+   给"外观变了"一个体感信号 —— 否则用户只会觉得"咦好像变了？" */
+html.mo-theming body::after{
+  content:"";position:fixed;inset:0;z-index:9999;pointer-events:none;
+  background:var(--s-bg);opacity:.22;
+  animation:mo-theme-breath 420ms var(--mo-standard) forwards;
+}
+@keyframes mo-theme-breath{
+  from{opacity:.22}
+  to{opacity:0}
+}
+
+/* ==========================================================================
+   4. 焦点与选中：让"我在哪"始终有回应
+   ========================================================================== */
+/* 悬停时给一点"抬起"，配合阴影加深（阴影在 app.css 里，这里只管位移） */
+@media (hover:hover) and (pointer:fine){
+  .book:hover,.shelf:hover,.file:hover{transform:translateY(-3px)}
+  .themecard:hover,.bgcard:hover,.iconbtn:hover{transform:translateY(-2px)}
+  .rk-item:hover .rk-go{transform:translateX(2px)}
+  .rk-go{transition:opacity var(--mo-quick) var(--mo-standard),transform var(--mo-quick) var(--mo-standard)}
+}
+
+/* 加载中的图标：转。带 .mo-spin 即可，不挑元素 */
+.mo-spin{animation:mo-rot 720ms linear infinite}
+@keyframes mo-rot{to{transform:rotate(360deg)}}
+
+/* ==========================================================================
+   5. 数字变化：滚动到新值而不是跳变
+   --------------------------------------------------------------------------
+   用于统计数字（书架本数、进度百分比）。JS 只负责改 textContent，
+   动效交给这一层 —— 由 JS 打上 .mo-tick，动画结束自行移除。
+   ========================================================================== */
+.mo-tick{animation:mo-tick 320ms var(--mo-decel)}
+@keyframes mo-tick{
+  from{transform:translateY(-4px);opacity:.4}
+  to{transform:none;opacity:1}
+}
+
+/* ==========================================================================
+   6. 滚动联动：卡片进入视口才浮起
+   --------------------------------------------------------------------------
+   长列表（榜单、文件）在手机上一次性播完入场动画的话，
+   用户滚到下面看到的是静止的卡片 —— 少了"跟着我出现"的连续感。
+   JS 用 IntersectionObserver 打 .mo-in，初始态由 .mo-reveal 控制。
+   ⚠ 只用于长列表；短列表直接一次性入场更干脆。
+   ========================================================================== */
+.mo-reveal{opacity:0;transform:translateY(var(--mo-shift-m))}
+.mo-reveal.mo-in{
+  opacity:1;transform:none;
+  transition:opacity var(--mo-scene) var(--mo-decel),transform var(--mo-scene) var(--mo-decel);
+}
+
+/* ==========================================================================
+   7. 尊重系统偏好
+   ========================================================================== */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.01ms!important;
+    animation-iteration-count:1!important;
+    transition-duration:.01ms!important;
+    scroll-behavior:auto!important;
+  }
+  .mo-reveal{opacity:1;transform:none}
+  .mo-rip::after{display:none}
+  .mo-spin{animation:none;opacity:.6}
+}
+
+/* 低端机 / 省电模式：主动降级（不靠 JS 探测，交给浏览器自己判断） */
+@media (update:slow){
+  .mo-rip::after{display:none}
+  html.mo-theming body::after{display:none}
+}

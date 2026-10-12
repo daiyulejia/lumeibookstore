@@ -1,0 +1,56 @@
+{
+  "_说明": "配置化小说源模板。简单站点只需在这里加一条，无需改 Python 代码。结构探测用：python probe.py 站点URL",
+  "_实测结论": "截至 2026-10，绝大多数笔趣阁系域名已失效(404/超时/403)或搜索需登录，本列表暂为空。找到可用站后按下方字段填入即可。",
+  "_字段说明": {
+    "name": "源标识（英文，唯一）",
+    "display": "显示名",
+    "priority": "优先级，越小越先尝试（建议 20-60）",
+    "enabled": "是否启用",
+    "base_url": "站点根地址",
+    "encoding": "网页编码，留空自动检测；中文老站常用 gb18030",
+    "search_url": "搜索地址模板；{kw}=UTF-8 编码关键词，{kw_gbk}=GBK 编码；留空表示无搜索",
+    "search_item_re": "搜索结果正则，必须含 (?P<url>) 和 (?P<title>)，可选 (?P<author>)",
+    "chapter_re": "目录页章节正则，必须含 (?P<url>) 和 (?P<title>)",
+    "content_re": "正文正则，含一个捕获组；content_multi=true 时取全部匹配拼接",
+    "content_multi": "是否多段拼接（如 <p> 段落集合）",
+    "content_filter": "段落过滤正则，命中的段落会被丢弃（用于去广告/导航）",
+    "book_title_re": "书名正则（可选）",
+    "book_author_re": "作者正则（可选）"
+  },
+  "_示例": {
+    "name": "example",
+    "display": "示例站",
+    "priority": 30,
+    "enabled": false,
+    "base_url": "https://www.example.com",
+    "encoding": "utf-8",
+    "search_url": "https://www.example.com/search.php?keyword={kw_gbk}",
+    "search_item_re": "<a[^>]+href=\"(?P<url>/book/\\d+/)\"[^>]*>(?P<title>[^<]{2,40})</a>",
+    "chapter_re": "<dd>\\s*<a[^>]+href=\"(?P<url>[^\"]+\\.html)\"[^>]*>(?P<title>[^<]+)</a>",
+    "content_re": "<div[^>]+id=\"content\"[^>]*>(?P<c>[\\s\\S]*?)</div>",
+    "book_title_re": "<h1[^>]*>([^<]+)</h1>"
+  },
+  "sites": [
+    {
+      "name": "www_xbiquge_info",
+      "display": "新笔趣阁小说网",
+      "priority": 30,
+      "enabled": true,
+      "base_url": "https://www.xbiquge.info",
+      "homepage": "https://www.xbiquge.info",
+      "encoding": "",
+      "search_url": "https://www.xbiquge.info/search.php?q={kw}",
+      "_search_item_re_why": "必须钉在 <dd><h3><a 上。原来用的是通用正则 `<a[^>]+href=...`，它会**连页面导航一起抓**：搜「赵氏嫡女」（该站 0 条记录）时，它把 玄幻/武侠/都市/历史/网游/科幻/言情/其他 这 8 个分类链接当成搜索结果吐了出来；严重的是搜「都市」「言情」这类词时，导航本身就能匹配关键词，于是变成**假结果**。钉到 <dd><h3> 后实测：0 条页面命中 0 条、有结果页面命中 6/6（该站首页只渲染 6 条，标题里的「共 N 条」是分页前总数）。",
+      "search_item_re": "<dd><h3><a[^>]+href=\"(?P<url>[^\"]+)\"[^>]*>(?P<title>[^<]{2,60})</a>",
+      "chapter_re": "<a[^>]+href=\"(?P<url>[^\"]+\\.html?)\"[^>]*>(?P<title>[^<]{2,60})</a>",
+      "content_re": "<article[^>]*>(?P<c>[\\s\\S]*?)</article>",
+      "content_multi": false,
+      "_adapted": true,
+      "_engine": "generic",
+      "_verified": "743 字正文通过质量校验",
+      "book_title_re": "<meta[^>]+property=[\"\\']og:novel:book_name[\"\\'][^>]+content=[\"\\']([^\"\\']+)",
+      "book_author_re": "<meta[^>]+property=[\"\\']og:novel:author[\"\\'][^>]+content=[\"\\']([^\"\\']+)",
+      "chapter_paged": true
+    }
+  ]
+}

@@ -1,0 +1,614 @@
+"""来源库：把「联网发现」找到的站点和书攒起来，越用越大。
+
+为什么要单独存一份
+------------------
+搜索引擎每次都能重新找一遍，但那意味着**每次搜书都要联网、要解析、
+要赌一次**。把找到的结果记下来之后：
+
+  · 下次搜同一本书 → 秒出，不用再走搜索引擎
+  · 同一个站第二次抓 → 直接用它上次的容器名，不用重新猜
+  · 攒久了能做健康筛选 → 把死站清掉，让本地命中率越来越高
+
+这正是「不断壮大、后续定期筛选」要的东西。
+
+存哪、存什么
+------------
+`cache/registry.json`::
+
+    {
+      "sites": {
+        "www.29zw.com": {
+          "name": "29中文小说网",
+          "toc_hint": "",             # 学到的目录容器名
+          "content_hint": "htmlcontent",
+          "ok": 12, "fail": 0,        # 成功/失败计数
+          "last_ok": 1760000000,
+          "first_seen": 1759900000,
+          "updated": 1760000000
+        }
+      },
+      "books": {
+        "https://www.29zw.com/info_68516/": {
+          "title": "药鼎仙途", "author": "寒香寂寞",
+          "host": "www.29zw.com",
+          "chapters": 4543,
+          "ok": 3, "fail": 0,
+          "last_ok": 1760000000,
+          "last_check": 1760000000
+        }
+      }
+    }
+
+并发
+----
+搜索池 + 探测池会同时写这个文件，所以：
+  · 一把进程内锁保证读改写是原子的
+  · 写盘用「临时文件 + os.replace」，避免读到半个 JSON
+  · 内存里缓存一份，只有内容真的变了才落盘
+"""
+from __future__ import annotations
+
+import atexit
+import json
+import os
+import re
+import shutil
+import threading
+import time
+from pathlib import Path
+from typing import Optional
+
+_ROOT = Path(__file__).resolve().parent.parent
+# 库文件的落点。`NOVEL_REGISTRY` 可以让测试 / 命令行工具用另一份，
+# 免得跑一次测试就把生产库里攒的站点洗掉（真踩过，见 README「来源库」一节）。
+_DB = Path(os.environ.get("NOVEL_REGISTRY") or (_ROOT / "cache" / "registry.json"))
+
+_lock = threading.RLock()
+_cache: Optional[dict] = None
+_dirty = False
+_last_save = 0.0
+
+# 被删掉的键。合并写盘时靠它把「删除」这个意图表达出来 ——
+# 单纯取并集会把删掉的键又捞回来。
+_tomb: dict[str, set[str]] = {"sites": set(), "books": set()}
+
+# 落盘节流：来源库一次联网会写好几次，但每次写盘都是「读改写一个 JSON」。
+# 网络请求本身就 100ms 起，所以每秒最多写一次完全不影响写入及时性，
+# 又能避免并发核实 6 个站时把同一个文件来回覆盖 6 遍。
+SAVE_MIN_INTERVAL = 1.0
+
+# 站点「不健康」的判定门槛：成功过 0 次、失败 ≥ 3 次
+UNHEALTHY_FAILS = 3
+
+# 写盘前的「缩水护栏」：盘上至少这么多条、且新内容不到原来一半时，先留一份备份。
+SHRINK_GUARD_MIN = 5
+SHRINK_GUARD_RATIO = 0.5
+
+
+# ---------------------------------------------------------------------------
+# 读 / 写
+# ---------------------------------------------------------------------------
+def _empty() -> dict:
+    return {"sites": {}, "books": {}}
+
+
+def _load() -> dict:
+    global _cache
+    if _cache is not None:
+        return _cache
+    try:
+        raw = json.loads(_DB.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raw = {}
+    except Exception:  # noqa: BLE001
+        raw = {}
+    raw.setdefault("sites", {})
+    raw.setdefault("books", {})
+    if not isinstance(raw["sites"], dict):
+        raw["sites"] = {}
+    if not isinstance(raw["books"], dict):
+        raw["books"] = {}
+    _cache = raw
+    return _cache
+
+
+def _read_disk() -> dict:
+    """直接读盘，不走内存缓存。"""
+    try:
+        raw = json.loads(_DB.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return _empty()
+    except Exception:  # noqa: BLE001
+        return _empty()
+    raw.setdefault("sites", {})
+    raw.setdefault("books", {})
+    if not isinstance(raw["sites"], dict):
+        raw["sites"] = {}
+    if not isinstance(raw["books"], dict):
+        raw["books"] = {}
+    return raw
+
+
+def _merge(disk: dict, mine: dict) -> dict:
+    """把内存里这份和磁盘上那份合并。
+
+    为什么不能直接覆盖：来源库是**进程内缓存 + 退出时落盘**的。
+    如果有第二个进程也动过这个文件（命令行工具、另一个服务实例），
+    直接覆盖就会把它写进去的东西整片抹掉 —— 实测踩过，
+    一个只读过空库的进程退出时，能把攒了几十站的库清成空文件。
+
+    合并规则：键取并集；同一个键两份都有时，比 `updated`（站点）/
+    `last_check`（书）谁新用谁。
+
+    **删除要单独记**（`_tomb`）：并集天然会把删掉的键又捞回来，
+    所以被删的键进墓碑，合并时从两边都剔除。
+    """
+    out = _empty()
+    for bucket, stamp in (("sites", "updated"), ("books", "last_check")):
+        merged: dict = dict(disk.get(bucket) or {})
+        for k, v in (mine.get(bucket) or {}).items():
+            old = merged.get(k)
+            if old is None:
+                merged[k] = v
+                continue
+            if int(v.get(stamp, 0) or 0) >= int(old.get(stamp, 0) or 0):
+                # 新的一份未必带着旧的一份学到的东西，补齐了再放
+                keep = dict(old)
+                keep.update(v)
+                for f in ("first_seen",):
+                    if f in old and f not in v:
+                        keep[f] = old[f]
+                merged[k] = keep
+        for k in _tomb[bucket]:
+            merged.pop(k, None)
+        out[bucket] = merged
+    return out
+
+
+def _count(db: dict) -> int:
+    return len(db.get("sites") or {}) + len(db.get("books") or {})
+
+
+def _backup_if_shrunk(disk: dict, merged: dict) -> None:
+    """写盘前的护栏：这次要写的内容比盘上那份缩水一大半，就先留一份备份。
+
+    正常清理是**逐条**删的（清失效站），不会一下砍掉一半以上；
+    真的出现这种量级的缩水，多半是事故 —— 比如某个只读过空库的进程退出时
+    把整份快照覆盖回去（实测踩过）。一份 `registry.bak.json` 成本极低，
+    但能把「不可逆的丢失」变成「可逆的」。
+
+    注意判据里**不看墓碑**：用户主动点「清空」时墓碑是满的，
+    那种情况同样值得留一份底。
+    """
+    before, after = _count(disk), _count(merged)
+    if before < SHRINK_GUARD_MIN or after >= before * SHRINK_GUARD_RATIO:
+        return
+    try:
+        bak = _DB.with_name(_DB.stem + ".bak.json")
+        shutil.copy2(_DB, bak)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _save(force: bool = False) -> None:
+    global _dirty, _cache
+    if not _dirty and not force:
+        return
+    disk = _read_disk()
+    merged = _merge(disk, _cache or _empty())
+    _backup_if_shrunk(disk, merged)
+    tmp = _DB.with_suffix(".json.tmp")
+    try:
+        _DB.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, _DB)          # 原子替换，不会读到半个文件
+        _cache = merged
+        _tomb["sites"].clear()        # 墓碑随写盘一起失效
+        _tomb["books"].clear()
+        _dirty = False
+    except Exception:  # noqa: BLE001
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def flush() -> None:
+    """把内存里的改动落盘（进程退出前调一次）。"""
+    with _lock:
+        _save(force=True)
+
+
+def _maybe_save() -> None:
+    """节流落盘：有改动、且距上次写盘超过 SAVE_MIN_INTERVAL 才写。
+
+    写完置 _save_min 时间戳；不写的话改动留在内存，等下一次或 flush。
+    """
+    global _last_save
+    if not _dirty:
+        return
+    now = time.time()
+    if now - _last_save < SAVE_MIN_INTERVAL:
+        return
+    _last_save = now
+    _save(force=True)
+
+
+atexit.register(flush)
+
+
+def _now() -> int:
+    return int(time.time())
+
+
+# ---------------------------------------------------------------------------
+# 站点
+# ---------------------------------------------------------------------------
+def note_site(host: str, *, ok: bool = True, name: str = "", **fields) -> None:
+    """记一次站点的抓取结果。
+
+    ok=True 计入成功、ok=False 计入失败；其余字段直接合并进去。
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return
+    with _lock:
+        db = _load()
+        cur = db["sites"].setdefault(host, {})
+        # 站名只在「还没学过」时填。**`name` 等于 host 也算没学过** ——
+        # 早先发现流程拿 host 当占位名写进去过，那种值是没信息量的，
+        # 遇到真名字要让它覆盖掉，否则界面上永远是 `www.xxx.com`。
+        if name and not cur.get("name"):
+            cur["name"] = name
+        elif name and cur.get("name") in (host, host.replace("www.", "")):
+            cur["name"] = name
+        for k, v in fields.items():
+            if v not in (None, ""):
+                cur[k] = v
+        if ok:
+            cur["ok"] = int(cur.get("ok", 0)) + 1
+            cur["last_ok"] = _now()
+        else:
+            cur["fail"] = int(cur.get("fail", 0)) + 1
+        if "first_seen" not in cur:
+            cur["first_seen"] = _now()
+        cur["updated"] = _now()
+        global _dirty
+        _dirty = True
+        _maybe_save()
+
+
+def known_site(host: str) -> dict:
+    host = (host or "").strip().lower()
+    with _lock:
+        return dict(_load()["sites"].get(host) or {})
+
+
+def sites() -> dict:
+    with _lock:
+        return {k: dict(v) for k, v in _load()["sites"].items()}
+
+
+def healthy_sites() -> dict:
+    return {h: s for h, s in sites().items() if is_healthy(s)}
+
+
+def searchable_sites() -> dict:
+    """能**站内搜索**的站 —— 学过 `search_tpl` 且还健康的。
+
+    这是 L 源升级的核心：来源库从「记着哪本书在哪」变成
+    「记着哪些站可以拿任意关键词去搜」。有了它，
+    `sources/registry_source.py` 就能拿新书的关键词直接搜这些站，
+    不用每次都重新走搜索引擎。
+    """
+    return {h: s for h, s in sites().items()
+            if is_healthy(s) and (s.get("search_tpl") or "").strip()}
+
+
+def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
+                    method: str = "get", body: Optional[dict] = None) -> None:
+    """把一个站学到的搜索模板记下来。
+
+    只记**新学到**的（已有就不覆盖）—— 搜索模板一旦验证可用就是稳定的，
+    偶尔一次爆破失误不该把好模板冲掉。想强制换用 `note_site(..., search_tpl=...)`。
+
+    `method="post"` 时 `body` 是请求体模板（值里带 `{kw}`），
+    因为有些站的搜索只认 POST（实测 384g 就是）。
+    """
+    host = (host or "").strip().lower()
+    tpl = (tpl or "").strip()
+    if not host or not tpl:
+        return
+    notes = {"search_tpl": tpl, "search_enc": (enc or "utf-8")}
+    if via:
+        notes["search_via"] = via
+    if (method or "get").lower() == "post":
+        notes["search_method"] = "post"
+        notes["search_body"] = body or {"s": "{kw}"}
+    with _lock:
+        cur = _load()["sites"].get(host) or {}
+        if (cur.get("search_tpl") or "").strip():
+            return          # 已经学过，不重复学
+    note_site(host, ok=True, **notes)
+
+
+def note_search_fail(host: str, *, reason: str = "") -> None:
+    """记一次「这个站学不出搜索接口」。
+
+    不是为了惩罚它，而是为了**下次别重复爆破** —— 爆破一次要发好几个请求，
+    而同一批站里总有那么几个真的没有站内搜索（纯静态站）。
+    记下来之后 `should_try_learn` 会跳过它。
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return
+    with _lock:
+        db = _load()
+        cur = db["sites"].setdefault(host, {})
+        cur["search_fail"] = int(cur.get("search_fail", 0)) + 1
+        if reason:
+            cur["search_fail_why"] = reason[:60]
+        cur["updated"] = _now()
+        global _dirty
+        _dirty = True
+        _maybe_save()
+
+
+# 一个站最多爆破几次。3 次都不成就认命 —— 它多半真的没有站内搜索。
+SEARCH_LEARN_MAX_TRIES = 3
+
+
+def should_try_learn(host: str) -> bool:
+    """还要不要为这个站花预算去学搜索接口。"""
+    h = (host or "").strip().lower()
+    if not h:
+        return False
+    s = known_site(h)
+    if not s:
+        return False                    # 没见过的站先别学
+    if (s.get("search_tpl") or "").strip():
+        return False                    # 已经会了
+    return int(s.get("search_fail", 0)) < SEARCH_LEARN_MAX_TRIES
+
+
+def site_label(host: str) -> str:
+    """给一个 host，返回**给人看**的站名；没学到就退回 host。
+
+    界面上「来自 落霞读书」比「来自 www.luoxiaks.net」好认太多。
+    早先发现流程拿 host 本身当过占位名，那种值等同于没有 —— 一并挡掉。
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return ""
+    name = str(known_site(host).get("name") or "").strip()
+    if not name or name.lower() in (host, host.removeprefix("www.")):
+        return host
+    return name
+
+
+def is_healthy(site: dict) -> bool:
+    """一个站点还算不算「能用」。"""
+    if not site:
+        return False
+    ok = int(site.get("ok", 0))
+    fail = int(site.get("fail", 0))
+    if ok == 0 and fail >= UNHEALTHY_FAILS:
+        return False
+    # 最近一直在失败（成功次数被失败压过去）也算不健康
+    if fail >= 3 and fail > ok * 2:
+        return False
+    return True
+
+
+def forget_site(host: str) -> bool:
+    host = (host or "").strip().lower()
+    with _lock:
+        db = _load()
+        hit = db["sites"].pop(host, None) is not None
+        if hit:
+            _tomb["sites"].add(host)
+            global _dirty
+            _dirty = True
+            _maybe_save()
+        return hit
+
+
+# ---------------------------------------------------------------------------
+# 书
+# ---------------------------------------------------------------------------
+def note_book(
+    url: str,
+    *,
+    title: str = "",
+    author: str = "",
+    intro: str = "",
+    host: str = "",
+    chapters: int = 0,
+    ok: bool = True,
+) -> None:
+    """把一本「联网发现」的书记下来。"""
+    url = (url or "").strip()
+    if not url:
+        return
+    with _lock:
+        db = _load()
+        cur = db["books"].setdefault(url, {})
+        if title:
+            cur["title"] = title[:80]
+        if author and not cur.get("author"):
+            cur["author"] = author[:40]
+        if intro and not cur.get("intro"):
+            cur["intro"] = intro[:200]
+        if host:
+            cur["host"] = host
+        if chapters:
+            cur["chapters"] = int(chapters)
+        if ok:
+            cur["ok"] = int(cur.get("ok", 0)) + 1
+            cur["last_ok"] = _now()
+        else:
+            cur["fail"] = int(cur.get("fail", 0)) + 1
+        if "first_seen" not in cur:
+            cur["first_seen"] = _now()
+        cur["last_check"] = _now()
+        global _dirty
+        _dirty = True
+        _maybe_save()
+
+
+def known_book(url: str) -> dict:
+    with _lock:
+        return dict(_load()["books"].get((url or "").strip()) or {})
+
+
+def books() -> dict:
+    with _lock:
+        return {k: dict(v) for k, v in _load()["books"].items()}
+
+
+def healthy_books() -> dict:
+    return {u: b for u, b in books().items() if is_book_healthy(b)}
+
+
+def is_book_healthy(book: dict) -> bool:
+    if not book:
+        return False
+    ok = int(book.get("ok", 0))
+    fail = int(book.get("fail", 0))
+    if ok == 0 and fail >= UNHEALTHY_FAILS:
+        return False
+    if fail >= 3 and fail > ok * 2:
+        return False
+    return True
+
+
+def forget_book(url: str) -> bool:
+    url = (url or "").strip()
+    with _lock:
+        db = _load()
+        hit = db["books"].pop(url, None) is not None
+        if hit:
+            _tomb["books"].add(url)
+            global _dirty
+            _dirty = True
+            _maybe_save()
+        return hit
+
+
+# ---------------------------------------------------------------------------
+# 查书：从本地库里找匹配的书
+# ---------------------------------------------------------------------------
+_TITLE_NOISE = re.compile(r"[\s\u3000《》〈〉“”‘’'\"()（）\[\]【】:：;；,，.。!！?？·、\-—_~～|/\\]+")
+
+
+def _norm(s: str) -> str:
+    return _TITLE_NOISE.sub("", (s or "")).lower()
+
+
+def find_books(keyword: str, *, limit: int = 10) -> list[dict]:
+    """在库里找和关键词对得上的书。
+
+    排序：书名完全相等 > 包含关键词 > 其它。同分的按健康度和章节数。
+    只返回**健康**的条目。
+    """
+    kw = _norm(keyword)
+    if not kw:
+        return []
+    out: list[tuple[tuple, str, dict]] = []
+    for url, b in books().items():
+        if not is_book_healthy(b):
+            continue
+        t = _norm(b.get("title", ""))
+        if not t:
+            continue
+        if t == kw:
+            rank = 0
+        elif kw in t or t in kw:
+            rank = 1
+        else:
+            continue
+        out.append(((rank, -int(b.get("chapters", 0)), -int(b.get("ok", 0))), url, b))
+    out.sort(key=lambda x: x[0])
+    res = []
+    for _k, url, b in out[:limit]:
+        item = dict(b)
+        item["url"] = url
+        res.append(item)
+    return res
+
+
+# ---------------------------------------------------------------------------
+# 统计 / 健康筛选
+# ---------------------------------------------------------------------------
+def stats() -> dict:
+    with _lock:
+        db = _load()
+        s_all, b_all = db["sites"], db["books"]
+        s_ok = sum(1 for s in s_all.values() if is_healthy(s))
+        b_ok = sum(1 for b in b_all.values() if is_book_healthy(b))
+        by_host: dict[str, int] = {}
+        for b in b_all.values():
+            h = b.get("host", "")
+            if h:
+                by_host[h] = by_host.get(h, 0) + 1
+        top = sorted(by_host.items(), key=lambda kv: -kv[1])[:8]
+        # 「可搜源」的统计一并给出来 —— 界面用来说明 L 源到底长了多少
+        searchable = sum(1 for s in s_all.values()
+                         if is_healthy(s) and (s.get("search_tpl") or "").strip())
+        return {
+            "sites": len(s_all),
+            "sites_ok": s_ok,
+            "sites_searchable": searchable,
+            "books": len(b_all),
+            "books_ok": b_ok,
+            "top_sites": [{"host": h, "books": n} for h, n in top],
+            "path": str(_DB),
+        }
+
+
+def dead() -> dict:
+    """列出不健康的站点和书（给「定期筛选」用）。"""
+    with _lock:
+        db = _load()
+        return {
+            "sites": {h: s for h, s in db["sites"].items() if not is_healthy(s)},
+            "books": {u: b for u, b in db["books"].items() if not is_book_healthy(b)},
+        }
+
+
+def prune(*, only_dead: bool = True, confirm: bool = False) -> dict:
+    """清理来源库。
+
+    only_dead=True（默认）只清不健康的；
+    only_dead=False 会清空整库 —— 这种操作**必须**显式传 confirm=True，
+    否则直接报错拒绝。
+
+    为什么要这道闸：`prune(only_dead=False)` 是唯一一个「一次调用能删光全库」
+    的入口，而它曾经被测试脚本顺手调过一次，把生产库里攒的站点全清了
+    （见 README「来源库」一节）。默认参数越危险，越要让人打出来。
+    返回被清掉的条数。
+    """
+    if not only_dead and not confirm:
+        raise ValueError("清空整个来源库需要 confirm=True")
+    with _lock:
+        db = _load()
+        if not only_dead:
+            n_s, n_b = len(db["sites"]), len(db["books"])
+            _tomb["sites"].update(db["sites"])
+            _tomb["books"].update(db["books"])
+            db["sites"], db["books"] = {}, {}
+        else:
+            n_s = n_b = 0
+            for h in [h for h, s in db["sites"].items() if not is_healthy(s)]:
+                db["sites"].pop(h, None)
+                _tomb["sites"].add(h)
+                n_s += 1
+            for u in [u for u, b in db["books"].items() if not is_book_healthy(b)]:
+                db["books"].pop(u, None)
+                _tomb["books"].add(u)
+                n_b += 1
+        if n_s or n_b:
+            global _dirty
+            _dirty = True
+        _save(force=True)
+        return {"sites_removed": n_s, "books_removed": n_b}

@@ -1,0 +1,23 @@
+[Unit]
+Description=NovelDock 来源库深夜体检 + 学搜索接口
+Documentation=file://__ROOT__/README.md
+# 服务没起来时体检没意义（写进去的内存缓存是别人的），所以等它。
+After=noveldock.service
+Wants=noveldock.service
+
+[Timer]
+# 凌晨 3:17 起，每 20 分钟一次，到 4:00 前结束 —— 一共 3 轮。
+# 为什么这么排（用户原话：「半夜的时候，凌晨三四点，都睡了你去排查」）：
+#   · 这个点没人用，体检要打几十个请求也不会跟用户抢带宽
+#   · 不取整点（3:00 整）是刻意的 —— 整点是各种定时任务扎堆的时候，
+#     错开七八分钟能避开别的任务抢 IO
+#   · 一晚跑 3 轮而不是 1 轮：第一轮常碰到站点抽风（临时 502 / 超时），
+#     多跑两轮能把它救回来，避免「偶然一次打不开就被清掉」
+# Persistent + RandomizedDelaySec：机器半夜关机也能在开机后补跑一次。
+OnCalendar=*-*-* 03:17,03:37,03:57:00
+OnBootSec=30min
+Persistent=true
+RandomizedDelaySec=180
+
+[Install]
+WantedBy=timers.target

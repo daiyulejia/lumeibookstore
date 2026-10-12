@@ -1,0 +1,41 @@
+[Unit]
+Description=NovelDock 噜妹书院（小说下载器）
+Documentation=file://__ROOT__/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 工作目录必须是项目根：代码里所有数据目录（downloads/ library/ cache/ logs/）
+# 都是相对项目根算的，不是相对 cwd —— 但 uvicorn 的日志、以及
+# tools/serve.py 的 pid 文件仍然依赖 cwd 正确，所以这里显式钉死。
+WorkingDirectory=__ROOT__
+
+# 用项目自带的 venv 解释器，不要用系统 python：
+# 依赖（fastapi/uvicorn/httpx/pypinyin/zhconv）只装在 venv 里。
+ExecStart=__PY__ __SERVE__ --host 0.0.0.0 --port __PORT__
+
+# 崩了自动重启。serve.py 自己已经有一层退避守护，
+# 这一层是防「serve.py 自己也死了」（比如被 OOM killer 干掉）。
+Restart=always
+RestartSec=5
+
+# 日志直接交给 systemd 的 journal —— 不要自己再重定向到文件，
+# 否则 serve.py 的日志和 journal 会各存一份、对不上。
+StandardOutput=journal
+StandardError=journal
+
+# 这几行是为了让 journalctl 里能看到「谁在跑」，方便排查
+SyslogIdentifier=noveldock
+
+# 2G 内存的机器上，把单进程内存软上限压到一个合理值。
+# 不是硬限制 —— 超了会让内核去回收，而不是当场 kill。
+MemoryHigh=1200M
+
+# 只保留最小权限：不要求 root，普通用户跑就行。
+# （如果用 root 跑，务必把下面这行注释掉，systemd 会警告）
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

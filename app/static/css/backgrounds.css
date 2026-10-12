@@ -1,0 +1,136 @@
+/* ==========================================================================
+   背景风格（data-bg）
+   --------------------------------------------------------------------------
+   全部用 CSS 实现，不引第三方粒子库。理由：
+   这是要挂在手机上整天开着的页面，一个 canvas 粒子动画在低端机上会持续
+   占 GPU、耗电，而且和「翻页动画」抢帧。CSS 背景由合成器直接处理，几乎免费。
+
+   换背景只改 --b1/--b2/--b3 三个色相，跟着主题走，所以六套主题 × 六种背景
+   都能搭，不用写 36 份样式。
+   ========================================================================== */
+
+/* 固定在最底层，不参与滚动，避免手机上滚动时背景抖动 */
+.bg{position:fixed;inset:0;z-index:-1;overflow:hidden;background:var(--s-bg)}
+
+/* 一层薄遮罩：把背景压淡，保证卡片/文字的对比度不被冲掉 */
+.bg::after{content:"";position:absolute;inset:0;background:var(--s-bg);opacity:var(--bg-veil,.62)}
+
+@keyframes bg-drift{
+  0%,100%{transform:translate(0,0) scale(1)}
+  33%{transform:translate(4vw,3vh) scale(1.09)}
+  66%{transform:translate(-3vw,-2vh) scale(.94)}
+}
+@keyframes bg-twinkle{0%,100%{opacity:.55}50%{opacity:1}}
+@keyframes bg-scroll{to{background-position:0 var(--sc)}}
+
+/* ---------- 1. aurora 光晕 ---------- */
+html[data-bg="aurora"] .bg .blob{
+  position:absolute;border-radius:50%;filter:blur(110px);opacity:.5;
+  animation:bg-drift 30s ease-in-out infinite;
+}
+html[data-bg="aurora"] .bg .b1{width:46vw;height:46vw;left:-10vw;top:-12vw;background:radial-gradient(circle at 30% 30%,var(--b1),transparent 70%)}
+html[data-bg="aurora"] .bg .b2{width:40vw;height:40vw;right:-8vw;top:12vh;background:radial-gradient(circle at 60% 40%,var(--b2),transparent 70%);animation-delay:-8s}
+html[data-bg="aurora"] .bg .b3{width:52vw;height:52vw;left:22vw;bottom:-26vw;background:radial-gradient(circle at 40% 60%,var(--b3),transparent 70%);animation-delay:-15s}
+
+/* ---------- 2. mesh 网格 ---------- */
+html[data-bg="mesh"] .bg{
+  background-image:
+    linear-gradient(to right,color-mix(in srgb,var(--b2) 22%,transparent) 1px,transparent 1px),
+    linear-gradient(to bottom,color-mix(in srgb,var(--b2) 22%,transparent) 1px,transparent 1px),
+    radial-gradient(900px 500px at 15% -10%,color-mix(in srgb,var(--b1) 22%,transparent),transparent 70%),
+    radial-gradient(760px 460px at 90% 8%,color-mix(in srgb,var(--b3) 20%,transparent),transparent 70%);
+  background-size:44px 44px,44px 44px,auto,auto;
+  /* 网格向四周淡出，避免出现「格子铺满到边」的廉价感 */
+  -webkit-mask-image:radial-gradient(120% 100% at 50% 0,#000 35%,transparent 85%);
+  mask-image:radial-gradient(120% 100% at 50% 0,#000 35%,transparent 85%);
+}
+html[data-bg="mesh"] .bg::after{opacity:.35}
+
+/* ---------- 3. paper 纸纹 ---------- */
+html[data-bg="paper"] .bg{
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='.42'/%3E%3C/svg%3E");
+  background-repeat:repeat;
+}
+html[data-bg="paper"] .bg::before{
+  content:"";position:absolute;inset:0;
+  background:
+    radial-gradient(760px 420px at 12% 0%,color-mix(in srgb,var(--b1) 16%,transparent),transparent 70%),
+    radial-gradient(680px 400px at 92% 100%,color-mix(in srgb,var(--b3) 14%,transparent),transparent 70%);
+}
+html[data-bg="paper"] .bg::after{opacity:.5}
+
+/* ---------- 4. stars 星空 ---------- */
+html[data-bg="stars"] .bg{
+  background-image:
+    radial-gradient(1.4px 1.4px at 22px 34px,color-mix(in srgb,var(--b2) 90%,transparent),transparent),
+    radial-gradient(1.2px 1.2px at 118px 88px,color-mix(in srgb,var(--b1) 80%,transparent),transparent),
+    radial-gradient(1.8px 1.8px at 206px 172px,color-mix(in srgb,var(--b3) 85%,transparent),transparent),
+    radial-gradient(1.1px 1.1px at 74px 214px,color-mix(in srgb,var(--b2) 70%,transparent),transparent),
+    radial-gradient(1.5px 1.5px at 168px 46px,color-mix(in srgb,var(--b1) 75%,transparent),transparent),
+    radial-gradient(700px 420px at 78% 6%,color-mix(in srgb,var(--b2) 16%,transparent),transparent 70%);
+  background-size:240px 240px,240px 240px,240px 240px,240px 240px,240px 240px,auto;
+  animation:bg-scroll 260s linear infinite;
+  --sc:-240px 240px;
+}
+html[data-bg="stars"] .bg::after{opacity:.42}
+
+/* ---------- 5. wave 波浪 ---------- */
+html[data-bg="wave"] .bg{
+  background:
+    radial-gradient(120% 70% at 50% 118%,color-mix(in srgb,var(--b1) 34%,transparent),transparent 62%),
+    radial-gradient(130% 62% at 50% 132%,color-mix(in srgb,var(--b3) 30%,transparent),transparent 62%),
+    radial-gradient(140% 54% at 50% 146%,color-mix(in srgb,var(--b2) 26%,transparent),transparent 62%),
+    var(--s-bg);
+}
+html[data-bg="wave"] .bg::after{opacity:.28}
+
+/* ---------- 6. plain 纯净 ---------- */
+html[data-bg="plain"] .bg{background:var(--s-bg)}
+html[data-bg="plain"] .bg::after{opacity:0}
+
+/* ---------- 7. lumei 噜妹（本站主场背景）----------
+   设计依据：docs/design-spec-lumei.md §4.2
+
+   做法：**只做氛围，不做角色**。
+   上一版在这里画「小噜妹的脑袋」（圆 + 两个伪元素当眼睛），
+   实测又丑又不像水豚，而且和真正的 SVG 吉祥物抢戏、风格打架 —— 已废弃。
+
+   现在三层，全部 CSS，零请求、离线可用：
+     ① 极淡纸纹（暖调，< 6% 不透明）
+     ② 三团暖色光晕（暖橘 / 草绿 / 橘子黄），极慢漂移
+     ③ 一颗橘子光斑点缀
+   「慢」本身就是设计目标：光晕周期 48s，比默认的 30s 更慢。 */
+html[data-bg="lumei"] .bg{
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E"),
+    radial-gradient(58vw 44vw at 10% 2%,color-mix(in srgb,var(--b1) 30%,transparent),transparent 68%),
+    radial-gradient(50vw 40vw at 90% 10%,color-mix(in srgb,var(--b3) 22%,transparent),transparent 68%),
+    radial-gradient(64vw 50vw at 48% 106%,color-mix(in srgb,var(--b2) 26%,transparent),transparent 70%),
+    var(--s-bg);
+  background-size:200px 200px,auto,auto,auto,auto;
+  background-repeat:repeat,no-repeat,no-repeat,no-repeat,no-repeat;
+}
+html[data-bg="lumei"] .bg::after{opacity:.4}
+
+/* 三团光晕：极慢漂移（48s），比通用 30s 更慢 —— 松弛感靠「慢」表达 */
+html[data-bg="lumei"] .bg .blob{
+  position:absolute;border-radius:50%;filter:blur(120px);
+  animation:bg-drift 48s ease-in-out infinite;
+}
+html[data-bg="lumei"] .bg .b1{
+  width:44vw;height:44vw;left:-12vw;top:-14vw;opacity:.42;
+  background:radial-gradient(circle at 35% 35%,var(--b1),transparent 68%);
+}
+html[data-bg="lumei"] .bg .b2{
+  width:38vw;height:38vw;right:-10vw;top:16vh;opacity:.36;animation-delay:-16s;
+  background:radial-gradient(circle at 58% 42%,var(--b2),transparent 68%);
+}
+html[data-bg="lumei"] .bg .b3{
+  width:50vw;height:50vw;left:26vw;bottom:-28vw;opacity:.34;animation-delay:-32s;
+  background:radial-gradient(circle at 42% 58%,var(--b3),transparent 68%);
+}
+
+/* 减少动效偏好：别跟用户的系统设置对着干 */
+@media (prefers-reduced-motion:reduce){
+  .bg,.bg .blob{animation:none!important}
+}

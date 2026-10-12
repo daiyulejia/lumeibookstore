@@ -1,0 +1,338 @@
+/* ==========================================================================
+   阅读器
+   --------------------------------------------------------------------------
+   三种模式共用同一份排版度量，只是"怎么动"不同：
+     scroll  纵向滚动        —— 原生滚动，最省电
+     slide   左右平移翻页    —— transform 位移，跟手、无重排
+     flip    仿真翻页        —— 交 StPageFlip 做纸张卷曲
+   分页结果（每一页有哪些字）由 JS 统一算一次，三种模式共享，
+   所以切换模式时页码位置不会丢。
+   ========================================================================== */
+
+#reader{
+  position:fixed;inset:0;z-index:200;display:none;flex-direction:column;
+  background:var(--rd-bg);color:var(--rd-fg);
+  --rd-fs:18px; --rd-lh:1.9; --rd-ff:serif; --rd-pad:34px;
+}
+#reader.on{display:flex;animation:rd-open var(--dur-l) var(--ease-out) both}
+@keyframes rd-open{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
+
+/* ---------- 阅读主题（与 App 主题相互独立：看书时想要的和逛书店时不一样） ---------- */
+#reader[data-rd-theme="day"]  {--rd-bg:#fdfdfc;--rd-fg:#2b2a27;--rd-dim:#8b8781;--rd-line:#e8e5e0;--rd-hl:#c25627;--rd-sel:#f3e2d6}
+#reader[data-rd-theme="sepia"]{--rd-bg:#f7eeda;--rd-fg:#4b3f2f;--rd-dim:#9a8a72;--rd-line:#e6d9bd;--rd-hl:#9a6b2f;--rd-sel:#ecdcbc}
+#reader[data-rd-theme="mint"] {--rd-bg:#e6efe4;--rd-fg:#2f3a30;--rd-dim:#7d8c7f;--rd-line:#d2e0d0;--rd-hl:#3d7a3a;--rd-sel:#d3e5d0}
+#reader[data-rd-theme="dusk"] {--rd-bg:#1b1b1e;--rd-fg:#c8c5bf;--rd-dim:#7a7772;--rd-line:#2c2c31;--rd-hl:#e0965a;--rd-sel:#332f2a}
+#reader[data-rd-theme="black"]{--rd-bg:#000;--rd-fg:#9d9d9d;--rd-dim:#5c5c5c;--rd-line:#1c1c1c;--rd-hl:#8b7cf8;--rd-sel:#232326}
+/* 噜妹书院自己的阅读配色：暖奶油底 + 噜噜橙高亮。
+   与站点主色（tokens.css 的 lumei 主题）同源 —— 看书时也是同一个牌子。
+   ⚠ 曾用粉色底/粉色高亮，与重构后的橙黄主色对不上，已改。 */
+#reader[data-rd-theme="lumei"]{--rd-bg:#fdf9f2;--rd-fg:#2f2620;--rd-dim:#a1937f;--rd-line:#eee0c9;--rd-hl:#e8912f;--rd-sel:#fbe6c8}
+#reader ::selection{background:var(--rd-sel)}
+
+/* ---------- 顶栏 / 底栏（.immersive 时自动隐藏） ---------- */
+.rd-top,.rd-bottom{
+  position:relative;z-index:5;flex:0 0 auto;
+  background:color-mix(in srgb,var(--rd-bg) 88%,transparent);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  transition:transform var(--dur-l) var(--ease),opacity var(--dur-m) var(--ease);
+}
+.rd-top{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--rd-line)}
+.rd-bottom{display:flex;align-items:center;gap:12px;padding:9px 14px;border-top:1px solid var(--rd-line)}
+.rd-toc.on ~ .rd-bottom{}
+
+/* 沉浸模式：只藏"框"，手势/键盘照常可用 */
+#reader.immersive .rd-top{transform:translateY(-100%);opacity:0;pointer-events:none;position:absolute;left:0;right:0}
+#reader.immersive .rd-bottom{transform:translateY(100%);opacity:0;pointer-events:none;position:absolute;left:0;right:0;bottom:0;width:100%}
+
+/* 顶栏被藏起来时，进度条要顶到最上面去，否则顶部会留一条空白 */
+#reader.immersive .rd-stage{border-top:none}
+
+.rd-prog{
+  position:absolute;left:0;top:0;height:3px;width:0;z-index:6;border-radius:0 99px 99px 0;
+  background:linear-gradient(90deg,var(--rd-hl),color-mix(in srgb,var(--rd-hl) 30%,transparent));
+  transition:width var(--dur-l) var(--ease);
+}
+.rd-top .ttl{flex:1;min-width:0;overflow:hidden}
+.rd-top .ttl b{
+  display:block;font-size:14.5px;font-weight:750;line-height:1.3;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.rd-top .ttl small{
+  display:block;font-size:11.5px;font-weight:500;color:var(--rd-dim);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.rd-btn{
+  width:38px;height:38px;flex:0 0 auto;border-radius:11px;display:grid;place-items:center;
+  font-size:16px;color:var(--rd-fg);opacity:.78;
+  transition:background var(--dur-s) var(--ease),opacity var(--dur-s) var(--ease),transform var(--dur-s) var(--ease-spring);
+}
+.rd-btn:hover{background:color-mix(in srgb,var(--rd-fg) 9%,transparent);opacity:1}
+.rd-btn:active{transform:scale(.92)}
+.rd-btn.wide{width:auto;padding:0 14px;font-size:13px;font-weight:650;gap:6px;display:inline-flex;align-items:center;opacity:.86}
+.rd-btn:disabled{opacity:.28;cursor:not-allowed}
+
+/* ---------- 舞台 ---------- */
+.rd-stage{flex:1;position:relative;min-height:0;display:flex;overflow:hidden}
+
+/* 三种视图叠在一起，只显示当前那个 */
+.rd-view{position:absolute;inset:0;display:none}
+#reader[data-rd-mode="scroll"] .rd-view-scroll{display:block}
+#reader[data-rd-mode="slide"]  .rd-view-slide{display:block}
+#reader[data-rd-mode="flip"]   .rd-view-flip{display:flex;align-items:center;justify-content:center}
+
+/* --- 滚动模式 --- */
+.rd-view-scroll{overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.rd-article{
+  max-width:var(--rd-measure,44em);margin:0 auto;padding:var(--rd-pad) clamp(18px,5vw,44px) 120px;
+  font-family:var(--rd-ff);font-size:var(--rd-fs);line-height:var(--rd-lh);
+}
+.rd-article h2{
+  font-size:calc(var(--rd-fs) * 1.32);margin:0 0 1.5em;font-weight:800;line-height:1.4;
+  padding-bottom:.6em;border-bottom:1px solid var(--rd-line);letter-spacing:-.01em;
+}
+.rd-article p{margin:0 0 .95em;text-indent:2em;text-align:justify;word-break:break-word;hyphens:auto}
+.rd-article p.noind{text-indent:0}
+.rd-article p.q{margin:0 0 1.5em;text-indent:0}
+.rd-article .err{text-align:center;color:#c0392b;text-indent:0;padding:40px 0}
+/* 错误页的"下一步该干嘛"：比错误本身弱一级，但必须读得到 */
+.rd-article .err + .err-hint{
+  text-align:center;text-indent:0;color:#8a8378;
+  font-size:13px;padding:0 12px 36px;margin:-26px 0 0;line-height:1.7;
+}
+
+/* --- 平移模式：多栏 + transform 位移 --- */
+.rd-view-slide{overflow:hidden}
+.rd-strip{
+  height:100%;display:flex;will-change:transform;
+  transition:transform var(--dur-l) var(--ease);
+}
+.rd-strip.dragging{transition:none!important}
+.rd-page{
+  flex:0 0 auto;height:100%;overflow:hidden;position:relative;
+  padding:var(--rd-pad) clamp(18px,5vw,48px);
+}
+.rd-page .pg-body{
+  position:relative;            /* 分页量尺靠它当 offsetParent，别删 */
+  height:100%;overflow:hidden;
+  max-width:var(--rd-measure,44em);margin:0 auto;
+  font-family:var(--rd-ff);font-size:var(--rd-fs);line-height:var(--rd-lh);
+}
+.rd-page .pg-body h2{
+  font-size:calc(var(--rd-fs) * 1.3);margin:0 0 1.4em;font-weight:800;line-height:1.4;
+  padding-bottom:.55em;border-bottom:1px solid var(--rd-line);
+}
+.rd-page .pg-body p{margin:0 0 .95em;text-indent:2em;text-align:justify;word-break:break-word}
+.rd-page .pg-body p.noind{text-indent:0}
+
+/* 页面右下角的页码 —— 纸质书的感觉 */
+.rd-page .pg-no{
+  position:absolute;bottom:calc(var(--rd-pad) / 2);right:clamp(18px,5vw,48px);
+  font-size:11.5px;color:var(--rd-dim);font-family:-apple-system,"PingFang SC",sans-serif;
+  font-variant-numeric:tabular-nums;letter-spacing:.06em;
+}
+
+/* --- 仿真翻页模式 --- */
+.rd-view-flip{background:var(--rd-bg)}
+.flipbook{position:relative}
+.flipbook .page{
+  background:var(--rd-bg);
+  padding:var(--rd-pad) clamp(18px,5vw,48px);
+  overflow:hidden;
+}
+.flipbook .page .pg-body{
+  position:relative;            /* 同上：分页量尺的 offsetParent */
+  height:100%;overflow:hidden;
+  max-width:var(--rd-measure,44em);margin:0 auto;
+  font-family:var(--rd-ff);font-size:var(--rd-fs);line-height:var(--rd-lh);
+}
+.flipbook .page .pg-body h2{
+  font-size:calc(var(--rd-fs) * 1.3);margin:0 0 1.4em;font-weight:800;line-height:1.4;
+  padding-bottom:.55em;border-bottom:1px solid var(--rd-line);
+}
+.flipbook .page .pg-body p{margin:0 0 .95em;text-indent:2em;text-align:justify;word-break:break-word}
+.flipbook .page .pg-no{
+  position:absolute;bottom:calc(var(--rd-pad) / 2);right:clamp(18px,5vw,48px);
+  font-size:11.5px;color:var(--rd-dim);font-family:-apple-system,"PingFang SC",sans-serif;
+  font-variant-numeric:tabular-nums;letter-spacing:.06em;
+}
+/* 书脊阴影：单页显示时给左侧一点厚度感，看着像一册书 */
+.flipbook .page::after{
+  content:"";position:absolute;top:0;bottom:0;left:0;width:22px;pointer-events:none;
+  background:linear-gradient(90deg,rgba(0,0,0,.055),transparent);
+}
+
+/* 点按分区提示：轻触左右边缘时浮现一条呼吸光，告诉用户"这里能翻" */
+.rd-zones{position:absolute;inset:0;z-index:3;display:none}
+#reader[data-rd-mode="slide"] .rd-zones,
+#reader[data-rd-mode="flip"] .rd-zones{display:block}
+.rd-zone{
+  position:absolute;top:0;bottom:0;width:26%;cursor:pointer;
+  display:grid;place-items:center;opacity:0;transition:opacity var(--dur-m) var(--ease);
+}
+.rd-zone.l{left:0} .rd-zone.r{right:0}
+.rd-zone.c{left:26%;right:26%;width:auto;cursor:default}
+.rd-zone .arw{
+  font-size:26px;color:var(--rd-fg);opacity:.5;
+  width:46px;height:46px;border-radius:50%;display:grid;place-items:center;
+  background:color-mix(in srgb,var(--rd-bg) 70%,transparent);backdrop-filter:blur(6px);
+}
+.rd-zone.l:hover,.rd-zone.r:hover{opacity:1}
+.rd-zone:active .arw{transform:scale(.88)}
+@media (hover:none){.rd-zone .arw{display:none}}
+
+/* 翻页时边缘闪一下，给"翻过去了"一个明确反馈 */
+.rd-flash{position:absolute;inset:0;z-index:4;pointer-events:none;opacity:0;background:var(--rd-hl)}
+.rd-flash.on{animation:rd-flash var(--dur-l) var(--ease)}
+@keyframes rd-flash{0%{opacity:0}18%{opacity:.07}100%{opacity:0}}
+
+/* ---------- 加载中 ---------- */
+.rd-dots{display:flex;gap:8px;justify-content:center;padding:60px 0}
+.rd-dots i{width:7px;height:7px;border-radius:50%;background:var(--rd-dim);opacity:.4;animation:pulse 1.1s infinite}
+.rd-dots i:nth-child(2){animation-delay:.15s}
+.rd-dots i:nth-child(3){animation-delay:.3s}
+@keyframes pulse{0%,100%{opacity:.22;transform:scale(.86)}50%{opacity:.9;transform:scale(1.1)}}
+
+/* ---------- 底栏 ---------- */
+.rd-btns{display:flex;gap:6px;align-items:center}
+.rd-info{
+  flex:1;text-align:center;font-size:12px;color:var(--rd-dim);user-select:none;
+  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.rd-info .pct{font-weight:750;color:var(--rd-fg)}
+.rd-info .sep{opacity:.55}
+
+/* 可拖进度条 —— 比"点一下跳一章"精确得多 */
+.rd-seekbar{position:relative;height:26px;flex:0 0 clamp(120px,26vw,240px);display:flex;align-items:center;cursor:pointer;touch-action:none}
+.rd-seekbar .t{width:100%;height:4px;border-radius:99px;background:color-mix(in srgb,var(--rd-fg) 16%,transparent);overflow:hidden}
+.rd-seekbar .f{height:100%;background:var(--rd-hl);width:0;border-radius:99px}
+.rd-seekbar .h{
+  position:absolute;width:13px;height:13px;border-radius:50%;background:var(--rd-hl);
+  left:0;transform:translateX(-50%);box-shadow:0 1px 6px rgba(0,0,0,.35);
+  opacity:0;transition:opacity var(--dur-s) var(--ease),transform var(--dur-s) var(--ease-spring);
+}
+.rd-seekbar:hover .h,.rd-seekbar.dragging .h{opacity:1}
+.rd-seekbar.dragging .h{transform:translateX(-50%) scale(1.25)}
+/* 拖动时浮出"第 N 章"，不然松手前不知道会跳到哪 */
+.rd-tip{
+  position:absolute;bottom:calc(100% + 6px);transform:translateX(-50%);
+  padding:5px 11px;border-radius:var(--r-s);font-size:11.5px;font-weight:650;
+  background:var(--rd-fg);color:var(--rd-bg);white-space:nowrap;pointer-events:none;
+  opacity:0;transition:opacity var(--dur-s) var(--ease);
+}
+.rd-seekbar.dragging .rd-tip{opacity:1}
+@media (max-width:700px){.rd-seekbar{flex:1 1 auto}}
+
+/* ---------- 目录 / 设置 抽屉 ---------- */
+.rd-panel{
+  position:absolute;top:0;bottom:0;z-index:8;width:min(400px,88vw);
+  background:var(--rd-bg);border-right:1px solid var(--rd-line);
+  display:flex;flex-direction:column;
+  transform:translateX(-102%);transition:transform var(--dur-l) var(--ease);
+  box-shadow:12px 0 40px rgba(0,0,0,.12);
+}
+.rd-panel.on{transform:none}
+.rd-panel.right{left:auto;right:0;border-right:none;border-left:1px solid var(--rd-line);transform:translateX(102%);box-shadow:-12px 0 40px rgba(0,0,0,.12)}
+.rd-panel.right.on{transform:none}
+.rd-panel > header{
+  display:flex;align-items:center;gap:9px;padding:13px;border-bottom:1px solid var(--rd-line);flex:0 0 auto;
+}
+.rd-panel > header h4{margin:0;flex:1;font-size:15px;font-weight:800}
+.rd-panel .list{flex:1;overflow-y:auto;padding:6px 0 60px;overscroll-behavior:contain}
+.rd-panel .lbl{padding:10px 16px 6px;font-size:11px;letter-spacing:.1em;color:var(--rd-dim);text-transform:uppercase;font-weight:700}
+
+.rd-panel .list a{
+  display:flex;align-items:center;gap:9px;padding:10px 16px;font-size:13.5px;line-height:1.45;
+  border-left:3px solid transparent;transition:background var(--dur-s) var(--ease),color var(--dur-s) var(--ease);
+}
+.rd-panel .list a:hover{background:color-mix(in srgb,var(--rd-fg) 7%,transparent)}
+.rd-panel .list a.on{
+  border-left-color:var(--rd-hl);color:var(--rd-hl);font-weight:750;
+  background:color-mix(in srgb,var(--rd-hl) 10%,transparent);
+}
+.rd-panel .list a .dotread{
+  width:5px;height:5px;border-radius:50%;background:var(--rd-dim);opacity:.45;flex:0 0 auto;
+}
+.rd-panel .list a.has .dotread{background:var(--rd-hl);opacity:1}
+.rd-panel .list a .tx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* 设置面板 */
+.rd-set-row{display:flex;flex-direction:column;gap:9px;padding:14px 16px;border-bottom:1px solid var(--rd-line)}
+.rd-set-row > .gl{font-size:12px;font-weight:750;color:var(--rd-dim);letter-spacing:.04em}
+.rd-seg{display:flex;gap:5px;flex-wrap:wrap}
+.rd-seg button{
+  padding:7px 13px;border-radius:var(--r-s);font-size:12.5px;font-weight:650;
+  background:color-mix(in srgb,var(--rd-fg) 7%,transparent);color:var(--rd-fg);
+  transition:all var(--dur-s) var(--ease);
+}
+.rd-seg button:hover{background:color-mix(in srgb,var(--rd-fg) 13%,transparent)}
+.rd-seg button.on{background:var(--rd-hl);color:var(--rd-bg)}
+.rd-stepper{display:flex;align-items:center;gap:10px}
+.rd-stepper button{
+  width:38px;height:34px;border-radius:var(--r-s);font-size:14px;font-weight:700;
+  background:color-mix(in srgb,var(--rd-fg) 7%,transparent);color:var(--rd-fg);
+  transition:background var(--dur-s) var(--ease);
+}
+.rd-stepper button:hover{background:color-mix(in srgb,var(--rd-fg) 14%,transparent)}
+.rd-stepper .v{flex:1;text-align:center;font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums}
+
+/* 阅读主题色卡 */
+.rd-thermos{display:flex;gap:9px;flex-wrap:wrap}
+.rd-thermos button{
+  width:52px;height:52px;border-radius:50%;position:relative;
+  border:2px solid var(--rd-line);display:grid;place-items:center;
+  font-size:13px;font-weight:800;
+  transition:transform var(--dur-s) var(--ease-spring),border-color var(--dur-s) var(--ease);
+}
+.rd-thermos button:hover{transform:scale(1.08)}
+.rd-thermos button.on{border-color:var(--rd-hl);box-shadow:0 0 0 3px color-mix(in srgb,var(--rd-hl) 22%,transparent)}
+
+.rd-kbd{font-size:11.5px;color:var(--rd-dim);line-height:2}
+.rd-kbd kbd{
+  display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:19px;
+  padding:0 5px;border-radius:5px;background:color-mix(in srgb,var(--rd-fg) 9%,transparent);
+  font-family:inherit;font-size:10.5px;font-weight:700;margin:0 1px;
+}
+
+/* ---------- 移动端 ---------- */
+@media (max-width:820px){
+  #reader{--rd-pad:24px}
+  .rd-top{padding:8px 8px;padding-top:calc(8px + env(safe-area-inset-top,0px))}
+  .rd-bottom{padding:7px 8px;padding-bottom:calc(7px + env(safe-area-inset-bottom,0px))}
+  .rd-panel{width:min(88vw,380px)}
+  .rd-btn{width:36px;height:36px}
+}
+/* 窄屏（手机）：底部一行塞不下「上一章 + 进度条 + 章页信息 + 下一章」，
+   实测 390px 下留给信息的宽度只剩 ~90px，`2/341 章 · 1/10 页` 必然被
+   省略号吃掉半截。改成两行 —— 进度条独占一行，下面一行三个元素从容排开。
+   （这也是 Kindle / 微信读书这类阅读器的通行做法。） */
+@media (max-width:560px){
+  .rd-bottom{flex-wrap:wrap;gap:6px 10px}
+  .rd-seekbar{order:1;flex:1 1 100%;height:20px}
+  .rd-bottom>.rd-btns:first-child{order:2}
+  .rd-info{order:3;flex:1 1 auto;min-width:0}
+  .rd-bottom>.rd-btns:last-child{order:4}
+}
+@media (max-width:520px){
+  .rd-info .pct,.rd-info .sep{display:none}
+  .rd-btn.wide{padding:0 10px;font-size:12px}
+}
+
+/* ---------- 触屏专项 ----------
+   手机上 .rd-btn 只有 36px，比 iOS 建议的 44px 小一圈；
+   顶栏/底栏那几个图标按钮是最常点的，指尖落空率很高。
+   注意不要在视觉上把它们撑胖 —— 顶栏高度是有限的，
+   所以用"视觉不变、热区变大"的做法：把按钮撑到 44px，
+   图标仍居中，只是周围多了一圈可点区域。 */
+@media (hover:none), (pointer:coarse){
+  .rd-btn{
+    width:44px;height:44px;
+    touch-action:manipulation;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .rd-btn.wide{padding:0 16px;height:40px}
+  /* iOS 会把 :hover 粘住，这里的背景变化会留在按钮上不消失 */
+  .rd-btn:hover{background:transparent}
+  .rd-btn:active{background:color-mix(in srgb,var(--rd-fg) 12%,transparent)}
+  /* 进度条本来就不能被页面滚动抢走手势 */
+  .rd-seekbar,.rd-page,.rd-flip-page{touch-action:none}
+}

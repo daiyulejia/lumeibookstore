@@ -1,0 +1,76 @@
+"""模板噪音行过滤器的回归测试。
+
+这里最容易出的不是「漏删」，而是**误删**：正文里出现「广告」两个字
+就被整行吃掉，一章少一句，用户根本不会发现。所以下面既有 drop 组，
+也有必须保留的 KEEP 组。
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.sources.base import strip_boilerplate, tidy_content  # noqa: E402
+
+# (输入, 期望输出, 说明)
+CASES = [
+    ("『章节错误,点此举报』\n正文第一段。\n正文第二段。",
+     "正文第一段。\n正文第二段。", "章首举报横幅要删"),
+    ("正文。\n『加入书签，方便阅读』",
+     "正文。", "章尾书签横幅要删"),
+    ("正文。\n：。：\n结尾。",
+     "正文。\n结尾。", "纯符号垃圾行要删"),
+    ("正文。\n天才一秒记住本站地址：www.xx.com",
+     "正文。", "「天才一秒记住」要删"),
+    ("上一章 目录 下一章",
+     "", "翻页导航要删"),
+    ("广告：本站已开通手机版阅读",
+     "", "广告型 banner 要删"),
+    # ---- 下面是必须保留的 ----
+    ("他说：这本小说的广告打得真好。\n下一幕。",
+     "他说：这本小说的广告打得真好。\n下一幕。", "正文里的「广告」不能误删"),
+    ("他站在广告牌下，看着远处的车流。",
+     "他站在广告牌下，看着远处的车流。", "含「广告」的正文不能误删"),
+    ("＊\u3000＊\u3000＊\n下一幕。",
+     "＊\u3000＊\u3000＊\n下一幕。", "分节符要保留"),
+    ("他翻开上一章的笔记，发现写错了。",
+     "他翻开上一章的笔记，发现写错了。", "行中的「上一章」不能误删"),
+]
+
+# 开头标题去重（tidy_content 的第二段职责）
+TIDY_CASES = [
+    ("第1章 初入江湖\n初入江湖\n正文开始了。", "第1章 初入江湖", "正文开始了。"),
+    ("初入江湖\n正文开始了。", "第1章 初入江湖", "正文开始了。"),
+    # 裁首尾空行：删掉章首横幅后会剩一个空行，阅读器第一屏顶着空白
+    ("\n\n正文开始了。", "", "正文开始了。"),
+    ("正文开始了。\n\n\n", "", "正文开始了。"),
+    ("\n『章节错误,点此举报』\n正文开始了。\n", "", "正文开始了。"),
+    # ---- 反向：这两种「空行」不能碰 ----
+    ("\n\u3000\u3000第一段。\n\n\u3000\u3000第二段。\n", "",
+     "\u3000\u3000第一段。\n\n\u3000\u3000第二段。"),  # 段间空行 + 首段缩进都要留
+]
+
+
+def main() -> int:
+    bad = 0
+    for src, want, note in CASES:
+        got = strip_boilerplate(src)
+        ok = got == want
+        bad += 0 if ok else 1
+        print(f"  {'✓' if ok else '✗'} {note}")
+        if not ok:
+            print(f"      入: {src!r}\n      望: {want!r}\n      得: {got!r}")
+    for text, title, want in TIDY_CASES:
+        got = tidy_content(text, title)
+        ok = got == want
+        bad += 0 if ok else 1
+        print(f"  {'✓' if ok else '✗'} tidy_content: {title} -> {got!r}")
+        if not ok:
+            print(f"      入: {text!r}\n      望: {want!r}\n      得: {got!r}")
+    print("✅ 全部通过" if not bad else f"❌ {bad} 项失败")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

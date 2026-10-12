@@ -1,0 +1,28 @@
+[Unit]
+Description=NovelDock 热榜刷新（由 noveldock-ranks.timer 触发）
+Documentation=file://__ROOT__/README.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=__ROOT__
+
+# 直接打本地接口，不重复实现抓取逻辑。
+# 为什么不直接 `python -c "from app import ranks; ranks.refresh()"`：
+#   ① 走接口 = 刷新的是**正在跑的那个服务**的内存缓存，落盘也由它完成；
+#      另起一个进程刷新，写的是同一个 cache/ranks.json，但跑着的服务
+#      内存里还是旧的，等于白刷一次。
+#   ② 接口是唯一的刷新入口，行为口径不会分裂成两套。
+ExecStart=__PY__ __ROOT__/tools/ranks_cron.py
+
+# 超时保护：正常一轮 20 秒内。卡到 3 分钟说明站点挂了，
+# 掐掉重来，别让它一直挂着占资源。
+TimeoutStartSec=180
+
+# 失败不回滚、不重启 —— 定时任务失败下次再来。
+# 但要在 journal 里留痕，所以输出走 journal。
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=noveldock-ranks
+
+NoNewPrivileges=true
+PrivateTmp=true

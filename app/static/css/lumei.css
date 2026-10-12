@@ -1,0 +1,475 @@
+/* ==========================================================================
+   噜妹书院 · 品牌层
+   --------------------------------------------------------------------------
+   设计依据：docs/design-spec-lumei.md  ← 改这个文件前必须先读它
+
+   内核（别望文生义）：
+     噜噜与噜妹是**一对情侣水豚**。精神内核是「松弛感 / 情绪稳定 / 不焦虑」，
+     不是「甜美可爱」。噜噜是雄性、**橙黄色**，爱泡温泉、吃橘子，
+     口头禅「没事就是呗」。
+
+   ⚠ 历史错误（写在最显眼处，别再退回）：
+      v0：整站粉红 + CSS 画的粉色圆脸 —— 望文生义，不像水豚、不是一对。
+      v1：手绘棕色水墨水豚 —— 读了百科「浅棕色皮毛」就照着画，
+          但真实 IP 是**明亮橙黄的 3D 毛绒形象**。
+      v2（现在）：**直接用真实 IP 素材**。素材由 tools/build_assets.py 从
+          公开表情包图集切格、去水印、压缩而来，见 app/static/img/lumei/。
+          手绘 SVG 只保留在 favicon / 顶栏 logo 这种 16~26px 的极小尺寸。
+
+   可插拔：这一层是品牌皮。删掉本文件 + index.html 里的一个 <link>，
+           站点即刻回到中性外观，业务样式一行不动。
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   0. 全局：噜妹主题下把圆角整体调大、阴影调软
+   —— 圆角是「松弛感」在几何上的直接表达，不是随便调的
+   -------------------------------------------------------------------------- */
+html[data-theme="lumei"],
+html[data-theme="lumei-night"]{
+  --r-xs:8px; --r-s:13px; --r-m:20px; --r-l:26px; --r-xl:34px;
+}
+
+/* 主按钮：噜噜橙 + 轻微「纸凸起」感（不是糖霜光泽 —— 那是甜品的语言） */
+html[data-theme="lumei"] .btn.primary,
+html[data-theme="lumei-night"] .btn.primary{
+  background-image:linear-gradient(150deg,var(--a-2),var(--a-1));
+  box-shadow:0 2px 0 color-mix(in srgb,var(--a-1) 30%,transparent),
+             0 8px 22px color-mix(in srgb,var(--a-1) 26%,transparent);
+}
+html[data-theme="lumei"] .btn.primary:active,
+html[data-theme="lumei-night"] .btn.primary:active{
+  transform:translateY(2px);
+  box-shadow:0 1px 0 color-mix(in srgb,var(--a-1) 30%,transparent);
+}
+
+/* 顶栏品牌标记：暖白底 + 水豚剪影。
+   理由：字和吉祥物是两套视觉语言，放一起会打架；
+         而且深色渐变底会吃掉剪影的细节。让水豚自己当主角更干净。 */
+html[data-theme="lumei"] .brand .mark,
+html[data-theme="lumei-night"] .brand .mark{
+  border-radius:34%;
+  background:var(--s-card);
+  border:1px solid var(--s-line);
+  box-shadow:var(--sh-s);
+  animation:lu-breathe 4s ease-in-out infinite;
+}
+@keyframes lu-breathe{
+  0%,100%{transform:scale(1)}
+  50%{transform:scale(1.05)}
+}
+
+/* ==========================================================================
+   1. 水豚吉祥物（真实 IP 素材）
+   --------------------------------------------------------------------------
+   两张图并排，就是「一对」。关键在**让它们像活着但不吵**：
+
+   动效纪律（写死在这里，别在别处另加）：
+     - 只用「呼吸式上下浮动」：4.5s 周期、5px 幅度
+     - 两只**错开半周期** —— 同相位会像被同一根线牵着的木偶
+     - 禁止弹跳 / 旋转 / 快速抖动 —— 那与「放松」的内核相反
+   ========================================================================== */
+.lu-duo{
+  display:flex;align-items:flex-end;justify-content:center;
+  gap:clamp(6px,1.6vw,14px);margin:6px 0 16px;
+}
+/* 一对：两张图用**同样的取景框**（同宽高、同圆角、同阴影），
+   只靠"更近的间距"表达它们是一对。
+   间距不能大 —— 太大就变成"两个独立装饰"，而不是"一对"。 */
+.lu-capy{
+  display:block;
+  width:clamp(108px,25vw,162px);height:auto;   /* 16:10 横幅素材 */
+  border-radius:var(--r-l);
+  /* 素材自带场景。用一层柔和的内描边 + 暖调外阴影让它"贴"在纸上，
+     而不是像一张游离的方图 */
+  box-shadow:var(--sh-m),
+             inset 0 0 0 1px color-mix(in srgb,var(--s-line) 70%,transparent);
+  animation:lu-float 4.5s ease-in-out infinite;
+  will-change:transform;
+}
+/* 噜妹错开半个周期（同相位会像被同一根线牵着的木偶） */
+.lu-capy.is-lumei{animation-delay:-2.25s}
+
+@keyframes lu-float{
+  0%,100%{transform:translateY(0) rotate(0deg)}
+  50%{transform:translateY(-5px) rotate(-.4deg)}
+}
+/* 两张图轻微对倾 —— 「靠在一起」的姿势，比并排直立更像一对 */
+.lu-duo .lu-capy:first-child{transform-origin:bottom right}
+.lu-duo .lu-capy.is-lumei{transform-origin:bottom left}
+
+/* 对话气泡：噜噜的口头禅「没事就是呗」
+   ⚠ 不要做成「淡入淡出」—— 截图和首屏常抓在隐藏相位，看起来像坏了。
+      改成默认常显、只在动画里轻微上浮。 */
+.lu-say{
+  font-size:13px;font-weight:600;color:var(--t-2);
+  background:var(--s-card);
+  border:1px solid var(--s-line);
+  padding:5px 13px;border-radius:var(--r-full);
+  box-shadow:var(--sh-s);
+  align-self:center;margin-left:2px;
+  white-space:nowrap;
+  animation:lu-say-bob 4.5s ease-in-out infinite;
+}
+/* 气泡左上角的小尖角，指向噜噜 */
+.lu-say::before{
+  content:"";position:absolute;
+}
+@keyframes lu-say-bob{
+  0%,100%{transform:translateY(0)}
+  50%{transform:translateY(-3px)}
+}
+
+/* 非噜妹主题下，隐藏整个吉祥物（让品牌层彻底可摘） */
+html:not([data-theme="lumei"]):not([data-theme="lumei-night"]) .lu-duo{display:none}
+
+/* ==========================================================================
+   2. 空状态 / 加载 / 错误的插图
+   --------------------------------------------------------------------------
+   用真实素材，不用 emoji：
+   · emoji 跨平台渲染不一致，且和「设计过」的界面气质不符
+   · 这些场景图本身很治愈 —— 空书架用「睡得正香」，找不到书用「翻书懵了」
+
+   ⚠ 素材一共 11 组，但**光有素材不等于适配** ——
+      必须真的挂到对应状态上才算数。用在哪些状态见 §2.1。
+   ========================================================================== */
+.empty-art{
+  display:block;
+  width:min(240px,58vw);height:auto;
+  margin:0 auto 6px;
+  border-radius:var(--r-l);
+  box-shadow:var(--sh-s);
+  filter:saturate(1.02);
+}
+html:not([data-theme="lumei"]):not([data-theme="lumei-night"]) .empty-art{
+  /* 别的主题下不做品牌露出，但图还得在 —— 降饱和当普通插画 */
+  filter:saturate(.35) opacity(.75);
+}
+
+/* 老的空状态 emoji（.empty .e）：噜妹主题下让它消失，其它主题保留 */
+html[data-theme="lumei"] .empty .e,
+html[data-theme="lumei-night"] .empty .e{display:none}
+
+/* ==========================================================================
+   2.1 状态插画的**通用**容器（不只在噜妹主题下有效）
+   --------------------------------------------------------------------------
+   这些状态在别的主题下也要好看，所以容器是通用的，
+   只是"用什么图"由 JS 决定（噜妹主题给水豚，别的主题给中性插画）。
+
+   三个尺寸档位，各自对应一种"这一屏有多少耐心"：
+     art-s  卡片内嵌 / 抽屉内   —— 用户正在等一个具体动作
+     art-m  整块区域为空        —— 用户还在浏览
+     art-l  整页无法继续        —— 用户需要重新决策
+   ========================================================================== */
+.st-art{display:block;margin:0 auto;height:auto;border-radius:var(--r-l);box-shadow:var(--sh-s)}
+.st-art.s{width:min(132px,34vw)}
+.st-art.m{width:min(196px,48vw)}
+.st-art.l{width:min(252px,62vw)}
+html:not([data-theme="lumei"]):not([data-theme="lumei-night"]) .st-art{
+  filter:saturate(.3) opacity(.7);
+}
+
+/* ---- 加载态：一只在翻书的噜噜 + 三个呼吸点 ---- */
+.st-busy{
+  display:flex;flex-direction:column;align-items:center;gap:14px;
+  padding:30px 20px;text-align:center;
+}
+.st-busy .st-art{animation:st-busy-float 4.2s ease-in-out infinite}
+@keyframes st-busy-float{
+  0%,100%{transform:translateY(0)}
+  50%{transform:translateY(-6px)}
+}
+.st-busy .st-line{font-size:13px;color:var(--t-2);font-weight:600}
+.st-busy .st-sub{font-size:12px;color:var(--t-3);margin-top:-8px;max-width:300px;line-height:1.7}
+
+/* ---- 错误态：懵掉的噜噜 + 一句人话的安慰 ---- */
+.st-fail{
+  display:flex;flex-direction:column;align-items:center;gap:12px;
+  padding:32px 20px;text-align:center;
+}
+.st-fail .st-line{font-size:14.5px;font-weight:750;color:var(--t-1)}
+.st-fail .st-sub{font-size:13px;color:var(--t-2);line-height:1.75;max-width:400px}
+/* 「懵」是定格表情，不要浮动 —— 浮动会让它显得"没事"，
+   而这一屏要传达的是"出了点问题"。动效与语义必须一致。 */
+.st-fail .st-art{transform:rotate(-1.2deg)}
+
+/* ---- 抽屉里的迷你加载：不占满宽，克制 ---- */
+.st-busy.compact{padding:20px 16px;gap:11px}
+.st-busy.compact .st-art{width:min(104px,26vw)}
+.st-busy.compact .st-line{font-size:12.5px}
+
+/* ==========================================================================
+   3. 偶发的氛围元素：极少、极慢地飘过一片叶子 / 一颗橘子
+   —— 上一版是满屏飘「噜」字，廉价且无意义，已废弃。
+   ========================================================================== */
+.lu-pets{position:fixed;inset:0;z-index:1;pointer-events:none;overflow:hidden}
+html:not([data-theme="lumei"]):not([data-theme="lumei-night"]) .lu-pets{display:none}
+
+.lu-pet{
+  position:absolute;bottom:-40px;left:var(--x);
+  width:16px;height:16px;opacity:0;
+  /* 45s 一个 —— 「慢」本身就是设计目标，不要调快 */
+  animation:lu-drift 46s linear infinite;
+  animation-delay:var(--d);
+}
+.lu-pet.is-leaf::before{
+  content:"";position:absolute;inset:0;
+  background:#9dbfa4;border-radius:0 100% 0 100%;
+  transform:rotate(-18deg);
+}
+.lu-pet.is-orange::before{
+  content:"";position:absolute;inset:0;border-radius:50%;
+  background:#f0c46a;box-shadow:inset -3px -3px 0 rgba(0,0,0,.06);
+}
+@keyframes lu-drift{
+  0%{opacity:0;transform:translateY(0) translateX(0) rotate(0deg)}
+  8%{opacity:.5}
+  85%{opacity:.5}
+  100%{opacity:0;transform:translateY(-100vh) translateX(4vw) rotate(180deg)}
+}
+
+/* --------------------------------------------------------------------------
+   4. 榜单前三名的小标记：暖橘圆点
+   -------------------------------------------------------------------------- */
+.rk-no{position:relative}
+html[data-theme="lumei"] .rk-no.m1::after,
+html[data-theme="lumei-night"] .rk-no.m1::after{
+  content:"";position:absolute;top:-3px;right:-5px;
+  width:7px;height:7px;border-radius:50%;
+  background:#f0c46a;
+}
+
+/* ==========================================================================
+   5. 阅读页的噜妹语言
+   --------------------------------------------------------------------------
+   阅读页是**最重要的页面**（用户 90% 的时间在这里），绝不能"丢主题"。
+   但也不能喧宾夺主 —— 看书时最该消失的就是 UI。
+   所以这里的做法是"克制的呼应"：
+     · 页眉左侧一个极小的水豚标记（不占地方、不抢注意力）
+     · 高亮色走噜噜橙
+     · 章节标题下的一条暖色细线，像书页的页眉装饰线
+   ========================================================================== */
+.rd-capy-mark{
+  display:inline-block;vertical-align:-3px;
+  width:20px;height:20px;border-radius:50%;
+  flex:0 0 auto;
+  background:var(--rd-hl);
+  -webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Cellipse cx='10' cy='12' rx='4.4' ry='4.4'/%3E%3Cellipse cx='30' cy='12' rx='4.4' ry='4.4'/%3E%3Ccircle cx='20' cy='9' r='5'/%3E%3Cellipse cx='20' cy='24' rx='15' ry='14'/%3E%3C/svg%3E") center/contain no-repeat;
+          mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Cellipse cx='10' cy='12' rx='4.4' ry='4.4'/%3E%3Cellipse cx='30' cy='12' rx='4.4' ry='4.4'/%3E%3Ccircle cx='20' cy='9' r='5'/%3E%3Cellipse cx='20' cy='24' rx='15' ry='14'/%3E%3C/svg%3E") center/contain no-repeat;
+  opacity:.62;
+  margin-right:6px;
+}
+/* 只在噜妹阅读配色下出现 —— 别的配色是"干净的书"，不该有品牌标记 */
+html:not([data-theme="lumei"]):not([data-theme="lumei-night"]) .rd-capy-mark{display:none}
+
+/* 噜妹阅读配色下，正文标题的装饰线换成暖色 */
+#reader[data-rd-theme="lumei"] .rd-article h2{
+  border-bottom-color:color-mix(in srgb,var(--rd-hl) 34%,transparent);
+  border-bottom-width:2px;
+}
+
+/* 收尾标记：读完一章时，正文末尾出现一对靠在一起的水豚。
+   --------------------------------------------------------------------------
+   为什么放在**章末**而不是章首：
+     章首是用户刚翻开、正要开始读的地方，任何装饰都在抢注意力；
+     章末是"读完了"的时刻 —— 这时给一个陪伴感的画面，才对得上情境。
+     而且章末天然在屏幕外，不看到底不出现，等于零打扰。
+
+   ⚠ 做成 CSS 背景而不是 <img>：
+      它要跟着 --rd-* 变量在五套阅读配色下都成立，
+      而且必须**不影响分页计算**（paginate 量的是段落位置，
+      任何会占高度的元素插进去都会把页码算错）。背景不占位，最安全。 */
+#reader[data-rd-theme="lumei"] .rd-article::after,
+#reader[data-rd-theme="lumei"] .rd-page .pg-body::after{
+  content:"";display:block;
+  width:min(168px,42%);height:88px;
+  margin:44px auto 0;
+  background:url("/static/img/lumei/read_pair@480.webp") center/contain no-repeat;
+  opacity:.5;
+  filter:saturate(.92);
+  /* 极慢的浮动 —— 与首页吉祥物同一条动效纪律（呼吸式，禁止弹跳） */
+  animation:lu-float 5.2s ease-in-out infinite;
+}
+/* 深色阅读配色下要压暗一点，否则暖色图在深底上会"跳出来" */
+#reader[data-rd-theme="lumei"].rd-dark .rd-article::after{opacity:.34}
+
+/* 阅读设置里「配色」色卡的预览小图 —— 用 read_eat，语义是"边吃边看" */
+.rd-thermos .th-card[data-th="lumei"]{position:relative}
+.rd-thermos .th-card[data-th="lumei"]::after{
+  content:"";position:absolute;right:3px;bottom:3px;
+  width:22px;height:22px;border-radius:50%;
+  background:url("/static/img/lumei/read_eat@240.webp") center/cover no-repeat;
+  border:1.5px solid var(--rd-line);
+  opacity:.9;
+}
+
+/* 移动端：章末装饰缩小，别占掉半屏 */
+@media (max-width:640px){
+  #reader[data-rd-theme="lumei"] .rd-article::after,
+  #reader[data-rd-theme="lumei"] .rd-page .pg-body::after{
+    width:min(120px,44%);height:63px;margin-top:32px;
+  }
+}
+
+/* ==========================================================================
+   6. 全站适配补全（v3）
+   --------------------------------------------------------------------------
+   用户的原话：「主题不能只做主页，到处都要适配，不能丢页面」。
+   §2 / §5 只覆盖了空状态和阅读页 —— **书架卡片、来源抽屉、任务卡、
+   弹窗、文件行**这些"天天在用的页面"以前几乎没主题痕迹。
+
+   共性规律：**这些都不是"主角"，不该抢戏**。所以统一手法是
+   「一处暖色 + 一处圆角呼应」，不做大图、不做动效 ——
+   品牌感来自"到处都是同一个色温"，而不是"到处贴一张水豚"。
+   ========================================================================== */
+
+/* ---- 6.1 书架卡片：让"在读的那本"有归属感 ---- */
+/* ⚠ 进度条**不用**在这里改色：`.bar > i` 已经在 app.css:220 用了
+   `linear-gradient(var(--a-1),var(--a-2))`，而噜妹主题的 --a-* 就是橙 ——
+   自动就对了。下面那条曾经写过一遍，是重复且**碰不到行内 style**的死规则，已删。
+   书架第二根"缓存进度"条是行内 `background:var(--ok)`（绿色，语义色：绿=已缓存好），
+   别再染成橙色。 */
+/* 书封（.cover 是 CSS 渐变画的）**已经**有一道冷白高光（app.css:295 的 ::after）。
+   ⚠ 别再写一条 ::after 覆盖它 —— 会重复且互相打架。
+   只把已有的那道高光调暖：噜妹主题下"光"应该是暖的。 */
+html[data-theme="lumei"] .shelf .cover::after,
+html[data-theme="lumei-night"] .shelf .cover::after{
+  background:linear-gradient(105deg,rgba(255,236,206,.30),transparent 44%);
+}
+/* 「继续阅读」按钮——用户在书架里最常点的那个，给它最实的橙色 */
+html[data-theme="lumei"] .shelf .acts .btn.primary,
+html[data-theme="lumei-night"] .shelf .acts .btn.primary{
+  box-shadow:0 2px 0 color-mix(in srgb,var(--a-1) 30%,transparent),
+             0 8px 20px color-mix(in srgb,var(--a-1) 24%,transparent);
+}
+/* 卡片本身：hover 时描边泛起一丝暖 —— 让"手指停在哪张上"更好认 */
+html[data-theme="lumei"] .shelf:hover,
+html[data-theme="lumei-night"] .shelf:hover{
+  border-color:color-mix(in srgb,var(--a-1) 30%,var(--s-line-2));
+}
+/* 书名前的装饰点：给"正在读"的那本一个小标记（reading 由 JS 判断） */
+html[data-theme="lumei"] .shelf h4,
+html[data-theme="lumei-night"] .shelf h4{position:relative}
+
+/* ---- 6.2 文件行：格式图标（SVG，吃 currentColor） ---- */
+/* 以前这里是 emoji 📄📖🌐 —— 跨平台渲染不一致，且彩色 emoji 会和
+   整站暖调"打架"。换成单色 SVG 后：
+     · 颜色由主题决定（下面每格式一个色，走 --a-* / --ok / --info）
+     · 形状一眼分辨格式（纸 / 书 / 地球），是功能性表达不是装饰
+   非噜妹主题下没这层着色，图标自动退化成 currentColor（跟着文字走）。 */
+.file .ic svg{display:block}
+html[data-theme="lumei"] .file .ic[data-ext="txt"],
+html[data-theme="lumei-night"] .file .ic[data-ext="txt"]{color:var(--t-2)}
+html[data-theme="lumei"] .file .ic[data-ext="epub"],
+html[data-theme="lumei-night"] .file .ic[data-ext="epub"]{color:var(--a-1)}
+html[data-theme="lumei"] .file .ic[data-ext="html"],
+html[data-theme="lumei-night"] .file .ic[data-ext="html"]{color:var(--info)}
+
+/* ---- 6.3 抽屉 / 弹窗：头部一条暖色细线，是"这是噜妹家的界面"的最小记号 ---- */
+/* 为什么是头部下沿而不是整块染色：抽屉打开时用户是**来办事的**，
+   大色块会拖慢阅读。一条 2px 的线，够认门、不碍事。 */
+html[data-theme="lumei"] .drawer > header,
+html[data-theme="lumei-night"] .drawer > header,
+html[data-theme="lumei"] .mask + .drawer > header,
+html[data-theme="lumei-night"] .mask + .drawer > header{
+  border-bottom-color:color-mix(in srgb,var(--a-1) 30%,var(--s-line-2));
+  border-bottom-width:2px;
+}
+/* 移动端抽屉顶部的小把手（::before）也换成暖色 */
+html[data-theme="lumei"] .drawer::before,
+html[data-theme="lumei-night"] .drawer::before{
+  background:color-mix(in srgb,var(--a-1) 40%,var(--s-line));
+}
+/* 遮罩的模糊底色带一点暖 —— 冷灰盖上去会让整站突然"变凉" */
+html[data-theme="lumei"] .mask,
+html[data-theme="lumei-night"] .mask{
+  background:rgba(28,18,10,.42);
+}
+
+/* ---- 6.4 任务卡（下载 / 缓存进度）：像"噜噜在替你跑腿" ---- */
+html[data-theme="lumei"] .task,
+html[data-theme="lumei-night"] .task{
+  border-left:3px solid color-mix(in srgb,var(--a-1) 42%,transparent);
+}
+/* 进行中的任务左侧那道线轻微呼吸 —— 表示"还在动"，但慢到不烦。
+   ⚠ 只对 .is-running 生效：已完成/失败的任务还在呼吸，会让人以为"还在跑"。
+     （tasks.js 渲染时加了 is-<status> 类） */
+html[data-theme="lumei"] .task.is-running,
+html[data-theme="lumei-night"] .task.is-running{
+  animation:card-in var(--dur-m) var(--ease-out) both,
+            lu-task-hum 3.2s ease-in-out infinite;
+}
+@keyframes lu-task-hum{
+  0%,100%{border-left-color:color-mix(in srgb,var(--a-1) 42%,transparent)}
+  50%{border-left-color:color-mix(in srgb,var(--a-1) 78%,transparent)}
+}
+
+/* ---- 6.5 来源卡（"来源抽屉"里那几个站）：可读的给一点绿、坏的保持中性 ---- */
+/* 只改 hover 的描边色 —— 来源卡的**状态色（ok/warn/bad）不能动**，
+   那是语义色，染成品牌色会让"这个源坏了"读不出来。 */
+html[data-theme="lumei"] .hcard:hover,
+html[data-theme="lumei-night"] .hcard:hover{
+  border-color:color-mix(in srgb,var(--a-1) 34%,var(--s-line));
+}
+
+/* ---- 6.6 榜单标签（.rk-tab.on）：选中态走噜噜橙 ---- */
+/* 默认选中态是黑底白字（app.css:890）—— 功能上没问题，但太"冷"。
+   换成暖色浅底 + 深字：仍是"选中"，但和整站一个色温。 */
+html[data-theme="lumei"] .rk-tab.on,
+html[data-theme="lumei-night"] .rk-tab.on{
+  background:color-mix(in srgb,var(--a-1) 15%,var(--s-card));
+  border-color:color-mix(in srgb,var(--a-1) 46%,transparent);
+  color:var(--t-1);
+}
+
+/* ---- 6.7 确认框：顶部一条暖色细线，和抽屉同一套语言 ---- */
+/* 为什么不做成"圆头圆脑的可爱弹窗"：确认框出现时用户是**在做决定**
+   （尤其危险操作），可爱化会弱化「这事有后果」的信号。
+   一条暖线 + 大圆角就够了 —— 认得出是噜妹家的，但不甜。 */
+html[data-theme="lumei"] .cfm,
+html[data-theme="lumei-night"] .cfm{
+  border-top:2px solid color-mix(in srgb,var(--a-1) 52%,transparent);
+}
+html[data-theme="lumei"] .cfm-a .btn:focus-visible,
+html[data-theme="lumei-night"] .cfm-a .btn:focus-visible{outline-color:var(--a-1)}
+
+/* ---- 6.8 令牌闸门 / 书名确认卡：和确认框同一套语言 ---- */
+/* 闸门是"第一次打开公网地址时看到的第一屏" —— 用户对品牌的第一印象。
+   所以这里**值得**放一张插画（empty_wait：噜噜在等你），不是纯功能性弹窗。 */
+html[data-theme="lumei"] .gate,
+html[data-theme="lumei-night"] .gate{
+  border-top:2px solid color-mix(in srgb,var(--a-1) 52%,transparent);
+}
+html[data-theme="lumei"] .gate-art img,
+html[data-theme="lumei-night"] .gate-art img{
+  box-shadow:var(--sh-s), inset 0 0 0 1px color-mix(in srgb,var(--s-line) 70%,transparent);
+}
+/* 确认卡：左边一条暖色竖线（和任务卡同一族），表示"这是要你拿主意的一件事" */
+html[data-theme="lumei"] .cfs,
+html[data-theme="lumei-night"] .cfs{
+  border-left:3px solid color-mix(in srgb,var(--a-1) 46%,transparent);
+}
+
+/* ==========================================================================
+   7. 移动端：小屏少放动效（电池 + 性能）
+   ========================================================================== */
+@media (max-width:640px){
+  .lu-pet{display:none}
+  .lu-capy{width:min(38vw,132px);border-radius:var(--r-m)}
+  .lu-say{font-size:11.5px;padding:3px 9px}
+  .empty-art{width:min(200px,62vw)}
+  html[data-theme="lumei"] .brand .mark,
+  html[data-theme="lumei-night"] .brand .mark{animation:none}
+  /* 任务呼吸动效在小屏关掉（后台多任务时省电优先） */
+  html[data-theme="lumei"] .task,
+  html[data-theme="lumei-night"] .task{animation:card-in var(--dur-m) var(--ease-out) both}
+}
+
+/* 尊重系统的「减少动效」偏好 —— 这是可访问性要求，不是可选项 */
+@media (prefers-reduced-motion:reduce){
+  .lu-capy,.lu-say,
+  html[data-theme="lumei"] .brand .mark,
+  html[data-theme="lumei-night"] .brand .mark{animation:none!important}
+  html[data-theme="lumei"] .task,
+  html[data-theme="lumei-night"] .task{animation:none!important;border-left-color:color-mix(in srgb,var(--a-1) 60%,transparent)}
+  .lu-pets{display:none}
+}

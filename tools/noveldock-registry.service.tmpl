@@ -1,0 +1,22 @@
+[Unit]
+Description=NovelDock 来源库深夜体检（由 noveldock-registry.timer 触发）
+Documentation=file://__ROOT__/README.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=__ROOT__
+
+# 走接口，不自己 import —— 理由同 noveldock-ranks.service：
+# 服务本体才有来源库的内存缓存，另起进程体检写的是同一个
+# cache/registry.json，但跑着的服务看不到，用户界面上没变化。
+ExecStart=__PY__ __ROOT__/tools/registry_nightly.py
+
+# 体检要重开几十本书的目录页，给足时间；卡到 10 分钟说明网络出了大问题。
+TimeoutStartSec=600
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=noveldock-registry
+
+NoNewPrivileges=true
+PrivateTmp=true

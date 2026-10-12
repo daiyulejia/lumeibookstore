@@ -1,0 +1,23 @@
+[Unit]
+Description=NovelDock 热榜定时刷新（兜底层）
+Documentation=file://__ROOT__/README.md
+# 服务没起来的时候刷新也没意义（没人能访问），所以等它。
+# Wants 而不是 Requires：服务真起不来，这一轮跳过就是了，别互相拖死。
+After=noveldock.service
+Wants=noveldock.service
+
+[Timer]
+# 每 30 分钟一次，和进程内调度器、缓存 TTL 三者对齐。
+# 为什么要有这一层：进程内线程跟着 uvicorn 走，万一服务被停掉/崩了没拉起来，
+# 进程内那个定时就一起没了。系统层再兜一次，等于"两把锁"。
+OnCalendar=*-*-* *:00/30:00
+# 开机/登录后 3 分钟补跑一次 —— 机器重启后缓存可能已经过期了。
+OnBootSec=3min
+# 持久化：错过的时间点（比如机器关机）开机后补跑一次。
+# 不加这个的话，恰好关机跨越刷新点就会一整天没刷。
+Persistent=true
+# 每次实际执行之间至少隔 5 分钟，防抖。
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
