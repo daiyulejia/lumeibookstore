@@ -74,6 +74,14 @@ STATIC_SUITES = [
     # 退化的表现是「章节被当成一本书收进结果，点进去只有一章」——
     # 也不报错，只是结果脏。见 tools/test_bookurl.py 的注释。
     ("test_bookurl.py", "书页 URL"),
+    # 脏数据拦截：话题标签符污染书名、影视站被当成小说站。
+    # 后者尤其隐蔽 —— 苹果 CMS 的「第01集…」列表和章节目录长得一样。
+    # 见 tools/test_junk.py 的注释。
+    ("test_junk.py", "脏数据拦截"),
+    # 文件名清洗：Windows 保留设备名（裸 CON/NUL/AUX/COM1..9/LPT1..9 建不了文件）、
+    # 结尾点空格、空名。这些在 Linux 上**全都不存在**，所以本地/线上都测不出，
+    # 只有真的在 Windows 上跑才暴露。见 tools/test_filename.py 的注释。
+    ("test_filename.py", "文件名安全"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）
@@ -85,6 +93,9 @@ LIVE_SUITES = [
     #   补进来之后 ship 才配叫"一条命令上线"。
     ("test_ranks_ui.py", "榜单界面"),
     ("test_reader_ui.py", "阅读器交互"),
+    # 前端注入：payload 当搜索词打进去，断言没有真的元素生成、没有代码执行。
+    # grep innerHTML 判断不了"那个变量到底过没过 esc()"，只有真浏览器说了算。
+    ("test_xss.py", "前端注入"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -97,6 +108,7 @@ LIVE_ARGS = {
     "test_buttons.py": "--base",
     "test_ranks_ui.py": "--base",
     "test_reader_ui.py": "--url",   # 这个老脚本用的还是 --url
+    "test_xss.py": "--url",
 }
 
 

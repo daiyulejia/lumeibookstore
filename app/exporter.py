@@ -26,9 +26,77 @@ from .models import Book, Chapter
 DOWNLOAD_DIR = Path(__file__).resolve().parent.parent / "downloads"
 
 
+# ---------------------------------------------------------------------------
+# Windows 保留设备名
+# ---------------------------------------------------------------------------
+# Windows 上 `CON` `NUL` `AUX` `COM1` `LPT1` `PRN` 是**设备**，不是文件。
+# 拿裸名当文件名会直接失败（实测：PermissionError [WinError 5]，`NUL` 更狠
+# —— 写进去的数据直接进黑洞，删除报 `TargetedRoot`）。
+# 而一本书叫《CON》《NUL》并非天方夜谭，英文书更多。
+# **在 Linux 上一切正常**，所以这类 bug 只会在 Windows 用户机器上炸。
+#
+# ⚠ **只拦裸名，不拦带扩展名的**。这条是实测出来的，不是想当然：
+#     裸 `CON`   → PermissionError ✓ 要拦
+#     `CON.txt`  → **创建成功**（现代 Windows 10/11 已放宽）
+#   早期版本把 `CON.txt` 也改写成 `CON.txt_book`，属于过度处理 ——
+#   白白把用户能用的名字改丑。判据收窄到「整串（不含点）就是保留名」。
+_WIN_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _is_win_reserved(name: str) -> bool:
+    """整个名字（不含点）是不是 Windows 保留设备名。
+
+    只判「没有扩展名的裸名」—— 见上面 _WIN_RESERVED 的实测说明。
+    """
+    s = (name or "").strip()
+    return "." not in s and s.upper() in _WIN_RESERVED
+
+
 def safe_filename(name: str) -> str:
-    name = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", name).strip()
-    return name[:80] or "untitled"
+    """把书名洗成能安全落盘的文件名（**跨平台**）。
+
+    除了常规的非法字符，还必须处理三类 Windows 特有的坑：
+      ① 保留设备名 CON/PRN/AUX/NUL/COM1-9/LPT1-9（**仅裸名**，见上）
+      ② 结尾的点和空格 —— Windows 会**静默**去掉，导致"写进去的名字"
+         和"文件名"不一致，后续按原名找文件就找不到
+      ③ 空名 / 纯点名（`.` `..`）
+
+    在 Linux 上这些问题都不存在，所以**必须由代码兜住**，
+    不能靠"测试环境跑得通"来放心。
+    """
+    name = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", name or "").strip()
+    # ② 结尾的点/空格（Windows 静默截断）
+    name = name.rstrip(". ")
+    if not name:
+        return "untitled"
+    # ① 保留设备名：加个后缀让它变成普通文件名
+    if _is_win_reserved(name):
+        name = f"{name}_book"
+    # ③ 剪到 80 字（保留足够可读性，又远离各文件系统的 255 字节上限）
+    name = name[:80].rstrip(". ")
+    return name or "untitled"
+
+
+def safe_dirname(name: str) -> str:
+    """目录名清洗（**目录没有扩展名语义**，所以判据比 safe_filename 更宽）。
+
+    目录名里出现的点就是名字的一部分（`三国演义.卷一`），不是扩展名分隔符，
+    所以只要**整串**（含点）落在保留名单里才算非法 —— 而保留名单里没有
+    带点的词，于是这个函数实际上只防「裸名恰好是 CON/AUX/...」这一种情况。
+    """
+    name = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", name or "").strip()
+    name = name.rstrip(". ")          # 目录同样不能以点/空格结尾
+    if not name:
+        return "untitled"
+    if (name or "").strip().upper() in _WIN_RESERVED:
+        name = f"{name}_book"
+    name = name[:80].rstrip(". ")
+    return name or "untitled"
+
 
 
 def _unique(path: Path) -> Path:
