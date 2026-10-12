@@ -90,17 +90,26 @@ async function handle(r) {
 }
 
 export const api = {
-  async get(u) { return handle(await fetch(withToken(u))); },
-  async post(u, body) {
+  async get(u, opts) { return handle(await fetch(withToken(u), opts)); },
+  async post(u, body, opts) {
     return handle(await fetch(withToken(u), {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      ...(opts || {}),
+      // headers 放最后单独合并：调用方给的 signal 等字段不该把 Content-Type 挤掉
+      headers: { "Content-Type": "application/json", ...((opts && opts.headers) || {}) },
       body: JSON.stringify(body || {}),
     }));
   },
-  async del(u) { return handle(await fetch(withToken(u), { method: "DELETE" })); },
+  async del(u, opts) { return handle(await fetch(withToken(u), { method: "DELETE", ...(opts || {}) })); },
   /** 原始 URL（用于 <a download> / 流式接口），带令牌。 */
   url(u) { return withToken(u); },
-  async stream(u) { return fetch(withToken(u)); },
+  /**
+   * 流式接口（NDJSON）。
+   * ⚠ opts 必须能带 `signal` —— 否则调用方的 `AbortController.abort()` 是空操作，
+   * 被顶掉的旧请求永远不会停，两个流会同时往同一个容器里写、互相覆盖。
+   * （实测踩过：discover.js 里 abort 了但 fetch 根本没收 signal。）
+   */
+  async stream(u, opts) { return fetch(withToken(u), opts); },
 };
 
 /* ---------- Toast ---------- */

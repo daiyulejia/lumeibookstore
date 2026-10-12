@@ -228,6 +228,11 @@ THEME_COVERAGE = [
     ("底部标签栏 · 暖色顶线", 'html[data-theme="lumei"] .tabbar'),
     ("底部标签栏 · 选中暖点", 'html[data-theme="lumei"] .tabbar button.on::after'),
     ("筛选条 · 胶囊 hover 暖边", 'html[data-theme="lumei"] .filters .chip:hover'),
+    # 联网发现面板（.netlive）：「本地全灭 → 联网兜底」时才出现。
+    # 用户此刻已经等了几秒、最容易犯嘀咕，而这就是他**全程盯着看**的那块。
+    ("联网发现 · 暖色顶边", 'html[data-theme="lumei"] .netlive'),
+    ("联网发现 · 命中站点柔光", 'html[data-theme="lumei"] .nl-steps li.hit .d'),
+    ("联网发现 · 进行中那步脉动", 'html[data-theme="lumei"] .nl-steps li:last-child .t'),
 ]
 
 

@@ -17,6 +17,22 @@ export const M = {
   steps: [],            // 「联网发现」的实时步骤
 };
 
+/* 只读排障探针：线上出问题时在 Console 敲 `__ndState()` 就能看到搜索状态机。
+   刻意**只读**（返回快照，不暴露 M 本体），避免误改。
+   回归测试 tools/test_concurrency.py 也靠它断言「连点两次搜索」后的状态。 */
+try {
+  Object.defineProperty(window, "__ndState", {
+    value: () => ({
+      searching: !!M.searching,
+      hasCtrl: !!M.ctrl,
+      confirmed: M.confirmed,
+      books: M.flat.length,
+      steps: M.steps.length,
+    }),
+    writable: false, configurable: true,
+  });
+} catch { /* 非浏览器环境（单测）忽略 */ }
+
 /* ---------- 来源 ---------- */
 export async function loadSources() {
   try {
@@ -104,7 +120,7 @@ export async function runSearch(kw, toastIt) {
   try {
     const url = "/api/search?kw=" + encodeURIComponent(kw)
       + (M.srcFilter.size ? "&sources=" + encodeURIComponent([...M.srcFilter].join(",")) : "");
-    const resp = await api.stream(url);
+    const resp = await api.stream(url, { signal: ctrl.signal });
     if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
     const reader = resp.body.getReader(), dec = new TextDecoder();
     let buf = "";
@@ -124,6 +140,15 @@ export async function runSearch(kw, toastIt) {
   } catch (e) {
     if (e.name !== "AbortError") toast("搜索出错：" + e.message, "err");
   } finally {
+    // ⚠ 这里必须确认「我还是当前那一次搜索」才能收尾。
+    //
+    // 实测踩到的竞态：用户连点两次搜索（A → B）。
+    //   · B 进来时 abort 掉 A 的 fetch，A 的 reader.read() 抛 AbortError；
+    //   · A 的 finally **无条件**把 M.searching 置 false —— 可 B 还在跑。
+    //   · 于是 M.searching=false，下一次点击不再 abort，两个流同时往 #results 写，
+    //     互相覆盖；A 的空 renderResults() 还会把 B 已经流式渲染出的结果擦掉。
+    // 只在「M.ctrl 还是我自己」时收尾，被顶掉的旧请求直接静默退出。
+    if (M.ctrl !== ctrl) return;
     M.searching = false;
     finishNetLive();
     renderResults();
@@ -512,6 +537,10 @@ async function runFetchUrl(url) {
   // 正在搜的话先掐掉 —— 两个流程同时往 #results 里写会互相覆盖
   if (M.searching) { try { M.ctrl.abort(); } catch { /* 没在跑就算了 */ } }
   M.searching = true;
+  // 真的 AbortController（不是占位对象）—— 这样上层 runSearch 顶掉它时是
+  // 真取消，而不是抛 "M.ctrl.abort is not a function" 被 catch 静默吞掉。
+  const ctrl = new AbortController();
+  M.ctrl = ctrl;
   M.confirmed = "";
   $("#confirmBox").innerHTML = "";
   resetNetLive();
@@ -522,14 +551,17 @@ async function runFetchUrl(url) {
 
   let d;
   try {
-    d = await api.post("/api/fetch-url", { url });
+    d = await api.post("/api/fetch-url", { url }, { signal: ctrl.signal });
   } catch (e) {
+    if (M.ctrl !== ctrl) return;          // 已被新流程顶掉，别动界面
     M.searching = false;
+    if (e.name === "AbortError") return;  // 自己放弃的，不算错误
     $("#results").innerHTML = "";
     toast("打不开这个地址：" + e.message, "err");
     $("#statbar").innerHTML = `<span style="color:var(--err)">${esc(e.message)}</span>`;
     return;
   }
+  if (M.ctrl !== ctrl) return;            // 同上：慢请求回来时已经换人了
   M.searching = false;
 
   if (!d || !d.ok) {

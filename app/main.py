@@ -46,6 +46,9 @@
   GET    /api/file/{name}         下载文件
   DELETE /api/file/{name}         删除文件
   POST   /api/cache/clear         清进程内缓存
+
+埋点
+  POST   /api/log                 前端错误/慢接口回传（写进 logs/app.log）
 """
 from __future__ import annotations
 
@@ -1612,6 +1615,47 @@ async def clear_cache():
     left = cooldowns()
     cooldown_clear()
     return {"cleared": n, "cooldowns_cleared": len(left)}
+
+
+# ---------------------------------------------------------------------------
+# 前端埋点回传
+# ---------------------------------------------------------------------------
+class UiLogReq(BaseModel):
+    """浏览器里发生的事，回传到服务端日志 —— 让「用户报的 bug」能对着日志查。"""
+    event: str = ""
+    message: str = ""
+    stack: str = ""
+    url: str = ""
+    ua: str = ""
+    extra: str = ""
+
+
+# 为什么需要这个端点：
+#   后端日志再全，也照不到「点了没反应」「页面白屏」「按钮卡死」这类
+#   **只发生在用户浏览器里**的问题 —— 而那恰恰是用户最容易来报的 bug。
+#   原来前端一个错误都不上报，线上出问题只能靠猜。现在 JS 报错、
+#   Promise 拒绝、接口失败都会带着路径和堆栈落进 logs/app.log，
+#   `grep 'ui.error' logs/app.log` 就能捞出来。
+#
+# 为什么不用 WARNING 而用 ERROR：这是**真出事了**才上报的（不是常规噪音），
+#   用 ERROR 让它在日志里显眼，也方便按级别筛。
+@app.post("/api/log")
+async def ui_log(req: UiLogReq):
+    ev = (req.event or "ui.error").strip()
+    # 白名单：只接受登记过的 ui.* 事件，避免被外部刷出乱七八糟的"事件名"污染日志
+    if ev not in ("ui.error", "ui.reject", "ui.api.fail", "ui.slow"):
+        ev = "ui.error"
+
+    lv = logging.WARNING if ev == "ui.slow" else logging.ERROR
+    log_event(
+        logger, ev, lv,
+        消息=(req.message or "")[:300],
+        页面=(req.url or "")[:200],
+        堆栈=(req.stack or "")[:600],
+        客户端=(req.ua or "")[:160],
+        附加=(req.extra or "")[:160],
+    )
+    return {"ok": True}
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

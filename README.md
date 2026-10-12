@@ -157,3 +157,31 @@ python run.py
 ```
 
 `tools/ship.py` 会一次跑完全部套件再上线。
+
+---
+
+## 排障：日志在哪、怎么查
+
+服务端日志在 `logs/app.log`（按天切分），每行是一个 `模块.动作` 事件 + `k=v` 字段，
+所以直接 grep 得动：
+
+```bash
+grep 'search.start'  logs/app.log      # 谁在什么时候搜了什么
+grep 'search.done'   logs/app.log      # 耗时、候选数
+grep 'search.fail'   logs/app.log      # 失败在哪个阶段、什么原因
+grep 'ui.error'      logs/app.log      # 浏览器里的 JS 报错（带堆栈）
+grep 'ui.reject'     logs/app.log      # 未处理的 Promise 拒绝
+grep 'ui.api.fail'   logs/app.log      # 接口失败（用户说"搜不出来"先查这条）
+```
+
+事件名登记在 `app/logging_setup.py` 的 `EVENTS` 里，加埋点时照抄风格，
+不然同一个动作换个名字写，grep 就永远搜不全。
+
+前端错误（JS 异常 / Promise 拒绝 / 接口失败）会自动回传到 `POST /api/log` 落进同一份日志 ——
+**浏览器里发生的问题，服务端日志里也查得到**。线上拉日志：
+
+```bash
+ssh -i ~/.ssh/noveldock_ed25519 ubuntu@106.53.203.108 \
+    'grep -h "ui\.\|search\.fail" ~/noveldock/logs/app.log | tail -50'
+```
+

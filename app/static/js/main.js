@@ -2,6 +2,7 @@
    启动
    ========================================================================== */
 
+import { installTelemetry } from "./telemetry.js";
 import { $, api, toast, bus } from "./util.js";
 import { initTheme } from "./theme.js";
 import { initMotion } from "./motion.js";
@@ -89,6 +90,11 @@ document.addEventListener("keydown", e => {
 
 /* ---------- go ---------- */
 (async function main() {
+  // ⚠ 第一件事：装前端埋点钩子。必须早于任何 fetch / 任何 await ——
+  //   它是**全局**钩子（onerror / unhandledrejection / fetch 包装），
+  //   晚一步装，那之前发生的错误就漏了。
+  installTelemetry();
+
   initTheme();
   initMotion();
   mountShell();

@@ -1,14 +1,18 @@
 ---
 name: ship-lumei
-description: 把噜妹书院（novel-downloader）的本地改动自检并同步到云服务器。当用户说「同步」「上线」「推到云上」「部署一下」「改完了发上去」「sync」「ship」，或者刚做完一轮功能改动需要让线上生效时使用。也会在需要跑全量回归自检（动效 / 素材 / 按钮 / 解析器 / 来源库）时使用。
+description: 把噜妹书院（novel-downloader）的本地改动自检、同步到云服务器、并推送到 GitHub。当用户说「同步」「上线」「推到云上」「部署一下」「改完了发上去」「push」「提交」「sync」「ship」，或者刚做完一轮功能改动需要让线上生效 / 备份到远程仓库时使用。
 ---
 
-# 噜妹书院 · 上线
+# 噜妹书院 · 上线 + 推送
 
-把「改了代码 → 自检 → 同步 → 验收」这条每次都要重复的链固化。**不要手工拼命令**，
-一条命令就够，省下的时间比读这份文档多。
+把「改了代码 → 自检 → 同步云端 → 推 GitHub」这条每次都要重复的链固化。
+**不要手工拼命令**，两条命令就够。
 
-## 一句话入口
+> 用户原话：「每次修改了都要及时推送到云服务器」「每次改完了都记得推送，
+> commit msg 记得写的清楚点，为啥这么做，做了啥，结果啥」。
+> 所以**上线和推送是成对的**，做完一轮改动两件都要做，别只做一半。
+
+## 第一步：自检 + 上线
 
 在项目根目录（`novel-downloader/`）执行：
 
@@ -18,15 +22,41 @@ description: 把噜妹书院（novel-downloader）的本地改动自检并同步
 
 它会依次：
 
-1. **静态自检** —— `test_motion.py`（动效规矩）/ `test_art.py`（素材质量）/
-   `test_parse.py` / `test_ranks.py` / `test_registry.py` / `test_relevance.py` /
-   `test_sitelearn.py` / `test_deobfuscate.py`
-2. **真机自检** —— 自己起一个临时本地服务（跑完自动关），再跑
-   `test_motion_live.py`（CDP 真机）/ `test_buttons.py`（78 项按钮）
+1. **静态自检**（16 套）—— `test_motion.py`（动效 + 主题覆盖 31 项）/ `test_art.py` /
+   `test_parse.py` / `test_ranks.py` / `test_registry.py` / `test_registry_author.py` /
+   `test_relevance.py` / `test_sitelearn.py` / `test_deobfuscate.py` / `test_security.py` /
+   `test_discover_fallback.py` / `test_ranks_stale.py` / `test_bookurl.py` /
+   `test_junk.py`（影视站 + 话题标签符）/ `test_filename.py`（Windows 文件名）
+2. **真机自检**（6 套，自己起临时服务、跑完自动关）—— `test_motion_live.py` /
+   `test_buttons.py`（78 项）/ `test_ranks_ui.py` / `test_reader_ui.py`（30 项）/
+   `test_xss.py`（17 项注入）/ `test_concurrency.py`（11 项并发竞态）/
+   `test_telemetry.py`（8 项前端埋点）
 3. **同步** —— 调 `tools/sync_cloud.py`：打包 → scp → 远端只覆盖代码 → 验证
 
 **任何一项红就停下，绝不往线上推。** 这是这个脚本最重要的性质 ——
 以前是"先同步了再说"，结果线上跑到一半才发现坏了。
+
+## 第二步：推送 GitHub
+
+```bash
+git add -A
+git commit -m "<见下面的规范>"
+git push origin main
+```
+
+- 仓库：`git@github.com:daiyulejia/lumei-bookstore.git`（**私有**）
+- 下载的小说不传（`.gitignore` 已排除 `library/` `downloads/` `cache/` `tmp_assets/`）
+- commit message 写清三件事：**为什么改 / 改了啥 / 结果如何**。
+  例：
+  ```
+  fix(search): 连点搜索会串台 —— abort 从未生效 + finally 无守卫
+
+  为什么：用户连点两次搜索时，两个 NDJSON 流同时往 #results 写、互相覆盖。
+  改了啥：① api.stream/api.post 接 signal（原来 AbortController 是空转）；
+         ② runSearch/runFetchUrl 的收尾加 `M.ctrl !== ctrl` 守卫。
+  结果：新增 test_concurrency.py（11 项）钉住，全套回归绿。
+  ```
+- push 偶尔报 `Connection reset by peer`（网络抖动），重试即可。
 
 ## 开关
 
@@ -58,15 +88,24 @@ description: 把噜妹书院（novel-downloader）的本地改动自检并同步
 ## 出问题时
 
 - **自检红了** → 按输出修，改完重跑。别用 `--skip-test` 绕过 ——
-  那些检查都是抓过真 bug 的（动效层抓到 4 个、素材层抓到 3 处情绪错配）。
+  那些检查都是抓过真 bug 的（动效层抓到 4 个、素材层抓到 3 处情绪错配、
+  `test_concurrency` 抓到 abort 空转、`test_telemetry` 抓到前端零上报）。
 - **静态资源 404** → `sync_cloud.py` 的 4/5 会逐个打首页引用到的静态文件。
   报哪个就查哪个有没有被打进包（`tools/pack.py` 的排除规则）。
 - **同步后页面没变** → 浏览器强刷（Ctrl+Shift+R）。CSS/JS 有缓存。
 - **服务没起来** → 看 `logs/`；远端用
   `systemctl --user status noveldock` 或 `tools/service.py start`。
+- **线上出了问题，要查原因** → 先看日志，别猜：
+  ```bash
+  ssh -i ~/.ssh/noveldock_ed25519 ubuntu@106.53.203.108 \
+      'grep -h "ui\.\|search\.fail" ~/noveldock/logs/app.log | tail -50'
+  ```
+  `ui.error` = 浏览器 JS 报错（带堆栈）、`ui.reject` = Promise 拒绝、
+  `ui.api.fail` = 接口失败。用户说"搜不出来"时**第一件事就是 grep `ui.api.fail`**。
 
 ## 别做的事
 
 - 不要手工 `scp` + `tar` + 挑文件覆盖 —— 那条路走过三次，有一次差点把服务器
   的 `library/` 覆盖掉（读过的进度全没）。`sync_cloud.py` 存在的全部理由就是这个。
-- 不要为了"快一点"跳过自检。自检 85 秒，比修线上问题快得多。
+- 不要为了"快一点"跳过自检。自检几分钟，比修线上问题快得多。
+- 不要只上线不推送 —— 用户明确要求两边同步。

@@ -555,6 +555,41 @@ html[data-theme="lumei-night"] .filters .chip:hover{
   border-color:color-mix(in srgb,var(--a-1) 32%,var(--s-line-2));
 }
 
+/* ---- 6.12 联网发现面板（.netlive）：用户**全程盯着看**的那块 ----
+   它在「本地源全灭 → 联网兜底」时才出现。此刻用户已经等了几秒、
+   心里最容易犯嘀咕（"是不是搜不到？"），所以它不只是个进度条，
+   要让人看出「噜妹正在替我一个个站去找」。
+   做法：给面板一条暖色顶边（像一张正在写的工作便签），
+   并让转圈的 nl-spin 跟上主题色。 */
+html[data-theme="lumei"] .netlive,
+html[data-theme="lumei-night"] .netlive{
+  border-top:2px solid color-mix(in srgb,var(--a-1) 52%,transparent);
+}
+/* 顶边随「跑腿中 → 跑完」变色：还在找是暖橙，找完了转成成功色 */
+html[data-theme="lumei"] .netlive.done,
+html[data-theme="lumei-night"] .netlive.done{
+  border-top-color:color-mix(in srgb,var(--ok) 52%,transparent);
+}
+/* 步骤点：默认暖色（主题变量已给），命中的那颗加一圈柔光 —— 像"这个站有货"的标记 */
+html[data-theme="lumei"] .nl-steps li.hit .d,
+html[data-theme="lumei-night"] .nl-steps li.hit .d{
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--ok) 20%,transparent),
+             0 0 8px color-mix(in srgb,var(--ok) 34%,transparent);
+}
+/* 正在进行的最后一步：主题色 + 轻微脉动，明确"就卡在这一步" */
+html[data-theme="lumei"] .nl-steps li:last-child .t,
+html[data-theme="lumei-night"] .nl-steps li:last-child .t{
+  animation:lu-step-pulse 1.5s ease-in-out infinite;
+}
+@keyframes lu-step-pulse{
+  0%,100%{opacity:1}
+  50%{opacity:.55}
+}
+html[data-theme="lumei"] .netlive.done .nl-steps li:last-child .t,
+html[data-theme="lumei-night"] .netlive.done .nl-steps li:last-child .t{
+  animation:none;
+}
+
 /* ==========================================================================
    7. 移动端：小屏少放动效（电池 + 性能）
    ========================================================================== */
@@ -577,5 +612,7 @@ html[data-theme="lumei-night"] .filters .chip:hover{
   html[data-theme="lumei-night"] .brand .mark{animation:none!important}
   html[data-theme="lumei"] .task,
   html[data-theme="lumei-night"] .task{animation:none!important;border-left-color:color-mix(in srgb,var(--a-1) 60%,transparent)}
+  html[data-theme="lumei"] .nl-steps li:last-child .t,
+  html[data-theme="lumei-night"] .nl-steps li:last-child .t{animation:none!important}
   .lu-pets{display:none}
 }

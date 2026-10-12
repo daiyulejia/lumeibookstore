@@ -96,6 +96,12 @@ LIVE_SUITES = [
     # 前端注入：payload 当搜索词打进去，断言没有真的元素生成、没有代码执行。
     # grep innerHTML 判断不了"那个变量到底过没过 esc()"，只有真浏览器说了算。
     ("test_xss.py", "前端注入"),
+    # 并发竞态：连点两次搜索后的状态机。这条钉住的是「abort 生效 + finally
+    # 有守卫」—— 两个 bug 都不报错，只表现为"结果串台/按钮失灵"，人工必漏。
+    ("test_concurrency.py", "并发竞态"),
+    # 前端埋点：JS 错误 / Promise 拒绝 / 接口失败 必须落进 logs/app.log。
+    # 这条直接读日志文件 —— 「用户报的 bug 能不能对上日志」只能这么验。
+    ("test_telemetry.py", "前端埋点"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -109,6 +115,8 @@ LIVE_ARGS = {
     "test_ranks_ui.py": "--base",
     "test_reader_ui.py": "--url",   # 这个老脚本用的还是 --url
     "test_xss.py": "--url",
+    "test_concurrency.py": "--url",
+    "test_telemetry.py": "--url",
 }
 
 
