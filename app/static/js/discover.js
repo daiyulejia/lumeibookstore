@@ -396,11 +396,14 @@ function bookHTML(b, i) {
   //   这里的 key 用书自己的 title+author 组合（`group_key()` 同款口径），
   //   渲染和反查两边都从它走，下标错位就伤不到正确性。
   const gk = groupKey(b);
+  // 展示用书名：后端已剥掉「[玄幻]」这类站点分类前缀（display_title），
+  // 没有该字段时退回原书名 —— 不能因为后端没升级就把标题显示成空。
+  const dtitle = b.display_title || b.title;
   return `<div class="book" data-i="${i}" data-gk="${esc(gk)}">
     <div class="head">
-      ${coverHTML(b.hue, b.title, b.author)}
+      ${coverHTML(b.hue, dtitle, b.author)}
       <div class="meta">
-        <h3>${esc(b.title)}</h3>
+        <h3>${esc(dtitle)}</h3>
         <div class="by">${esc(b.author || "作者未知")}</div>
         <div class="desc">${desc}</div>
         <div class="tags">${tags.join("")}</div>

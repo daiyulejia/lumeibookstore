@@ -321,11 +321,77 @@ _HIDDEN_RE = re.compile(r"<(script|style|noscript)\b[^>]*>[\s\S]*?</\1\s*>", re.
 #
 # `/html/#/#/`（杰奇 CMS 系）单独列出来 —— 实测 384g / 老笔趣阁都是它，
 # 而它**不以 book/info 开头**，靠 `/book/` 那套是认不出来的。
+#
+# ⚠ 两条纪律（都踩过坑）：
+#   ① **不能靠尾部锚定来排章节页** —— 一批站的书目录页本身就是 `/book/#/`
+#      或 `/xs/#/`（带斜杠结尾），一锚就把它们也误杀了。
+#   ② 正确的判据是「**路径最后一段**是不是 `数字.html`」——那才是章节正文页。
+#      用 _CHAPTER_TAIL 单独判，比把所有模式都加锚干净得多。
+# ⚠ 这个正则**只吃模板化路径**（数字已换成 `#`，见 _path_tpl_of）。
+#   所以每一处"数字段"都必须写成 `[#\d]` —— 写 `\d` 会永远匹配不上，
+#   这就是本文件历史上反复踩的坑：
+#     · 拿 `\d{3,}` 去匹配 `/html/#/#/`      → 永不命中，导航组排到书页组前面
+#     · 拿 `[^/]*[#\d]{3,}` 去匹配 `/book/#/` → 也永不命中
+#       （`[^/]*` 先吞掉 `#`，后面就再没有字符可给 `[#\d]{3,}` 了），
+#       结果 `/book/123456/` 这种最常见的书页被判成"不像书"
+#
+# 三条形态：
+#   · `/(book|info|xs|…)/…` 关键字系 —— 后面跟一段长度≥3 的编号
+#   · `/html/#/#/`          杰奇 CMS 系（384g / 老笔趣阁）
+#   · `/#/#/`               无关键字的纯数字两段/三段
+#
+# ⚠⚠ 量词只能用 `+`，**不能用 `{2,}`** —— 模板化会把**整段数字**压成一个
+#   `#`，所以 `/#/#/` 里每一段都只有 1 个字符，`{2,}` / `{3,}` / `{4,}`
+#   全部落空。这是本文件里最阴的一个坑：正则"看起来没问题"，
+#   但在模板化输入上永远不命中，而且**不报错**（判成 False 就走兜底组去了）。
 _BOOK_PATH = re.compile(
-    r"/(?:book|info|b|xs|xsw|novel|read|xiao?shuo|article)/[^/]*[#\d]{3,}"
+    r"/(?:book|info|b|xs|xsw|novel|read|xiao?shuo|article)/[^/]*[#\d]+/?"
     r"|/html/[#\d]+/[#\d]+/?"
-    r"|/[#\d]{2,}/[#\d]{3,}/[#\d]{4,}\.html?",
+    r"|/[#\d]+/[#\d]+/?",
     re.I)
+
+# 单段形态（`/123456/`）**单独用原始路径判** —— 不能并进 _BOOK_PATH。
+# 因为模板化把整段数字压成一个 `#`，`/#/` 跟 `/page/2/`（也含数字）长得
+# 一模一样，放宽就会把分页、列表页、用户页全当成书。
+# 判据只能回到原始路径上数位数：书 ID 通常是 4 位以上，页码不是。
+_SINGLE_SEG_BOOK = re.compile(r"^/[A-Za-z0-9_\-]*?(\d{4,})/?$")
+
+# 章节正文页的形状：路径最后一段是「数字.html」。
+#   /html/102/102114/79.html  → 是章节
+#   /book/123456/            → 不是（书目录页）
+# 为什么必须单独判：`/html/102/102114/79.html` 会被 _BOOK_PATH 第 2 条
+# **部分命中**（`/html/102/102114/` 那段），于是章节页混进搜索结果。
+# 实测：搜「余华」返回的那条「附：英文版…评论摘要」，URL 正是
+# `.../102114/79.html`，探测时报「这个地址不是目录页」——它压根是一章正文。
+_CHAPTER_TAIL = re.compile(r"/[#\d]+\.html?$", re.I)
+
+
+def looks_like_book_url(u: str) -> bool:
+    """这个 URL 的形状像「书页」吗？（不是章节正文页）
+
+    判定 = 「像书页路径」**且**「不是章节正文页」。
+
+    ⚠ 两个正则吃的**不是同一种输入**（踩过）：
+      · `_BOOK_PATH`   历史上就是拿**模板化路径**判的（`/#/#/` 这种），
+        保持原样 —— 换成原始 URL 会让一批本来就靠模板归组进来的书页
+        （杰奇系的 `/0/143/`）反而判不出来。
+      · `_CHAPTER_TAIL` 判「结尾一段是不是 `数字.html`」—— 那是章节正文页，
+        必须排除。不排除的后果：`/html/102/102114/79.html` 会被
+        `_BOOK_PATH` **部分命中**（`/html/102/102114/` 那段），
+        于是章节页混进搜索结果。实测：搜「余华」返回的
+        「附：英文版…评论摘要」URL 正是 `.../102114/79.html`，
+        探测时报「这个地址不是目录页」——它压根是一章正文。
+    """
+    if _CHAPTER_TAIL.search(_path_tpl_of(u)):
+        return False
+    if _BOOK_PATH.search(_path_tpl_of(u)):
+        return True
+    # 单段形态回原始路径判（见 _SINGLE_SEG_BOOK 的注释）
+    try:
+        from urllib.parse import urlparse
+        return bool(_SINGLE_SEG_BOOK.match(urlparse(u).path or ""))
+    except Exception:  # noqa: BLE001
+        return False
 # URL 模板化：数字换成 #
 _NUM_RE = re.compile(r"\d+")
 
@@ -504,7 +570,7 @@ def _extract_book_links(html: str, base_url: str) -> list[tuple[str, str]]:
         if len(items) < 2:
             continue
         sample = _path_tpl_of(items[0][1])
-        looks_book = 1 if _BOOK_PATH.search(sample) else 0
+        looks_book = 1 if looks_like_book_url(items[0][1]) else 0
         depth = sample.count("#")
         # 组内标题长度合理（2~40）的比例越高越好
         good = sum(1 for t, _u in items if 2 <= len(t) <= 40)
@@ -525,7 +591,7 @@ def _extract_book_links(html: str, base_url: str) -> list[tuple[str, str]]:
             continue
         if not re.search(r"[\u4e00-\u9fff]", t) or _BAD_TITLE.match(t):
             continue
-        if _BOOK_PATH.search(_path_tpl_of(u)):
+        if looks_like_book_url(u):
             out.append((t, u))
     return _dedup_pairs(out)
 

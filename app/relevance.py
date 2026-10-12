@@ -59,9 +59,75 @@ NOISE_RE = re.compile(
 )
 
 # 书名里常见的 SEO 尾巴，打分时先剥掉
+#
+# 「站点名后缀」单独列一组（笔趣阁 / 小说网 / 阅读网 …）—— 它不只是难看，
+# 还会让**同一本书的两条结果合不到一起**：
+#   实测搜《欢迎进入梦魇直播间》，m.akshu88.com 回了同一本书两条：
+#     欢迎进入梦魇直播间           /book/101965698.html
+#     欢迎进入梦魇直播间笔趣阁       /book/j101965698.html
+#   第二条的"笔趣阁"是**站点名**被拼进标题了。去重键是 normalize(title)，
+#   两条键不同 → 各自留一条，用户看到"两个来源"，其实是一个站一本书。
+#   而 tightness 的容差是 len(kw)//3 = 3，"笔趣阁"正好 3 字 → 还判成确切命中，
+#   于是一条重复项以"正主"的身份混在结果里。
 SEO_TAIL_RE = re.compile(
-    r"(全文阅读|在线阅读|免费阅读|最新章节|无弹窗|全集|完结版|TXT下载|txt下载|下载|手机版|免费|小说)+$"
+    r"(?:全文阅读|在线阅读|免费阅读|最新章节|无弹窗|完结版|TXT下载|txt下载|手机版|免费"
+    r"|笔趣阁|小说网|阅读网|文学网|读书网|小说阅读网|书吧|书城)+$"
 )
+
+# 站点把**分类**拼进书名了：「[玄幻]斗破苍穹」「[网游]穿越斗破苍穹」。
+# 这是最脏的一类前缀 —— 它不只是难看，还会**破坏同一本书的判定**：
+#
+#   [玄幻]斗破苍穹        tightness = 0.67   （多出"玄幻"2字，超出容差1）
+#   [网游]穿越斗破苍穹      tightness = 0.00   （多出"网游穿越"4字，判定为另一本书）
+#   斗破苍穹              tightness = 1.00   （正主）
+#
+# 结果：搜《斗破苍穹》，真正那本因为带前缀被判定"不是它"，
+# 一堆《斗破苍穹之XXX》同人反而排在前面。
+#
+# 规则：**只有**方括号/书名号里是纯分类词（2~4 字、不含数字和"之"等连接词）
+# 且位于标题最开头时才剥 —— 不敢宽，因为《[综]xxx》《[HP]xxx》这类
+# 同人圈的方括号是作品名的一部分，剥了就错了。
+_CATEGORY_WORDS = (
+    r"玄幻|奇幻|武侠|仙侠|都市|言情|历史|军事|游戏|网游|科幻|悬疑|恐怖|"
+    r"灵异|推理|竞技|校园|职场|穿越|重生|系统|修真|现代|古代|古言|现言|"
+    r"耽美|百合|轻小说|同人|二次元|综漫|豪门|总裁|宫斗|宅斗|种田|末世|"
+    r"无限流|快穿|异能|热血|青春|文学|名著|外国文学|中国文学|当代|纪实"
+)
+_CATEGORY_PREFIX_RE = re.compile(
+    r"^\s*[\[【（(《〈]\s*(?:" + _CATEGORY_WORDS + r")\s*[\]】）)）》〉]\s*"
+)
+
+
+def strip_category_prefix(title: str) -> str:
+    """剥掉标题开头的**纯分类**前缀（「[玄幻]斗破苍穹」→「斗破苍穹」）。
+
+    只认白名单里的分类词，且必须被方括号完整包住。剥不出来就原样返回 ——
+    宁可留着脏前缀，也不能把《[HP]魔法觉醒》这种真的带方括号的书名改坏。
+    """
+    s = title or ""
+    out = _CATEGORY_PREFIX_RE.sub("", s, count=1).strip()
+    # 剥完不能把标题掏空（「[玄幻]」这种只有分类的站内页，留着原样）
+    return out if len(out) >= 2 else s
+
+
+# 全角/半角方括号包着**单字或两位**数字：「[1]活着」「【12】活着」——
+# 那是列表编号，同样不该算进书名。
+_INDEX_PREFIX_RE = re.compile(r"^\s*[\[【（(]\s*\d{1,3}\s*[\]】）)]\s*")
+
+
+def clean_title(title: str) -> str:
+    """给**展示用**的清洗：剥掉分类前缀与序号前缀。
+
+    与 normalize() 的区别：normalize 是给比对用的（去掉所有标点），
+    clean_title 保留书名本身的可读性，只是把站点硬塞的前缀拿掉。
+    """
+    s = (title or "").strip()
+    prev = None
+    while prev != s:
+        prev = s
+        s = _INDEX_PREFIX_RE.sub("", s).strip()
+        s = strip_category_prefix(s)
+    return s or (title or "").strip()
 
 # 「評論/研究/考證」类页面：相关但不是书本身
 # 注意：匹配前标题已转简体，所以这里只需写简体词
@@ -94,8 +160,23 @@ _PUNCT_RE = re.compile(
 
 
 def normalize(s: str) -> str:
-    """书名归一化：繁转简 + 去掉书名号/标点/空白 + 转小写。"""
-    return _PUNCT_RE.sub("", _to_simplified((s or "").lower()))
+    """书名归一化：剥分类前缀与 SEO/站点名尾巴 + 繁转简 + 去标点 + 转小写。
+
+    ⚠ 「剥尾巴」必须在这里做，**不能只在 tightness/score 里做** ——
+    去重键用的是 `normalize(title)`（见 _dedup），只在打分里剥会导致
+    同一本书的两个标题归一化后仍然不同，去重白做：
+
+        欢迎进入梦魇直播间          → 欢迎进入梦魇直播间
+        欢迎进入梦魇直播间笔趣阁      → 欢迎进入梦魇直播间笔趣阁   ← 键不同，留两条
+
+    实测就是 m.akshu88.com 那两条（/book/101965698.html 与
+    /book/j101965698.html），用户看到"两个来源"，其实是同一个站同一本书。
+    """
+    s = _to_simplified((s or "").lower())
+    # 先剥掉带标点形态的尾巴（「三体（全文阅读）」→「三体」），再去标点
+    s = _strip_tail_paren(s.strip())
+    s = SEO_TAIL_RE.sub("", s).strip()
+    return _PUNCT_RE.sub("", s)
 
 
 def _tokens(s: str) -> list[str]:
@@ -149,7 +230,10 @@ def tightness(title: str, keyword: str) -> float:
     kw = normalize(keyword)
     if not kw:
         return 0.0
-    simp = _to_simplified(title or "")
+    # 先把站点的分类前缀剥掉再算「占多满」——
+    # 「[玄幻]斗破苍穹」的"玄幻"会让 tightness 从 1.0 掉到 0.67，
+    # 正主反被判定成"不是这本书"（见 strip_category_prefix 注释）。
+    simp = _to_simplified(clean_title(title))
     stripped = SEO_TAIL_RE.sub("", _strip_tail_paren(simp.strip()))
     t = normalize(stripped if len(stripped) >= 2 else simp)
     if not t or kw not in t:
@@ -172,7 +256,8 @@ def score(result: BookResult, keyword: str) -> float:
     raw_title = result.title or ""
     # 统一转简体后再做所有模式匹配 —— 否则维基文库的「消歧義/考證」匹配不上
     # 简体词表，繁体噪音就会漏网。
-    simp_title = _to_simplified(raw_title)
+    # 先剥分类前缀（「[玄幻]斗破苍穹」→「斗破苍穹」），否则整条打分会走偏。
+    simp_title = _to_simplified(clean_title(raw_title))
     stripped = SEO_TAIL_RE.sub("", _strip_tail_paren(simp_title.strip()))
     t = normalize(stripped if len(stripped) >= 2 else simp_title)
     if not t:
@@ -330,6 +415,72 @@ def _host_of(url: str) -> str:
         return ""
 
 
+# 多词搜索里「这个词算中了」的分数线。
+#
+# 为什么不能是 0：score() 末尾有一层兜底（有作者信息 +2.0；标题和关键词只沾
+# 一点边时按相似度给分），导致**不相关**的结果也能拿到 2~15 分。用它判命中，
+# 「余华 活着」里的《活着》/未知作者 会被认为"命中了余华"，跟正主并列第一。
+#
+# 取值 28 的依据：title 分支的最低有效分是「关键词包含标题」的 70 分、
+# 「标题以关键词开头/结尾」最低 62 分、模糊相似命中我记得是 33 分起 ——
+# 也就是说凡是"标题真的和这个词有关"的，都在 28 之上；28 以下全是兜底噪音。
+_HIT_MIN = 28.0
+
+
+def _split_terms(keyword: str) -> list[str]:
+    """把「余华 活着」这类关键词拆成多个词。
+
+    为什么要拆：「书名 + 作者」是最自然的搜法之一，界面上也提示用户
+    "把作者名一起搜会准很多"。但在此之前，空格被当成书名的一部分 ——
+    搜「余华 活着」会去找一本叫《余华活着》的书，结果必然是 0 条。
+
+    分隔符：空白、加号、逗号、顿号。都拆。
+    拆完每个词都要有实际内容（≥1 字），过滤空串。
+    """
+    s = (keyword or "").strip()
+    if not s:
+        return []
+    parts = [p.strip() for p in re.split(r"[\s+,，、]+", s) if p.strip()]
+    return parts
+
+
+def score_multi(result: BookResult, keyword: str) -> float:
+    """多词关键词的打分：逐词算，再按「命中几个词」加权。
+
+    规则刻意保守 —— 多词是**收窄**条件的，不是放宽：
+      · 一个词都没中的（书名也没中、作者也没中）→ 直接 0，踢掉。
+      · 中了**部分**词 → 取命中词里的最高分，再按命中比例打折。
+        搜「余华 活着」，只中"活着"的《活着》该留下但该排在
+        「书名+作者都中」的后面。
+      · **全中** → 在最高分基础上加成，确保排在部分命中的前面。
+
+    为什么用"加成"而不是把两个词的分数相加：相加会让长书名虚高，
+    而这里的目的是**排序**，不是绝对分值。
+    """
+    terms = _split_terms(keyword)
+    if len(terms) <= 1:
+        return score(result, keyword)
+
+    scores = [score(result, t) for t in terms]
+    # ⚠ 不能用 `> 0` 判命中 —— score() 有一条兜底尾巴（"有作者信息 +2"、
+    #   模糊相似度按比例给分），**任何**书对**任何**词都能拿到 2~10 分，
+    #   于是 hit 永远非空，"一个词都没中 → 0 分"这条规则形同虚设。
+    #   实测后果：搜「余华 活着」时《活着》/未知作者 对"余华"得 2.0 被当作命中，
+    #   与正主同样拿满加成，两条打平 110 分 —— 排序失效。
+    #   所以必须设阈值：低于 _HIT_MIN 的分数视为「没中」。
+    hit = [s for s in scores if s >= _HIT_MIN]
+    if not hit:
+        return 0.0
+
+    best = max(hit)
+    # 命中比例：全中的往上抬，部分中的往下压
+    ratio = len(hit) / len(terms)
+    if len(hit) == len(terms):
+        return best + 8.0 * (len(terms) - 1)      # 全中：加成，稳定排前面
+    # 部分命中：按比例打折（中 1/2 → ×0.75；中 1/3 → ×0.67）
+    return best * (0.5 + 0.5 * ratio)
+
+
 def rank(
     results: list[BookResult],
     keyword: str,
@@ -343,11 +494,13 @@ def rank(
     - 门槛随最高分自适应（见 _adaptive_threshold）
     - 只有「确实没找到像样的结果」时才放宽门槛兜底，
       避免因为阈值过严导致「明明有结果却显示没找到」。
+    - 关键词含空格时按多词处理（「余华 活着」，见 score_multi）。
     """
     if not results:
         return []
+    multi = len(_split_terms(keyword)) > 1
     for r in results:
-        r.score = score(r, keyword)
+        r.score = score_multi(r, keyword) if multi else score(r, keyword)
 
     ordered = sorted(results, key=lambda r: -r.score)
     cut = _adaptive_threshold(ordered[0].score, threshold)

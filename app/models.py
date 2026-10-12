@@ -51,6 +51,16 @@ class BookResult:
         return self.tightness >= 0.99
 
     @property
+    def display_title(self) -> str:
+        """给用户看的书名 —— 剥掉站点硬塞的分类/序号前缀。
+
+        原始 `title` 保留不动（去重键、探测匹配都依赖它），只在展示层清洗：
+        用户该看到「斗破苍穹」，不是「[玄幻]斗破苍穹」。
+        """
+        from .relevance import clean_title
+        return clean_title(self.title)
+
+    @property
     def readable(self) -> bool:
         """真的能读吗？—— **要有正面证据**，没验证过就不算数。
 
@@ -75,6 +85,8 @@ class BookResult:
     def to_dict(self) -> dict:
         return {
             "title": self.title,
+            # 展示用书名（剥掉 [玄幻] 这类站点分类前缀）；前端优先用它
+            "display_title": self.display_title,
             "author": self.author,
             "source": self.source,
             "source_display": self.source_display or self.source,
