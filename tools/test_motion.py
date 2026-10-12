@@ -210,6 +210,19 @@ THEME_COVERAGE = [
     ("阅读页 · 色卡角标", '.rd-thermos .th-card[data-th="lumei"]'),
     ("首页 · 吉祥物一对", '.lu-capy'),
     ("空状态 · 插图", '.empty-art'),
+    # —— 搜索结果卡（.book）：本轮补的缺口 ——
+    # 这是用户**停留最久**的界面（逐条读书名、挑来源、点"收进书架"），
+    # 但之前清单里没有它，lumei.css 里也确实一处覆盖都没有
+    # （`grep -c '.book' lumei.css` 返回 0）—— 于是整站最暖的首页点下去，
+    # 结果是通体冷灰的卡片，主题在这里"断片"了。
+    # 教训：**清单本身也会漏**，漏掉的页面看起来"已通过检查"。
+    # 所以补清单时要按「用户会停留的页面」逐个过一遍，不是按现有 CSS 反推。
+    ("搜索结果卡 · hover 暖边", 'html[data-theme="lumei"] .book:hover'),
+    ("搜索结果卡 · 书封高光", 'html[data-theme="lumei"] .book .cover::after'),
+    ("搜索结果卡 · 收进书架按钮", 'html[data-theme="lumei"] .book .acts .btn.primary'),
+    ("搜索结果卡 · 来源行 hover", 'html[data-theme="lumei"] .book .srow:hover'),
+    ("搜索状态栏 · 关键词暖色", 'html[data-theme="lumei"] .statbar b'),
+    ("加载骨架 · 暖白流光", 'html[data-theme="lumei"] .skel i::after'),
 ]
 
 

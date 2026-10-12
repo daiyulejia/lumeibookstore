@@ -449,6 +449,75 @@ html[data-theme="lumei-night"] .cfs{
   border-left:3px solid color-mix(in srgb,var(--a-1) 46%,transparent);
 }
 
+/* ---- 6.9 搜索结果卡（.book）：这是**用户停留最久**的界面 ---- */
+/* 为什么单独拎出来说：搜完一屏结果卡，用户要在这里逐条读书名、挑来源、
+   点"收进书架"—— 平均停留时间比首页长得多。但以前这一块在噜妹主题下
+   **一处覆盖都没有**（`grep -c '.book' lumei.css` 返回 0），
+   于是整站最暖的首页点下去，结果是通体冷灰的卡片，主题在这里"断片"了。
+
+   手法仍然克制（见 §6 开头的规律）：不换卡片底色、不加装饰图 ——
+   只在 **hover / 可读状态** 上给暖色，因为这两个恰好是"用户在操作"
+   的两个瞬间，暖色在这里是**反馈**而不是装饰。 */
+/* hover：描边泛暖 + 阴影带一点橙。比书架卡片再明显一档 ——
+   书架是"浏览"，结果是"挑选"，反馈该更明确 */
+html[data-theme="lumei"] .book:hover,
+html[data-theme="lumei-night"] .book:hover{
+  border-color:color-mix(in srgb,var(--a-1) 34%,var(--s-line-2));
+  box-shadow:0 10px 26px color-mix(in srgb,var(--a-1) 14%,transparent),
+             var(--sh-m);
+}
+/* 书封高光调暖（同书架，见 6.1 的说明 —— 别重复写 ::after，只改已有那道） */
+html[data-theme="lumei"] .book .cover::after,
+html[data-theme="lumei-night"] .book .cover::after{
+  background:linear-gradient(105deg,rgba(255,236,206,.30),transparent 44%);
+}
+/* 「收进书架」是全站最核心的一次点击（把"网上的"变成"我的"），
+   给它最实的橙色 + 一层轻托，和书架页的「继续阅读」同一套语言 */
+html[data-theme="lumei"] .book .acts .btn.primary,
+html[data-theme="lumei-night"] .book .acts .btn.primary{
+  box-shadow:0 2px 0 color-mix(in srgb,var(--a-1) 30%,transparent),
+             0 8px 20px color-mix(in srgb,var(--a-1) 22%,transparent);
+}
+/* 来源行（展开后的 .srow）：hover 给暖底而不是冷灰 ——
+   鼠标停在哪一行、那一行就是"即将被点的那个" */
+html[data-theme="lumei"] .book .srow:hover,
+html[data-theme="lumei-night"] .book .srow:hover{
+  background:color-mix(in srgb,var(--a-1) 9%,var(--s-card-2));
+}
+/* 来源行里那个小「去读」胶囊（.srow .mini）：hover 已有橙底（app.css:335），
+   这里只补圆角呼应 —— 页面上的"可点小件"统一用同一个半径，是"同一家人"的证据 */
+html[data-theme="lumei"] .book .srow .mini,
+html[data-theme="lumei-night"] .book .srow .mini{border-radius:var(--r-full)}
+/* 篇名分节号（搜"某系列"时出现的 .rk-no 同款圆角方块）如果在结果卡里出现，
+   一并走暖色 —— 保持和榜单一致 */
+html[data-theme="lumei"] .book .rk-no,
+html[data-theme="lumei-night"] .book .rk-no{
+  background:color-mix(in srgb,var(--a-1) 16%,var(--s-card-3));
+  color:color-mix(in srgb,var(--a-1) 78%,var(--t-1));
+}
+
+/* 搜索状态栏（.statbar）：等待时**屏幕上唯一的字**。
+   冷灰在这里的代价比别处大 —— 用户盯着这一行看十几秒，
+   是"噜噜在替你跑"的陪伴感最该出现的地方。所以：
+     · 关键词加粗那截用噜噜橙（它才是用户"要的那个东西"）
+     · 分隔竖线也带一点暖，让整行读起来是一体的 */
+html[data-theme="lumei"] .statbar b,
+html[data-theme="lumei-night"] .statbar b{
+  color:color-mix(in srgb,var(--a-1) 82%,var(--t-1));
+}
+html[data-theme="lumei"] .statbar .sep,
+html[data-theme="lumei-night"] .statbar .sep{
+  background:color-mix(in srgb,var(--a-1) 34%,var(--s-line));
+}
+/* 加载骨架（.skel）：等结果时的"占位卡"。
+   骨架的流光本来是冷白（app.css:679 的 ::after），在暖底上会显得"脏"——
+   调成暖白，让等待中的卡片也像"噜妹家的纸"。 */
+html[data-theme="lumei"] .skel i::after,
+html[data-theme="lumei-night"] .skel i::after{
+  background:linear-gradient(90deg,transparent,
+             rgba(255,240,220,.42),transparent);
+}
+
 /* ==========================================================================
    7. 移动端：小屏少放动效（电池 + 性能）
    ========================================================================== */
