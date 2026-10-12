@@ -49,6 +49,14 @@ TIGHT = [
     ("微微一笑很倾城", "微微一笑很倾城（顾漫 著）"),
     ("微微一笑很倾城", "微微一笑很倾城（顾漫著）"),
     ("斗破苍穹", "斗破苍穹"),
+    # 站点把分类拼进书名 —— 剥掉前缀后必须仍然算「确切命中」。
+    # 线上实测：新笔趣阁返回的全部是「[玄幻]斗破苍穹」这种，不剥的话
+    # tightness 掉到 0.67/0.00，真正那本被判定成"不是这本书"，
+    # 一堆《斗破苍穹之XXX》同人反而排到前面。
+    ("斗破苍穹", "[玄幻]斗破苍穹"),
+    ("斗破苍穹", "[网游]斗破苍穹"),
+    ("活着", "【6】活着"),
+    ("活着", "[1]活着"),
 ]
 for kw, t in TIGHT:
     check("tightness", tightness(t, kw) >= 0.99, True, f"《{kw}》 vs {t} 应算确切命中")
@@ -165,6 +173,117 @@ check("rank", [r.title for r in rank([R("活着", author="余华")], "活着")],
 sub = [R("沈先生又在刷存在感", author="顾漫夏"), R("骄阳似我", author="顾漫")]
 check("rank", [r.title for r in rank(sub, "顾漫")], ["骄阳似我", "沈先生又在刷存在感"],
       "作者名完全一致的排在「名字含关键词」的前面")
+
+# ---------------------------------------------------------------------------
+print("\n[6] 书名清洗 —— 剥掉站点硬塞的分类/序号前缀")
+# ---------------------------------------------------------------------------
+from app.relevance import clean_title  # noqa: E402
+
+# 该剥的
+STRIP = [
+    ("[玄幻]斗破苍穹", "斗破苍穹"),
+    ("[网游]穿越斗破苍穹", "穿越斗破苍穹"),
+    ("【12】活着", "活着"),
+    ("[1]活着", "活着"),
+    ("（都市）活着", "活着"),
+    ("[都市] 活着", "活着"),
+]
+for src, want in STRIP:
+    check("clean_title", clean_title(src), want, f"{src} → {want}")
+
+# **不该剥的** —— 剥错了就是把书名改坏，比留着脏前缀更糟
+KEEP = [
+    "[HP]魔法觉醒",      # 同人圈的方括号是作品名的一部分
+    "[综]某科学的超电磁炮",
+    "斗破苍穹",           # 本来就没前缀
+    "[玄幻]",            # 只有分类、剥完为空 → 原样保留
+    "魔法禁书目录[新约]",   # 方括号在**结尾**，不是前缀
+]
+for src in KEEP:
+    check("clean_title", clean_title(src), src, f"{src} 不应被改动")
+
+# display_title 走的是同一条清洗
+from app.models import BookResult  # noqa: E402
+same = BookResult(title="[玄幻]斗破苍穹", author="", source="s", url="u")
+check("display_title", same.display_title, "斗破苍穹", "BookResult.display_title 也清洗")
+check("to_dict", same.to_dict().get("display_title"), "斗破苍穹", "to_dict 带上 display_title")
+check("to_dict", same.to_dict().get("title"), "[玄幻]斗破苍穹", "原始 title 保持不变")
+
+# ---------------------------------------------------------------------------
+print("\n[7] 站点名后缀 —— 同一本书的两条要能合并")
+# ---------------------------------------------------------------------------
+from app.relevance import normalize, _dedup  # noqa: E402
+
+# 实测：搜《欢迎进入梦魇直播间》，m.akshu88.com 回了同一本书两条，
+# 第二条标题多了站点名「笔趣阁」→ normalize 后键不同 → 去重失效，
+# 用户看到"两个来源"，其实是一个站同一本书。
+TAILS = [
+    ("欢迎进入梦魇直播间", "欢迎进入梦魇直播间笔趣阁"),
+    ("三体", "三体小说网"),
+    ("活着", "活着阅读网"),
+    ("三体", "三体（全文阅读）"),
+]
+for base, t in TAILS:
+    check("normalize", normalize(t) == normalize(base), True,
+          f"{t} 去掉后缀后应与 {base} 同键")
+
+dup2 = [
+    BookResult(title="欢迎进入梦魇直播间", author="", source="web",
+               url="http://m.akshu88.com/book/101965698.html"),
+    BookResult(title="欢迎进入梦魇直播间笔趣阁", author="", source="web",
+               url="http://m.akshu88.com/book/j101965698.html"),
+]
+check("_dedup", len(_dedup(dup2)), 1, "站点名后缀造成的重复应被合并")
+
+# **不能误伤的真书名** —— 剥错了就是把书改坏，比留着后缀更糟。
+# 这里断言的是「归一化结果 == 原词本身」，所以这些词必须是不含标点/不需要
+# 转换的形态；一旦被 SEO_TAIL_RE 误剥，就会变成更短的前缀而对不上。
+KEEPT = ["小说家", "下载人生", "书院风云", "免费的代价", "书城纪事", "全集", "活着"]
+for t in KEEPT:
+    check("normalize", normalize(t), t.lower(), f"《{t}》不该被剥")
+
+# ---------------------------------------------------------------------------
+print("\n[8] 多词关键词 —— 「余华 活着」这种搜法")
+# ---------------------------------------------------------------------------
+from app.relevance import _split_terms, score_multi  # noqa: E402
+
+# 拆词
+check("_split_terms", _split_terms("余华 活着"), ["余华", "活着"], "空格分隔")
+check("_split_terms", _split_terms("余华+活着"), ["余华", "活着"], "加号分隔")
+check("_split_terms", _split_terms("余华,活着"), ["余华", "活着"], "逗号分隔")
+check("_split_terms", _split_terms("活着"), ["活着"], "单词不拆")
+
+# 搜「余华 活着」：书名 + 作者**都中**的排第一，只中一个的退后
+multi = [
+    BookResult(title="活着", author="余华", source="s", url="u1"),
+    BookResult(title="活着", author="未知", source="s", url="u2"),
+    BookResult(title="兄弟", author="余华", source="s", url="u3"),
+]
+got = [r.title for r in rank(multi, "余华 活着")]
+check("rank", got[0], "活着", "书名+作者都中的排第一")
+sc_both = [score_multi(r, "余华 活着") for r in multi]
+check("score_multi", sc_both[0] > sc_both[1], True, "全中 > 只中书名")
+check("score_multi", sc_both[0] > sc_both[2], True, "全中 > 只中作者")
+# 一个词都不中的直接出局
+nohit = [BookResult(title="三体", author="刘慈欣", source="s", url="u9")]
+check("score_multi", score_multi(nohit[0], "余华 活着"), 0.0, "一个词都不中 → 0 分")
+
+# —— 防回归：不能把 score() 的兜底尾巴当成「命中」 ——
+# score() 对任何书都至少给 2 分（有作者信息 +2）。早期版本用 `s > 0` 判命中，
+# 于是《活着》/未知作者 对「余华」的 2 分被算成命中，与正主并列 110 分。
+from app.relevance import _HIT_MIN, score as _sc
+
+_ghost = BookResult(title="活着", author="未知", source="s", url="g1")
+check("score_multi", _sc(_ghost, "余华") < _HIT_MIN, True,
+      "兜底分（2.0）不得被当成命中「余华」")
+check("score_multi", _ghost.by_author if hasattr(_ghost, "by_author") else False, False,
+      "未命中作者时不得打 by_author 标记")
+# 全中（110）必须**严格大于**只中书名（76.5），否则排序没有区分度
+check("score_multi", sc_both[0] > sc_both[1] + 20, True,
+      "全中要与只中书名拉开明显差距（>20 分）")
+# 只中作者（60）与只中书名（76.5）都要留在场上，不能被误杀成 0
+check("score_multi", sc_both[1] >= _HIT_MIN and sc_both[2] >= _HIT_MIN, True,
+      "只中一个词的结果应保留（≥ _HIT_MIN）")
 
 print()
 if FAILS:

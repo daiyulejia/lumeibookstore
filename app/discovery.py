@@ -89,6 +89,11 @@ def clean_book_title(s: str) -> str:
 
     Bing 给的常常是「药鼎仙途最新章节_药鼎仙途小说全文阅读_落霞读书」这种，
     直接当书名显示会很长很丑。
+
+    另外要把标题里的**话题标签符**剥掉：搜索引擎会把「#活着」这种话题标签
+    原样带进标题，实测搜「余华 活着」时出现过一个源叫 `#活着`（首播网），
+    展示出来很脏，而且 `#` 会让 normalize 之后的名字和别的源对不上，
+    影响「同一本书」的合并判断。
     """
     s = re.sub(r"\s+", " ", (s or "").strip())
     s = _SITE_TAIL.sub("", s)
@@ -104,9 +109,10 @@ def clean_book_title(s: str) -> str:
         # 取第一个「像书名」的段：2~20 字，且不是纯英文/网址
         for p in parts:
             p = re.sub(r"[（(][^）)]*[）)]\s*$", "", p).strip()
+            p = p.lstrip("#＃").strip()          # 剥掉话题标签符
             if 1 < len(p) <= 24 and re.search(r"[\u4e00-\u9fff]", p):
                 return p
-        s = parts[0]
+        s = parts[0].lstrip("#＃").strip()
     return s.strip()[:40]
 
 

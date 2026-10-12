@@ -220,6 +220,34 @@ class Engine:
         if not keyword:
             return []
 
+        # —— 多词关键词：「搜索用词」与「排序用词」要分开 ——
+        # 用户搜「余华 活着」时，把整串丢给站点搜索多半 0 结果（站点的搜索框
+        # 不是全文检索，空格常常被当成书名的一部分）。但排序又必须用**完整
+        # 关键词**，否则「书名 + 作者」这个约束就丢了（见 relevance.score_multi）。
+        #
+        # 所以：搜索用**最长的那个词**（书名通常比作者名长），排序用整串。
+        #   搜「余华 活着」      → 站点搜「活着」，排序按「书名 且 作者」
+        #   搜「顾漫 微微一笑很倾城」→ 站点搜「微微一笑很倾城」
+        # 为什么不挑"最小的"或"第一个"：用最长词最接近"用户在找的那本书"，
+        # 而且本站的搜索是**词级**匹配，用短词（作者名）搜出来的候选里
+        # 混着一堆同作者的其他书，排序阶段再滤一遍，浪费配额。
+        #
+        # ⚠⚠ 但「取最长」单独用会漏召回 —— 实测踩到的坑：
+        #     搜「余华 活着」时两个词**等长**（都 2 字），max() 返回**第一个**
+        #     「余华」，于是拿作者名当书名去搜，站点返回的全是余华的书
+        #     （《兄弟》…），《活着》**根本没进候选池** —— 排序再准也无从谈起。
+        #   修法：并列最长时把**所有**并列词都搜，结果合并后再按完整关键词排序。
+        #     这样「余华 活着」会同时搜「余华」和「活着」，两边候选池加起来，
+        #     正主《活着》在池子里，score_multi 才能把它顶到第一。
+        from .relevance import _split_terms
+        _terms = _split_terms(keyword)
+        if len(_terms) > 1:
+            _mlen = max(len(t) for t in _terms)
+            _ties = [t for t in _terms if len(t) == _mlen]
+        else:
+            _ties = []
+        search_kws = _ties if _ties else [keyword]
+
         t_start = time.time()
         # 「懒惰来源」（联网发现）不参与常规扇出 —— 它一次要跑两个搜索引擎
         # 外加十几个站点的核实，每搜一次都捎上它，所有搜索都会慢一截。
@@ -255,7 +283,17 @@ class Engine:
         def _run(src: Source):
             try:
                 src.set_log(on_progress)
-                items = src.search(keyword) or []
+                # 搜索结果用 search_kws（多词时取最长词，并列最长时全搜，见上）；
+                # 后面排序/去噪仍然用完整的 keyword。
+                items = []
+                seen_u: set[str] = set()
+                for _kw in search_kws:
+                    for it in (src.search(_kw) or []):
+                        u = getattr(it, "url", "") or ""
+                        if u and u in seen_u:
+                            continue
+                        seen_u.add(u)
+                        items.append(it)
                 for it in items:
                     it.source_display = src.display
                 return items
@@ -326,9 +364,9 @@ class Engine:
                         and web_thread is None
                         and not streamed
                         and elapsed >= SEARCH_WEB_PREEMPT):
-                    def _run_web(_w=web_target, _kw=keyword,
+                    def _run_web(_w=web_target, _kw=keyword, _skw=search_kws,
                                  _or=on_result, _op=on_progress):
-                        got = self._discover(_w, _kw, _or, _op)
+                        got = self._discover(_w, _kw, _or, _op, search_kw=_skw)
                         with web_box_lock:
                             web_box["items"] = got or []
                     web_thread = threading.Thread(
@@ -494,7 +532,8 @@ class Engine:
         if discover and need_web and not already_web:
             web = self._find_source(DISCOVER_SOURCE)
             if web is not None:
-                extra = self._discover(web, keyword, on_result, on_progress)
+                extra = self._discover(web, keyword, on_result, on_progress,
+                                       search_kw=search_kws)
                 if extra:
                     if probe:
                         self.probe_all(extra, on_verified=on_verified, top=len(extra))
@@ -533,15 +572,33 @@ class Engine:
         keyword: str,
         on_result: Optional[Callable[[BookResult], None]],
         on_progress: Optional[Callable[[str, str, bool], None]],
+        search_kw: Optional[object] = None,
     ) -> list[BookResult]:
         """唤起联网发现来源，拿回它的候选。
 
         单独一个方法是为了让异常不外泄 —— 联网发现失败不该让整次搜索崩掉，
         毕竟本地结果（如果有）还是能用的。
+
+        `keyword` 是**完整关键词**（用于打分），`search_kw` 是**实际拿去搜的
+        词**（多词时是最长那个；并列最长时是 list，要逐个搜）。两者分开是因为
+        "搜什么"和"按什么排序"是两件事。
         """
+        # search_kw 可能是 str 也可能是 list[str]（多词并列最长，见 search()）
+        if isinstance(search_kw, (list, tuple)):
+            looks = [str(x) for x in search_kw if str(x).strip()] or [keyword]
+        else:
+            looks = [search_kw or keyword]
         try:
             web.set_log(on_progress)
-            extra = web.search(keyword) or []
+            extra: list[BookResult] = []
+            seen_u: set[str] = set()
+            for look_for in looks:
+                for it in (web.search(look_for) or []):
+                    u = getattr(it, "url", "") or ""
+                    if u and u in seen_u:
+                        continue
+                    seen_u.add(u)
+                    extra.append(it)
         except Exception as e:  # noqa: BLE001
             logger.info("联网发现失败: %s", e)
             return []

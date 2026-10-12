@@ -57,6 +57,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 _ROOT = Path(__file__).resolve().parent.parent
 # 库文件的落点。`NOVEL_REGISTRY` 可以让测试 / 命令行工具用另一份，
@@ -84,6 +85,77 @@ UNHEALTHY_FAILS = 3
 SHRINK_GUARD_MIN = 5
 SHRINK_GUARD_RATIO = 0.5
 
+# 影视站的路径特征（和 webfetch._VIDEO_PATH_RE 同一套词表）。
+# 为什么来源库这里也要判：库里的站点是**踩着历史成功记录**走缓存命中的，
+# 根本不会再走一遍 `analyze()` —— 所以 webfetch 里新加的否决拦不到**已经
+# 学坏了的**条目。实测：`hbsjob.cn`（首播网）ok=4 蹲在库里，搜「余华 活着」
+# 时直接命中缓存，把一部韩国丧尸片的剧集列表当成《活着》的章节目录端出来。
+# 所以读数时要顺手清一遍 —— 这叫「自愈」，不然脏数据永远洗不掉。
+_VIDEO_PATH_RE = re.compile(
+    r"/(?:vod(?:detail|play|type|show|search|list)?|show|play|detail|"
+    r"movie|film|dianshiju|dongman|zongyi|variety)(?:/|$|\?|\.html)",
+    re.I,
+)
+
+
+def _is_video_site(host: str, site: dict) -> bool:
+    """这个站点条目是不是影视站（该被剔除）。"""
+    tpl = str(site.get("toc_tpl") or "")
+    if tpl and _VIDEO_PATH_RE.search("/" + tpl.lstrip("/")):
+        return True
+    name = str(site.get("name") or "")
+    # 站名判据要**同时**有影视特征词和「章节数偏多且不像章」才成立，
+    # 但站名能骗人的地方多（轻小说站自称「动漫」），所以这里只认最硬的
+    # 「影视/电影/影院/剧场/追剧」——不含「动漫」（动漫是合法小说分类）。
+    if re.search(r"影视|电影|影院|剧场|追剧|播放器", name):
+        return True
+    return False
+
+
+def _is_video_book(url: str) -> bool:
+    """这本书的地址是不是影视站的详情页。"""
+    try:
+        p = urlparse(url).path or ""
+    except Exception:  # noqa: BLE001
+        p = url or ""
+    return bool(_VIDEO_PATH_RE.search(p))
+
+
+def _scrub(db: dict) -> int:
+    """把库里识别为影视站的条目判死（自愈）。返回清理条数。
+
+    **不移除条目**，只把 `ok` 归零、打上 `fail` 计数和原因 ——
+    这样：
+      · `is_healthy()` 会否掉它，不再被当候选（达到目的）
+      · 记录还在，排查时能看到"这个站曾经被学过、后被判定为影视站"
+      · 万一判错了（比如某个小说站的路径恰好含 /show/），
+        后续真实访问成功会重新累加 `ok`，能自己爬回来
+    """
+    n = 0
+    for host, site in list((db.get("sites") or {}).items()):
+        if not isinstance(site, dict):
+            continue
+        if site.get("video_blocked"):
+            continue
+        if _is_video_site(host, site):
+            site["ok"] = 0
+            site["fail"] = max(int(site.get("fail") or 0), UNHEALTHY_FAILS)
+            site["video_blocked"] = 1
+            site["blocked_why"] = "影视站（路径/站名特征）"
+            n += 1
+    for url, b in list((db.get("books") or {}).items()):
+        if not isinstance(b, dict):
+            continue
+        if b.get("video_blocked"):
+            continue
+        if _is_video_book(url):
+            b["ok"] = 0
+            b["fail"] = max(int(b.get("fail") or 0), UNHEALTHY_FAILS)
+            b["video_blocked"] = 1
+            b["blocked_why"] = "影视站（路径特征）"
+            n += 1
+    return n
+
 
 # ---------------------------------------------------------------------------
 # 读 / 写
@@ -108,6 +180,11 @@ def _load() -> dict:
         raw["sites"] = {}
     if not isinstance(raw["books"], dict):
         raw["books"] = {}
+    # 自愈：把影视站条目判死，见 _scrub 注释
+    try:
+        _scrub(raw)
+    except Exception:  # noqa: BLE001
+        pass
     _cache = raw
     return _cache
 
@@ -126,6 +203,11 @@ def _read_disk() -> dict:
         raw["sites"] = {}
     if not isinstance(raw["books"], dict):
         raw["books"] = {}
+    # 自愈：把影视站条目判死，见 _scrub 注释
+    try:
+        _scrub(raw)
+    except Exception:  # noqa: BLE001
+        pass
     return raw
 
 
@@ -390,6 +472,10 @@ def is_healthy(site: dict) -> bool:
     """一个站点还算不算「能用」。"""
     if not site:
         return False
+    # 被判定为影视站的，一律不健康 —— 这条要放在最前面，
+    # 因为下面的计数判据在「影视站恰好最近访问成功」时可能放行它。
+    if site.get("video_blocked"):
+        return False
     ok = int(site.get("ok", 0))
     fail = int(site.get("fail", 0))
     if ok == 0 and fail >= UNHEALTHY_FAILS:
@@ -472,6 +558,9 @@ def healthy_books() -> dict:
 
 def is_book_healthy(book: dict) -> bool:
     if not book:
+        return False
+    # 影视站的书一律不健康（同 is_healthy）
+    if book.get("video_blocked"):
         return False
     ok = int(book.get("ok", 0))
     fail = int(book.get("fail", 0))

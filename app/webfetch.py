@@ -51,6 +51,33 @@ from .utils import fetch_text, host_of
 _CONTENT_HINTS = ("htmlcontent", "chaptercontent", "readcontent", "content",
                   "booktext", "textcontent", "showtxt", "article", "txt")
 
+# ---------------------------------------------------------------------------
+# 视频站否决
+# ---------------------------------------------------------------------------
+# 影视站（苹果 CMS / 首播网 / 南瓜影视这一类）**长得极像小说站**：
+# 详情页会列一长串「第01集、第02集、…」的剧集链接，启发式数一数够 8 条、
+# 质量分也够，就被判成 `kind="toc"` 当成书收进来。
+#
+# 实测：搜「余华 活着」时 `hbsjob.cn/voddetail/35245.html`（首播网）被当成
+# 一个可读源，标题还是从搜索引擎带来的话题标签 `#活着`，正文却是那部韩国
+# 丧尸片《#活着》的剧情简介 —— 完全是另一回事。
+#
+# 判据用**路径特征**，而不是页面内容：苹果 CMS 的路径是固定词表
+# （`voddetail` / `vodplay` / `vodtype` / `vodshow` / `vodsearch`），
+# 小说站几乎不可能用；内容特征（有没有 `<video>`）反而不稳，
+# 很多视频站用 JS 播放器，HTML 里一个 video 标签都没有。
+_VIDEO_PATH_RE = re.compile(
+    r"/(?:vod(?:detail|play|type|show|search|list)?|show|play|detail|"
+    r"movie|film|dianshiju|dongman|zongyi|variety)(?:/|$|\?|\.html)",
+    re.I,
+)
+
+# 剧集用词：出现在「章节链接」的文字里就说明这是分集列表，不是章节目录。
+_EPISODE_TEXT_RE = re.compile(r"第\s*[0-9零一二三四五六七八九十百]{1,4}\s*[集期话]")
+
+# 站名里带这些词的，直接判为影视站
+_VIDEO_NAME_RE = re.compile(r"影视|电影|影院|剧场|视频|TV|电视|播放|追剧|综艺|动漫", re.I)
+
 _A_RE = re.compile(r"""<a\s[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]{0,80}?)</a>""", re.I)
 _TAG_RE = re.compile(r"<[^>]+>")
 _HIDDEN_RE = re.compile(r"<(script|style|noscript|template)\b[^>]*>[\s\S]*?</\1\s*>", re.I)
@@ -684,6 +711,27 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
     meta = extract_meta(html)
     # 站名顺手学一下（只学一次，`note_site` 里 name 为空才填）
     sname = extract_site_name(html)
+
+    # —— 视频站否决（必须在 toc 判定**之前**）——
+    # 见 _VIDEO_PATH_RE 注释：影视站的剧集列表会被误判成章节目录。
+    # 这里判死了还要 `note_site(ok=False)`，否则下次还会来撞。
+    #
+    # 三档判据，从硬到软：
+    #   ① 路径里就有 vod*/movie 这类苹果 CMS 特征词 —— 最硬，单独成立。
+    #   ② 目录条目里 ≥60% 是「第N集/期/话」 —— 剧集列表，单独成立。
+    #   ③ 站名带「影视/追剧」等词 —— **必须同时**有较多目录条目才生效。
+    #      单靠站名太险：轻小说站常自称「XX动漫」，光看名字会误杀。
+    _epn = sum(1 for c in toc if _EPISODE_TEXT_RE.search(str(c.get("title") or "")))
+    _ep_ratio = (_epn / len(toc)) if toc else 0.0
+    _bad_path = bool(_VIDEO_PATH_RE.search(base) or _VIDEO_PATH_RE.search(url))
+    _bad_ep = len(toc) >= 8 and _ep_ratio >= 0.6
+    _bad_name = bool(_VIDEO_NAME_RE.search(sname)) and len(toc) >= 8
+    if _bad_path or _bad_ep or _bad_name:
+        registry.note_site(host, ok=False, name=sname)
+        return {
+            "kind": "unknown", "url": url, "final_url": base, "host": host,
+            "note": "影视站，不是小说站", "size": len(html),
+        }
 
     if len(toc) >= 8:
         quality, why = toc_quality(toc)
