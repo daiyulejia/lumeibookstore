@@ -765,6 +765,10 @@ html[data-theme="lumei-night"] .toast{
   .lu-capy,.lu-say,
   html[data-theme="lumei"] .brand .mark,
   html[data-theme="lumei-night"] .brand .mark{animation:none!important}
+  /* ⚠ 暖光脉动（.lu-duo::before）也要停 —— 它 7s 一个循环，比呼吸更"慢而持久"，
+     对前庭敏感的人反而更容易晕。这里顺手把它的 opacity 固定在中值，
+     避免停掉动画后回落成"从不出现"（那样等于换了个视觉）。 */
+  .lu-duo::before{animation:none!important;opacity:.55!important}
   html[data-theme="lumei"] .task,
   html[data-theme="lumei-night"] .task{animation:none!important;border-left-color:color-mix(in srgb,var(--a-1) 60%,transparent)}
   html[data-theme="lumei"] .nl-steps li:last-child .t,

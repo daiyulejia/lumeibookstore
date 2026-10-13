@@ -67,6 +67,35 @@ def read(p: Path) -> str:
         return ""
 
 
+def _extract_at_rule_body(css: str, at: str, keyword: str):
+    """从 CSS 里**真解析**出某条 at-rule（如 `@media (prefers-reduced-motion...)`）
+    的 `{ ... }` 块体；找不到返回 None。
+
+    为什么必须用括号配对而不是正则 `\\{(.*?)\\}`：
+      非贪婪正则会停在**第一个** `}`，而真正想拿的是整块 ——
+      实测会导致"块里明明被破坏成别的值，断言却匹配到块外的 `animation:none` 而假绿"。
+      这是本文件里踩过的坑（`test_motion` 的可访问性断言第一版就是正则版，
+      **反证时不报红**），所以这里老实用计数器配对。
+    """
+    i = css.find(at)
+    while i != -1:
+        j = css.find("{", i)
+        if j == -1:
+            return None
+        # at-rule 的"前导"（从 @ 到 { 之间）里要出现过关键字
+        if keyword in css[i:j]:
+            depth, k = 1, j + 1
+            while k < len(css) and depth:
+                if css[k] == "{":
+                    depth += 1
+                elif css[k] == "}":
+                    depth -= 1
+                k += 1
+            return css[j + 1:k - 1]
+        i = css.find(at, i + 1)
+    return None
+
+
 # ===========================================================================
 # 1. 挂载
 # ===========================================================================
@@ -202,6 +231,62 @@ def t_a11y() -> None:
         ok("motion.css 有 prefers-reduced-motion 兜底")
     else:
         bad("motion.css 缺 prefers-reduced-motion —— 这是可访问性要求，不是可选项")
+
+    # ⚠⚠ 品牌层也必须自带兜底。
+    #
+    # 为什么专门盯 lumei.css：品牌层的所有动效（水豚呼吸 / 入场 / 暖光脉动 /
+    # logo 呼吸）都写在 lumei.css 里，**不在 motion.css**。
+    # 上面那条只证明"框架层有兜底"，管不到品牌层 —— 踩过：新加的 `.lu-duo::before`
+    # 暖光脉动（7s 循环）当时就漏在 reduced-motion 块外，系统偏好"减少动效"的人
+    # 照样会看到它一直在呼吸。这类"新增动效忘记补兜底"最容易反复发生，
+    # 所以这里钉一条：lumei.css 必须有 prefers-reduced-motion 块。
+    lc = read(CSS / "lumei.css")
+    if "prefers-reduced-motion" in lc:
+        ok("lumei.css 有 prefers-reduced-motion 兜底（品牌层动效不会漏）")
+    else:
+        bad("lumei.css 缺 prefers-reduced-motion —— 品牌层的呼吸/入场/暖光会无视系统偏好")
+
+    # 品牌层里出现的每一个动画，都要能在 reduced-motion 块里被关掉。
+    #
+    # ⚠ 这里不能只 grep "animation:none"（第一版就是这么写的，**反证时不报红**）：
+    #   · 块里但凡正则可以匹配到别处的 `animation:none`，断言就假绿；
+    #   · 而且 `\n\}` 只能匹配到**第一个** `}`（块里本来就该只有一个，
+    #     但破坏后多个声明分支会让人误以为"还在关"）。
+    # 正确做法：**真解析出块体**，要求块内 `animation` 声明存在且**没有不是 none 的**。
+    body = _extract_at_rule_body(lc, "@media", "prefers-reduced-motion")
+    if body is None:
+        bad("品牌层找不到 prefers-reduced-motion 块体（只有关键字不算）")
+    else:
+        # ⚠⚠ 必须**先剥掉注释**再判 —— 踩过（本断言第一版就是漏了这步）：
+        #   给规矩写的说明注释里也会出现 `.lu-duo::before` 这类选择器名，
+        #   于是"把规则整条删掉"后，注释还在 → 子串匹配照样命中 → **假绿**。
+        #   （反证时就是这样骗过去的：删了规则，测试仍全绿。）
+        body_code = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+
+        # ⚠ 值的边界是 `;` 或 `}` 或行尾 —— 不能只切 `;`：
+        #   块里**最后一条**声明后面直接跟 `}`（没有分号），
+        #   用 `[^;]+` 会把 `}` 一起吞进来（踩过：值变成 "none!important}" 判红）。
+        anims = re.findall(r"animation\s*:\s*([^;}\n]+)", body_code)
+        if not anims:
+            bad("品牌层 reduced-motion 块里没有任何 animation 声明 —— 品牌动效关不掉")
+        else:
+            # 值可能是 `none` 或 `none!important`（`!important` 前不一定有空格）
+            not_none = [a.strip() for a in anims
+                        if not a.strip().lower().startswith("none")]
+            if not_none:
+                bad(f"品牌层 reduced-motion 块里有 'animation' 没关成 none："
+                    f"{', '.join(not_none[:3])}")
+            else:
+                ok(f"品牌层 reduced-motion 块把关掉的动画全设成 none（{len(anims)} 处）")
+
+        # 新增动效忘记补兜底是最容易反复发生的（暖光脉动就漏过一次）。
+        # 用一条稳的契约代替脆弱的"逐个 keyframes 追宿主"：
+        # 块里必须同时关掉 水豚族（呼吸/入场/浮动）与 暖光脉动。
+        if ".lu-capy" in body_code and ".lu-duo::before" in body_code:
+            ok("品牌层兜底覆盖了 水豚(呼吸/入场/浮动) + 暖光脉动")
+        else:
+            miss = [s for s in (".lu-capy", ".lu-duo::before") if s not in body_code]
+            bad(f"品牌层兜底漏了：{', '.join(miss)}")
 
     mj = read(JS / "motion.js")
     if "reduceMotion()" in mj and "matchMedia" in mj:
