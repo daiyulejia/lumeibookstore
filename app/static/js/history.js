@@ -30,7 +30,7 @@
    那是后端的事，前端只管展示。这也避免了"前端记一次、后端记一次"的重复计数。
    ========================================================================== */
 
-import { $, api, esc } from "./util.js";
+import { $, api, esc, confirmBox } from "./util.js";
 
 const MAX_SHOW = 8;
 
@@ -155,6 +155,19 @@ async function delOne(kw) {
 }
 
 async function clearAll() {
+  // ⚠ 必须二次确认。理由有两层：
+  //   ① 这是**不可逆**的（服务端不做软删、不留备份，删了就真没了）；
+  //   ② 按钮就在搜索框正下方，比统计页签那两个更容易误触 ——
+  //      而统计面板里同样的动作是要确认的，两处不一致本身也是产品问题。
+  //   确认框是异步的，期间下拉会因 blur 收起，所以确认后再处理。
+  if (!(await confirmBox({
+    title: "清空搜索历史？",
+    message: "搜过的词会全部忘掉，无法恢复。",
+    okText: "清空", danger: true,
+  }))) {
+    if (_input) _input.focus();
+    return;
+  }
   _items = [];
   close();
   try { await api.del("/api/history/search"); } catch {}

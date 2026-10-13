@@ -116,6 +116,15 @@ def main() -> int:
     check("删单条 stopPropagation（否则删完又搜一次）", "stopPropagation" in around3)
     check("包裹 .h-wrap（否则 absolute 会跑到整页宽）", 'className = "h-wrap"' in hist_js)
     check("包 h-wrap 时把 .searchbox 挪进去", "wrap.appendChild(host)" in hist_js)
+    # ⚠ 下拉里的"清空"必须二次确认 —— 它是不可逆的，且按钮就在搜索框下方，
+    #   比统计页签那两个更容易误触。两处同样的动作（清空搜索历史）行为要一致。
+    check("下拉「清空」有二次确认（不可逆，防误触）",
+          re.search(r"async function clearAll[\s\S]{0,400}?confirmBox\(", hist_js)
+          is not None,
+          "清空搜索历史没确认就删了 —— 手滑一下全没")
+    check("下拉「清空」的确认框标了 danger", 
+          re.search(r"async function clearAll[\s\S]{0,500}?danger: true", hist_js)
+          is not None)
 
     print("\n—— 6. CSS 类名对得上 ——")
     # 前端造的类名，必须都能在 CSS 里找到 —— 否则样式不生效（不报错）
@@ -143,6 +152,27 @@ def main() -> int:
     check("关抽屉时 #stats 也会清 hash",
           re.search(r"#\(sources\|registry\|stats\)", src_js) is not None,
           "drawer:closed 里的正则没跟上新 hash")
+
+    print("\n—— 7b. 热词榜：接了、且挂了不拖垮整页 ——")
+    # 后端这个接口早就写好了，但前端一直没人消费 —— 钉住"真接了"。
+    check("拉 /api/history/search/hot", "/api/history/search/hot" in src_js,
+          "热词榜没接上，后台接口白写")
+    check("热词 chip 带 data-hot（可点）", "data-hot" in src_js)
+    # ⚠ 关键：热词榜必须**单独兜错**，不能进 Promise.all 的必败链。
+    #   Promise.all 一损俱损 —— 热词接口挂掉会让四格数字 + 访客明细
+    #   一起消失，那是把"锦上添花"做成了"单点故障"。
+    check("热词请求单独 catch（挂了不拖垮整个统计面板）",
+          re.search(r"soft\(\s*api\.get\(\"/api/history/search/hot", src_js)
+          is not None,
+          "热词又裸进 Promise.all 了 —— 它一挂整页就没数字了")
+    # 点热词必须复用主搜索（填回 #q + 派发 Enter），不能自己另写一套
+    check("点热词填回 #q（复用主搜索流程）", 'q.value = el.dataset.hot' in src_js)
+    check("点热词派发 Enter（走主搜索，不另写一套）",
+          'new KeyboardEvent("keydown", { key: "Enter"' in src_js)
+    check("点热词后收抽屉（不挡结果）", "__wbClose" in src_js,
+          "直接 remove() 会留下挂在 document 上的孤儿 Esc 监听")
+    check("热词 chip 有可点样式 .click", ".stchip.click" in css,
+          "没有 cursor/hover，用户不会知道它可点")
 
     print("\n—— 8. 埋点登记表同步 ——")
     for ev in ["history.del", "history.clear", '"visits.clear"', "visits.load.fail"]:

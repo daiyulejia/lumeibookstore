@@ -292,11 +292,16 @@ async function renderStats() {
   body.innerHTML = Array.from({ length: 3 }).map(() =>
     `<div class="skel" style="margin-bottom:9px"><i class="w1"></i></div>`).join("");
   try {
+    // ⚠ 热词榜单独 catch，**不能进 Promise.all 的必败链**：
+    //   Promise.all 是"一损俱损" —— 热词接口挂掉会让整个统计面板报错，
+    //   而用户失去的是"四格数字 + 访客明细"这些更重要的东西。
+    //   热词只是锦上添花，缺了就当空榜渲染。
+    const soft = p => p.catch(() => null);
     const [hs, vs, recent, hot] = await Promise.all([
       api.get("/api/history/search/stats"),
       api.get("/api/visits/stats"),
       api.get("/api/visits?limit=12"),
-      api.get("/api/history/search/hot?limit=10"),
+      soft(api.get("/api/history/search/hot?limit=10")),
     ]);
     if (!fresh(my)) return;
 
