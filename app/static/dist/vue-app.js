@@ -10983,11 +10983,11 @@ ${style}
  height: 1em;
  width: 1em;
  `)])])]);
-    const _hoisted_1$4 = ["viewBox"];
-    const _hoisted_2$4 = ["values", "dur"];
-    const _hoisted_3$4 = ["stroke-width", "cx", "cy", "r", "stroke-dasharray", "stroke-dashoffset"];
-    const _hoisted_4$3 = ["values", "dur"];
-    const _hoisted_5$3 = ["values", "dur"];
+    const _hoisted_1$5 = ["viewBox"];
+    const _hoisted_2$5 = ["values", "dur"];
+    const _hoisted_3$5 = ["stroke-width", "cx", "cy", "r", "stroke-dasharray", "stroke-dashoffset"];
+    const _hoisted_4$4 = ["values", "dur"];
+    const _hoisted_5$4 = ["values", "dur"];
     const duration = "1.6s";
     const exposedLoadingProps = {
       strokeWidth: {
@@ -11057,7 +11057,7 @@ ${style}
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_2$4), createBaseVNode("circle", {
+          }, null, 8, _hoisted_2$5), createBaseVNode("circle", {
             class: normalizeClass$1(`${clsPrefix}-base-loading__icon`),
             fill: "none",
             stroke: "currentColor",
@@ -11076,14 +11076,14 @@ ${style}
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_4$3), createBaseVNode("animate", {
+          }, null, 8, _hoisted_4$4), createBaseVNode("animate", {
             attributeName: "stroke-dashoffset",
             values: `${5.67 * radius};${1.42 * radius};${5.67 * radius}`,
             begin: "0s",
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_5$3)], 10, _hoisted_3$4)])], 14, _hoisted_1$4))], 2)], 2)) : (openBlock(), createElementBlock("div", {
+          }, null, 8, _hoisted_5$4)], 10, _hoisted_3$5)])], 14, _hoisted_1$5))], 2)], 2)) : (openBlock(), createElementBlock("div", {
             key: "placeholder",
             class: normalizeClass$1(`${clsPrefix}-base-loading__placeholder`)
           }, [normalizeVNode(() => this.$slots.default?.())], 2))
@@ -17252,53 +17252,53 @@ ${style}
       }
       return target;
     };
-    const _hoisted_1$3 = { class: "rk-vue" };
-    const _hoisted_2$3 = { class: "rk-head" };
-    const _hoisted_3$3 = {
+    const _hoisted_1$4 = { class: "rk-vue" };
+    const _hoisted_2$4 = { class: "rk-head" };
+    const _hoisted_3$4 = {
       class: "rk-age",
       id: "ranksAge"
     };
-    const _hoisted_4$2 = { class: "rk-actions" };
-    const _hoisted_5$2 = {
+    const _hoisted_4$3 = { class: "rk-actions" };
+    const _hoisted_5$3 = {
       key: 0,
       id: "ranksTabs",
       class: "rk-tabs",
       role: "tablist"
     };
-    const _hoisted_6$2 = ["data-kind", "aria-selected", "onClick"];
-    const _hoisted_7$2 = {
+    const _hoisted_6$3 = ["data-kind", "aria-selected", "onClick"];
+    const _hoisted_7$3 = {
       key: 1,
       class: "rk-desc",
       id: "ranksDesc"
     };
-    const _hoisted_8$2 = {
+    const _hoisted_8$3 = {
       key: 2,
       class: "rk-body"
     };
-    const _hoisted_9$2 = {
+    const _hoisted_9$3 = {
       key: 0,
       class: "rk-skel"
     };
-    const _hoisted_10$2 = ["data-title", "data-kind", "onClick"];
-    const _hoisted_11$1 = { class: "rk-src" };
-    const _hoisted_12$1 = {
+    const _hoisted_10$3 = ["data-title", "data-kind", "onClick"];
+    const _hoisted_11$2 = { class: "rk-src" };
+    const _hoisted_12$2 = {
       key: 0,
       class: "rk-owned",
       title: "这本书已经在你书架里了"
     };
-    const _hoisted_13$1 = {
+    const _hoisted_13$2 = {
       key: 1,
       class: "rk-go"
     };
-    const _hoisted_14$1 = {
+    const _hoisted_14$2 = {
       key: 2,
       class: "rk-err"
     };
-    const _hoisted_15 = {
+    const _hoisted_15$1 = {
       key: 3,
       class: "rk-err"
     };
-    const _sfc_main$4 = {
+    const _sfc_main$5 = {
       __name: "RanksPanel",
       setup(__props) {
         const RefreshIcon = {
@@ -17495,11 +17495,11 @@ ${style}
           clearTimeout(recheckTimer);
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1$3, [
-            createBaseVNode("div", _hoisted_2$3, [
+          return openBlock(), createElementBlock("div", _hoisted_1$4, [
+            createBaseVNode("div", _hoisted_2$4, [
               _cache[2] || (_cache[2] = createBaseVNode("h2", { class: "rk-title" }, "热门榜单", -1)),
-              createBaseVNode("span", _hoisted_3$3, toDisplayString(freshness.value), 1),
-              createBaseVNode("div", _hoisted_4$2, [
+              createBaseVNode("span", _hoisted_3$4, toDisplayString(freshness.value), 1),
+              createBaseVNode("div", _hoisted_4$3, [
                 createVNode(unref(Button), {
                   id: "ranksRefresh",
                   size: "small",
@@ -17533,7 +17533,7 @@ ${style}
                 })
               ])
             ]),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5$2, [
+            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5$3, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(kinds.value, (k) => {
                 return openBlock(), createElementBlock("button", {
                   key: k.kind,
@@ -17543,12 +17543,12 @@ ${style}
                   "aria-selected": k.kind === cur.value,
                   type: "button",
                   onClick: ($event) => onKindChange(k.kind)
-                }, toDisplayString(k.label), 11, _hoisted_6$2);
+                }, toDisplayString(k.label), 11, _hoisted_6$3);
               }), 128))
             ])) : createCommentVNode("", true),
-            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$2, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8$2, [
-              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$2, [
+            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$3, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
+            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8$3, [
+              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$3, [
                 (openBlock(), createElementBlock(Fragment, null, renderList(6, (i) => {
                   return createVNode(unref(Skeleton_default), {
                     key: i,
@@ -17583,13 +17583,13 @@ ${style}
                         createBaseVNode("b", null, toDisplayString(it.title), 1),
                         createBaseVNode("em", null, toDisplayString(metaOf(it) || " "), 1)
                       ], 4),
-                      createBaseVNode("span", _hoisted_11$1, toDisplayString(it.source_display || it.source || ""), 1),
-                      isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_12$1, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_13$1, "找这本 ›"))
-                    ], 10, _hoisted_10$2);
+                      createBaseVNode("span", _hoisted_11$2, toDisplayString(it.source_display || it.source || ""), 1),
+                      isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_12$2, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_13$2, "找这本 ›"))
+                    ], 10, _hoisted_10$3);
                   }), 128))
                 ]),
                 _: 1
-              })) : !loading.value ? (openBlock(), createElementBlock("div", _hoisted_14$1, [
+              })) : !loading.value ? (openBlock(), createElementBlock("div", _hoisted_14$2, [
                 createTextVNode(toDisplayString(emptyHint.value || "这个榜单暂时没有内容。") + " ", 1),
                 createVNode(unref(Button), {
                   size: "tiny",
@@ -17602,7 +17602,7 @@ ${style}
                   _: 1
                 })
               ])) : createCommentVNode("", true),
-              error.value && items.value.length ? (openBlock(), createElementBlock("div", _hoisted_15, [
+              error.value && items.value.length ? (openBlock(), createElementBlock("div", _hoisted_15$1, [
                 createTextVNode(" 刷新失败：" + toDisplayString(error.value) + " ", 1),
                 createVNode(unref(Button), {
                   size: "tiny",
@@ -17629,11 +17629,11 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-875a0654"]]);
-    const _hoisted_1$2 = ["src"];
-    const _hoisted_2$2 = { class: "t" };
-    const _hoisted_3$2 = { class: "a" };
-    const _sfc_main$3 = {
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$5, [["__scopeId", "data-v-875a0654"]]);
+    const _hoisted_1$3 = ["src"];
+    const _hoisted_2$3 = { class: "t" };
+    const _hoisted_3$3 = { class: "a" };
+    const _sfc_main$4 = {
       __name: "BookCover",
       props: {
         /** 真封面外链（可空 —— 空了就用渐变色块兜底） */
@@ -17681,39 +17681,39 @@ ${style}
               loading: "lazy",
               decoding: "async",
               onError: _cache[0] || (_cache[0] = ($event) => hasImg.value = false)
-            }, null, 40, _hoisted_1$2)) : createCommentVNode("", true),
-            createBaseVNode("div", _hoisted_2$2, toDisplayString(shortTitle.value), 1),
-            createBaseVNode("div", _hoisted_3$2, toDisplayString(shortAuthor.value), 1)
+            }, null, 40, _hoisted_1$3)) : createCommentVNode("", true),
+            createBaseVNode("div", _hoisted_2$3, toDisplayString(shortTitle.value), 1),
+            createBaseVNode("div", _hoisted_3$3, toDisplayString(shortAuthor.value), 1)
           ], 6);
         };
       }
     };
-    const _hoisted_1$1 = { class: "wrap" };
-    const _hoisted_2$1 = { class: "filters" };
-    const _hoisted_3$1 = {
+    const _hoisted_1$2 = { class: "wrap" };
+    const _hoisted_2$2 = { class: "filters" };
+    const _hoisted_3$2 = {
       id: "shelfStat",
       class: "shelf-stat"
     };
-    const _hoisted_4$1 = {
+    const _hoisted_4$2 = {
       key: 0,
       class: "shelfgrid",
       id: "shelfList"
     };
-    const _hoisted_5$1 = {
+    const _hoisted_5$2 = {
       key: 1,
       class: "shelfgrid",
       id: "shelfList"
     };
-    const _hoisted_6$1 = ["data-id"];
-    const _hoisted_7$1 = { class: "info" };
-    const _hoisted_8$1 = { class: "by" };
-    const _hoisted_9$1 = { class: "prog" };
-    const _hoisted_10$1 = { class: "lb" };
-    const _hoisted_11 = { class: "bar" };
-    const _hoisted_12 = { class: "lb" };
-    const _hoisted_13 = { class: "bar" };
-    const _hoisted_14 = { class: "acts" };
-    const _sfc_main$2 = {
+    const _hoisted_6$2 = ["data-id"];
+    const _hoisted_7$2 = { class: "info" };
+    const _hoisted_8$2 = { class: "by" };
+    const _hoisted_9$2 = { class: "prog" };
+    const _hoisted_10$2 = { class: "lb" };
+    const _hoisted_11$1 = { class: "bar" };
+    const _hoisted_12$1 = { class: "lb" };
+    const _hoisted_13$1 = { class: "bar" };
+    const _hoisted_14$1 = { class: "acts" };
+    const _sfc_main$3 = {
       __name: "ShelfPanel",
       setup(__props) {
         const books = /* @__PURE__ */ ref([]);
@@ -17790,10 +17790,10 @@ ${style}
           clearTimeout(safety);
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1$1, [
-            createBaseVNode("div", _hoisted_2$1, [
+          return openBlock(), createElementBlock("div", _hoisted_1$2, [
+            createBaseVNode("div", _hoisted_2$2, [
               _cache[1] || (_cache[1] = createBaseVNode("div", { class: "shelf-h" }, "我的书架", -1)),
-              createBaseVNode("span", _hoisted_3$1, toDisplayString(statText.value), 1),
+              createBaseVNode("span", _hoisted_3$2, toDisplayString(statText.value), 1),
               _cache[2] || (_cache[2] = createBaseVNode("div", { class: "spacer" }, null, -1)),
               createVNode(unref(Button), {
                 id: "btnShelfReload",
@@ -17808,7 +17808,7 @@ ${style}
                 _: 1
               }, 8, ["loading"])
             ]),
-            loading.value && !books.value.length ? (openBlock(), createElementBlock("div", _hoisted_4$1, [
+            loading.value && !books.value.length ? (openBlock(), createElementBlock("div", _hoisted_4$2, [
               (openBlock(), createElementBlock(Fragment, null, renderList(4, (i) => {
                 return createBaseVNode("div", {
                   key: i,
@@ -17817,7 +17817,7 @@ ${style}
                   createStaticVNode('<div class="sk-cover" data-v-f5c78a01></div><div class="info" data-v-f5c78a01><div class="sk-line w60" data-v-f5c78a01></div><div class="sk-line w40" data-v-f5c78a01></div><div class="sk-line w80 tall" data-v-f5c78a01></div></div>', 2)
                 ])]);
               }), 64))
-            ])) : (openBlock(), createElementBlock("div", _hoisted_5$1, [
+            ])) : (openBlock(), createElementBlock("div", _hoisted_5$2, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(books.value, (b, i) => {
                 return openBlock(), createElementBlock("div", {
                   key: b.id,
@@ -17825,39 +17825,39 @@ ${style}
                   "data-id": b.id,
                   style: normalizeStyle({ "--mo-i": i })
                 }, [
-                  createVNode(_sfc_main$3, {
+                  createVNode(_sfc_main$4, {
                     cover: b.cover,
                     title: b.title,
                     author: b.author
                   }, null, 8, ["cover", "title", "author"]),
-                  createBaseVNode("div", _hoisted_7$1, [
+                  createBaseVNode("div", _hoisted_7$2, [
                     createBaseVNode("h4", null, toDisplayString(b.title), 1),
-                    createBaseVNode("div", _hoisted_8$1, toDisplayString(b.author || "作者未知") + " · " + toDisplayString(b.source_display || b.source || ""), 1),
-                    createBaseVNode("div", _hoisted_9$1, [
+                    createBaseVNode("div", _hoisted_8$2, toDisplayString(b.author || "作者未知") + " · " + toDisplayString(b.source_display || b.source || ""), 1),
+                    createBaseVNode("div", _hoisted_9$2, [
                       createBaseVNode("div", null, [
-                        createBaseVNode("div", _hoisted_10$1, [
+                        createBaseVNode("div", _hoisted_10$2, [
                           createBaseVNode("span", null, "读到 " + toDisplayString(b.position?.index || 1) + "/" + toDisplayString(b.total || "?") + " 章", 1),
                           createBaseVNode("span", null, toDisplayString(readPct(b).toFixed(0)) + "%", 1)
                         ]),
-                        createBaseVNode("div", _hoisted_11, [
+                        createBaseVNode("div", _hoisted_11$1, [
                           createBaseVNode("i", {
                             style: normalizeStyle({ width: readPct(b) + "%" })
                           }, null, 4)
                         ])
                       ]),
                       createBaseVNode("div", null, [
-                        createBaseVNode("div", _hoisted_12, [
+                        createBaseVNode("div", _hoisted_12$1, [
                           createBaseVNode("span", null, "已缓存 " + toDisplayString(b.cached || 0) + " 章", 1),
                           createBaseVNode("span", null, toDisplayString(cachePct(b).toFixed(0)) + "%", 1)
                         ]),
-                        createBaseVNode("div", _hoisted_13, [
+                        createBaseVNode("div", _hoisted_13$1, [
                           createBaseVNode("i", {
                             style: normalizeStyle({ width: cachePct(b) + "%", background: "var(--ok)" })
                           }, null, 4)
                         ])
                       ])
                     ]),
-                    createBaseVNode("div", _hoisted_14, [
+                    createBaseVNode("div", _hoisted_14$1, [
                       createVNode(unref(Button), {
                         size: "small",
                         type: "primary",
@@ -17902,7 +17902,7 @@ ${style}
                       }, 8, ["onClick"])
                     ])
                   ])
-                ], 12, _hoisted_6$1);
+                ], 12, _hoisted_6$2);
               }), 128))
             ])),
             createBaseVNode("div", {
@@ -17920,24 +17920,24 @@ ${style}
         };
       }
     };
-    const ShelfPanel = /* @__PURE__ */ _export_sfc(_sfc_main$2, [["__scopeId", "data-v-f5c78a01"]]);
-    const _hoisted_1 = { class: "wrap" };
-    const _hoisted_2 = { class: "filters" };
-    const _hoisted_3 = {
+    const ShelfPanel = /* @__PURE__ */ _export_sfc(_sfc_main$3, [["__scopeId", "data-v-f5c78a01"]]);
+    const _hoisted_1$1 = { class: "wrap" };
+    const _hoisted_2$1 = { class: "filters" };
+    const _hoisted_3$1 = {
       key: 0,
       id: "fileList"
     };
-    const _hoisted_4 = {
+    const _hoisted_4$1 = {
       key: 1,
       id: "fileList"
     };
-    const _hoisted_5 = ["data-ext"];
-    const _hoisted_6 = ["data-ext", "innerHTML"];
-    const _hoisted_7 = { class: "nm" };
-    const _hoisted_8 = ["title"];
-    const _hoisted_9 = { class: "acts" };
-    const _hoisted_10 = ["href"];
-    const _sfc_main$1 = {
+    const _hoisted_5$1 = ["data-ext"];
+    const _hoisted_6$1 = ["data-ext", "innerHTML"];
+    const _hoisted_7$1 = { class: "nm" };
+    const _hoisted_8$1 = ["title"];
+    const _hoisted_9$1 = { class: "acts" };
+    const _hoisted_10$1 = ["href"];
+    const _sfc_main$2 = {
       __name: "FilesPanel",
       setup(__props) {
         const ICONS = {
@@ -18021,8 +18021,8 @@ ${style}
           clearTimeout(safety);
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1, [
-            createBaseVNode("div", _hoisted_2, [
+          return openBlock(), createElementBlock("div", _hoisted_1$1, [
+            createBaseVNode("div", _hoisted_2$1, [
               _cache[4] || (_cache[4] = createBaseVNode("div", { class: "files-h" }, "导出文件", -1)),
               _cache[5] || (_cache[5] = createBaseVNode("div", { class: "spacer" }, null, -1)),
               _cache[6] || (_cache[6] = createBaseVNode("label", {
@@ -18054,7 +18054,7 @@ ${style}
                 _: 1
               }, 8, ["loading"])
             ]),
-            loading.value && !files.value.length ? (openBlock(), createElementBlock("div", _hoisted_3, [
+            loading.value && !files.value.length ? (openBlock(), createElementBlock("div", _hoisted_3$1, [
               (openBlock(), createElementBlock(Fragment, null, renderList(3, (i) => {
                 return createBaseVNode("div", {
                   key: i,
@@ -18063,7 +18063,7 @@ ${style}
                   createStaticVNode('<div class="sk-ic" data-v-3663db34></div><div class="sk-col" data-v-3663db34><div class="sk-line w60" data-v-3663db34></div><div class="sk-line w40" data-v-3663db34></div></div><div class="sk-acts" data-v-3663db34><div class="sk-btn" data-v-3663db34></div><div class="sk-btn" data-v-3663db34></div></div>', 3)
                 ])]);
               }), 64))
-            ])) : (openBlock(), createElementBlock("div", _hoisted_4, [
+            ])) : (openBlock(), createElementBlock("div", _hoisted_4$1, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(files.value, (f) => {
                 return openBlock(), createElementBlock("div", {
                   key: f.name,
@@ -18074,14 +18074,14 @@ ${style}
                     class: "ic",
                     "data-ext": f.ext,
                     innerHTML: fmtIcon(f.ext)
-                  }, null, 8, _hoisted_6),
-                  createBaseVNode("div", _hoisted_7, [
+                  }, null, 8, _hoisted_6$1),
+                  createBaseVNode("div", _hoisted_7$1, [
                     createBaseVNode("b", {
                       title: f.name
-                    }, toDisplayString(f.name), 9, _hoisted_8),
+                    }, toDisplayString(f.name), 9, _hoisted_8$1),
                     createBaseVNode("span", null, toDisplayString((f.ext || "").toUpperCase()) + " · " + toDisplayString(fmtSize(f.size)) + " · " + toDisplayString(fmtTime(f.mtime)), 1)
                   ]),
-                  createBaseVNode("div", _hoisted_9, [
+                  createBaseVNode("div", _hoisted_9$1, [
                     f.ext === "html" ? (openBlock(), createBlock(unref(Button), {
                       key: 0,
                       size: "small",
@@ -18097,7 +18097,7 @@ ${style}
                       class: "btn sm",
                       href: downloadUrl(f),
                       download: ""
-                    }, "下载", 8, _hoisted_10),
+                    }, "下载", 8, _hoisted_10$1),
                     createVNode(unref(Button), {
                       size: "small",
                       quaternary: "",
@@ -18110,7 +18110,7 @@ ${style}
                       _: 1
                     }, 8, ["data-del", "onClick"])
                   ])
-                ], 8, _hoisted_5);
+                ], 8, _hoisted_5$1);
               }), 128))
             ])),
             createBaseVNode("div", {
@@ -18128,7 +18128,426 @@ ${style}
         };
       }
     };
-    const FilesPanel = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-3663db34"]]);
+    const FilesPanel = /* @__PURE__ */ _export_sfc(_sfc_main$2, [["__scopeId", "data-v-3663db34"]]);
+    const _hoisted_1 = { class: "lu-discover" };
+    const _hoisted_2 = ["innerHTML"];
+    const _hoisted_3 = { class: "nl-head" };
+    const _hoisted_4 = { id: "netLiveTitle" };
+    const _hoisted_5 = {
+      class: "nl-sub",
+      id: "netLiveSub"
+    };
+    const _hoisted_6 = { class: "t" };
+    const _hoisted_7 = {
+      key: 0,
+      class: "x"
+    };
+    const _hoisted_8 = { class: "switch" };
+    const _hoisted_9 = ["checked"];
+    const _hoisted_10 = {
+      class: "srcchips",
+      id: "srcChips"
+    };
+    const _hoisted_11 = ["data-src", "onClick"];
+    const _hoisted_12 = {
+      class: "grid",
+      id: "results"
+    };
+    const _hoisted_13 = {
+      key: 0,
+      class: "fuzzy auth"
+    };
+    const _hoisted_14 = { class: "ft" };
+    const _hoisted_15 = {
+      key: 1,
+      class: "fuzzy"
+    };
+    const _hoisted_16 = { class: "ft" };
+    const _hoisted_17 = ["data-gk"];
+    const _hoisted_18 = { class: "head" };
+    const _hoisted_19 = { class: "meta" };
+    const _hoisted_20 = { class: "by" };
+    const _hoisted_21 = { class: "desc" };
+    const _hoisted_22 = {
+      key: 1,
+      class: "no-intro"
+    };
+    const _hoisted_23 = { class: "tags" };
+    const _hoisted_24 = { class: "acts" };
+    const _hoisted_25 = { class: "sources" };
+    const _hoisted_26 = { class: "nm" };
+    const _hoisted_27 = { class: "n" };
+    const _hoisted_28 = ["data-u", "onClick"];
+    const _hoisted_29 = ["data-u", "onClick"];
+    const _hoisted_30 = ["innerHTML"];
+    const _sfc_main$1 = {
+      __name: "DiscoverPanel",
+      setup(__props) {
+        const books = /* @__PURE__ */ ref([]);
+        const searching = /* @__PURE__ */ ref(false);
+        const onlyOk = /* @__PURE__ */ ref(true);
+        const sources = /* @__PURE__ */ ref([]);
+        const srcOn = /* @__PURE__ */ ref(/* @__PURE__ */ new Set());
+        const fuzzy = /* @__PURE__ */ ref(false);
+        const confirmed = /* @__PURE__ */ ref("");
+        const statHTML = /* @__PURE__ */ ref("");
+        const steps = /* @__PURE__ */ ref([]);
+        const netTitle = /* @__PURE__ */ ref("正在联网找书…");
+        const netSub = /* @__PURE__ */ ref("");
+        const netDone = /* @__PURE__ */ ref(false);
+        const netFolded = /* @__PURE__ */ ref(false);
+        const showFilters = /* @__PURE__ */ ref(false);
+        const confirmHTML = /* @__PURE__ */ ref("");
+        const open = /* @__PURE__ */ ref(/* @__PURE__ */ new Set());
+        const spinEl = /* @__PURE__ */ ref(null);
+        const stepsEl = /* @__PURE__ */ ref(null);
+        const list = computed(
+          () => onlyOk.value ? books.value.filter((b) => (b.sources || []).some((s) => s.readable || s.available)) : books.value
+        );
+        const byAuthor = computed(
+          () => !fuzzy.value && list.value.some((b) => (b.sources || []).some((s) => s.by_author))
+        );
+        const showHomeEmpty = computed(() => {
+          if (searching.value) return false;
+          if (list.value.length) return false;
+          return true;
+        });
+        const emptyTitle = computed(() => {
+          if (!books.value.length) return "说个书名，噜噜就跑去找";
+          return `搜到 ${books.value.length} 本，但都没通过验证`;
+        });
+        const emptyText = computed(() => {
+          if (!books.value.length) {
+            return "搜到的每一本都会先验证一遍，确认真能读到正文，才敢说它「能读」。";
+          }
+          return "关掉上面的「只看能读的」看看原始结果，或者点开卡片看每个来源的状态 —— 有的站点目录能开、正文抓不到，卡片上会写清楚。";
+        });
+        function groupKey(b) {
+          return `${(b.title || "").trim()}\0${(b.author || "").trim()}`;
+        }
+        function displayTitle(b) {
+          return b.display_title || b.title;
+        }
+        function siteNames(b) {
+          return [...new Set((b.sources || []).map((s) => s.source_display || s.source).filter(Boolean))].join("、");
+        }
+        function uOf(s) {
+          return `${s && s.source || ""}|${s && s.url || ""}`;
+        }
+        function best(b) {
+          return (b.sources || []).find((s) => s.readable) || (b.sources || [])[0] || {};
+        }
+        function srcPill(s) {
+          if (s.readable) return { cls: "ok", text: `✓ 可读 · ${s.chapter_count} 章` };
+          if (s.sample_ok === false) return { cls: "warn", text: "目录在，正文抓不到" };
+          if (s.available) return { cls: "mute", text: `目录 ${s.chapter_count} 章 · 正文未验证` };
+          if (s.available === false) return { cls: "bad", text: `✕ ${s.note || "打不开"}` };
+          return { cls: "mute", text: "未验证" };
+        }
+        function tagsOf(b) {
+          const out = [];
+          const sampledBad = (b.sources || []).some((s) => s.sample_ok === false);
+          const sampledGood = (b.sources || []).some((s) => s.sample_ok === true);
+          if (b.readable_count) out.push({ cls: "ok", text: `${b.readable_count} 个来源可读` });
+          else if (sampledBad) out.push({ cls: "warn", text: "目录能开，但正文抓不到" });
+          else if (b.available_count) out.push({ cls: "mute", text: `${b.available_count} 个来源目录可达 · 正文未验证` });
+          else out.push({ cls: "bad", text: "暂无可用来源" });
+          if (b.chapter_count) out.push({ cls: "mute", text: `最多 ${b.chapter_count} 章` });
+          if (sampledGood && b.sample_chars) out.push({ cls: "ok", text: "正文已验证" });
+          if (b.source_count > 1) out.push({ cls: "mute", text: `${b.source_count} 个站点收录` });
+          return out;
+        }
+        const HIT = /发现可用来源|来源库命中|来源库已更新|收录/;
+        function stepCls(s) {
+          if (s.ok === false) return "bad";
+          return HIT.test(s.title) ? "hit" : "";
+        }
+        function onOnlyOk(e) {
+          const v = e.target.checked;
+          onlyOk.value = v;
+          legacy("setOnlyOk")(v);
+        }
+        function toggleSrc(name) {
+          legacy("toggleSource")(name);
+        }
+        function clearSearch() {
+          legacy("clearSearch")();
+        }
+        function toggleOpen(b) {
+          const k = groupKey(b);
+          const s = new Set(open.value);
+          if (s.has(k)) s.delete(k);
+          else s.add(k);
+          open.value = s;
+        }
+        function onAct(act, b, s) {
+          if (!s || !s.url) return;
+          if (act === "read") bus.emit("book:read", s);
+          if (act === "dl") bus.emit("book:export", { src: s, book: b });
+        }
+        function applyState(st) {
+          if (!st) return;
+          books.value = st.books || [];
+          searching.value = !!st.searching;
+          onlyOk.value = st.onlyOk !== false;
+          fuzzy.value = !!st.fuzzy;
+          confirmed.value = st.confirmed || "";
+          statHTML.value = st.statHTML || "";
+          showFilters.value = !!st.filtersVisible;
+          confirmHTML.value = st.confirmHTML || "";
+          steps.value = st.steps || [];
+          netTitle.value = st.netTitle || "正在联网找书…";
+          netSub.value = st.netSub || "";
+          netDone.value = !!st.netDone;
+          if (typeof st.netFolded === "boolean") netFolded.value = st.netFolded;
+          if (st.sources) sources.value = st.sources;
+          if (st.srcOn) srcOn.value = new Set(st.srcOn);
+          nextTick(() => {
+            const root2 = document.querySelector("[data-vue-discover]");
+            if (root2) legacy("stagger")(root2, ".book");
+          });
+        }
+        onMounted(async () => {
+          await whenAuthReady();
+          bus.on("discover:state", applyState);
+          legacy("attachDiscover")(applyState);
+        });
+        onUnmounted(() => {
+          bus.off("discover:state", applyState);
+          legacy("detachDiscover")();
+        });
+        return (_ctx, _cache) => {
+          return openBlock(), createElementBlock("div", _hoisted_1, [
+            createBaseVNode("div", {
+              class: "statbar",
+              id: "statbar",
+              innerHTML: statHTML.value
+            }, null, 8, _hoisted_2),
+            createBaseVNode("div", {
+              class: normalizeClass(["netlive", { hidden: !steps.value.length, done: netDone.value, folded: netFolded.value }]),
+              id: "netLive",
+              "aria-live": "polite"
+            }, [
+              createBaseVNode("div", _hoisted_3, [
+                createBaseVNode("span", {
+                  class: normalizeClass(["nl-spin", { on: !netDone.value }]),
+                  ref_key: "spinEl",
+                  ref: spinEl
+                }, null, 2),
+                createBaseVNode("b", _hoisted_4, toDisplayString(netTitle.value), 1),
+                createBaseVNode("span", _hoisted_5, toDisplayString(netSub.value), 1),
+                _cache[1] || (_cache[1] = createBaseVNode("span", { class: "grow" }, null, -1)),
+                createVNode(unref(Button), {
+                  id: "netLiveToggle",
+                  size: "tiny",
+                  quaternary: "",
+                  onClick: _cache[0] || (_cache[0] = ($event) => netFolded.value = !netFolded.value)
+                }, {
+                  default: withCtx(() => [
+                    createTextVNode(toDisplayString(netFolded.value ? "展开" : "收起"), 1)
+                  ]),
+                  _: 1
+                })
+              ]),
+              createBaseVNode("ol", {
+                class: "nl-steps",
+                id: "netLiveSteps",
+                ref_key: "stepsEl",
+                ref: stepsEl
+              }, [
+                (openBlock(true), createElementBlock(Fragment, null, renderList(steps.value, (s, i) => {
+                  return openBlock(), createElementBlock("li", {
+                    key: i,
+                    class: normalizeClass(stepCls(s))
+                  }, [
+                    _cache[2] || (_cache[2] = createBaseVNode("span", { class: "d" }, null, -1)),
+                    createBaseVNode("span", _hoisted_6, toDisplayString(s.title), 1),
+                    s.detail ? (openBlock(), createElementBlock("span", _hoisted_7, toDisplayString(s.detail), 1)) : createCommentVNode("", true)
+                  ], 2);
+                }), 128))
+              ], 512)
+            ], 2),
+            createBaseVNode("div", {
+              class: normalizeClass(["filters", { hidden: !showFilters.value }]),
+              id: "filters"
+            }, [
+              createBaseVNode("label", _hoisted_8, [
+                createBaseVNode("input", {
+                  type: "checkbox",
+                  id: "onlyOk",
+                  checked: onlyOk.value,
+                  onChange: onOnlyOk
+                }, null, 40, _hoisted_9),
+                _cache[3] || (_cache[3] = createBaseVNode("span", { class: "track" }, null, -1)),
+                _cache[4] || (_cache[4] = createTextVNode("只看能读的 ", -1))
+              ]),
+              _cache[6] || (_cache[6] = createBaseVNode("span", { class: "vline" }, null, -1)),
+              createBaseVNode("div", _hoisted_10, [
+                (openBlock(true), createElementBlock(Fragment, null, renderList(sources.value, (s) => {
+                  return openBlock(), createElementBlock("button", {
+                    key: s.name,
+                    class: normalizeClass(["chip", { on: srcOn.value.has(s.name) }]),
+                    "data-src": s.name,
+                    type: "button",
+                    onClick: ($event) => toggleSrc(s.name)
+                  }, toDisplayString(s.display), 11, _hoisted_11);
+                }), 128))
+              ]),
+              _cache[7] || (_cache[7] = createBaseVNode("div", { class: "spacer" }, null, -1)),
+              createVNode(unref(Button), {
+                id: "btnClearSearch",
+                size: "small",
+                quaternary: "",
+                onClick: clearSearch
+              }, {
+                default: withCtx(() => [..._cache[5] || (_cache[5] = [
+                  createTextVNode("清空结果", -1)
+                ])]),
+                _: 1
+              })
+            ], 2),
+            createBaseVNode("div", _hoisted_12, [
+              searching.value && !list.value.length ? (openBlock(), createElementBlock(Fragment, { key: 0 }, renderList(6, (i) => {
+                return createBaseVNode("div", {
+                  key: i,
+                  class: "skl"
+                }, [..._cache[8] || (_cache[8] = [
+                  createStaticVNode('<div class="b cv" data-v-b2643a52></div><div class="col" data-v-b2643a52><div class="b ln" style="width:52%;" data-v-b2643a52></div><div class="b ln" style="width:32%;height:10px;" data-v-b2643a52></div><div class="b ln" style="width:92%;height:10px;" data-v-b2643a52></div><div class="b ln" style="width:70%;height:10px;" data-v-b2643a52></div></div>', 2)
+                ])]);
+              }), 64)) : list.value.length ? (openBlock(), createElementBlock(Fragment, { key: 1 }, [
+                byAuthor.value ? (openBlock(), createElementBlock("div", _hoisted_13, [
+                  _cache[9] || (_cache[9] = createBaseVNode("span", { class: "fi" }, "✍️", -1)),
+                  createBaseVNode("div", _hoisted_14, [
+                    createBaseVNode("b", null, "按作者找到了 " + toDisplayString(books.value.length) + " 本", 1),
+                    createBaseVNode("span", null, "「" + toDisplayString(confirmed.value) + "」是作者名，下面是 ta 的作品 —— 书名里当然不含作者名，这是对的。", 1)
+                  ])
+                ])) : fuzzy.value ? (openBlock(), createElementBlock("div", _hoisted_15, [
+                  _cache[10] || (_cache[10] = createBaseVNode("span", { class: "fi" }, "🤔", -1)),
+                  createBaseVNode("div", _hoisted_16, [
+                    createBaseVNode("b", null, "没找到确切的《" + toDisplayString(confirmed.value) + "》", 1),
+                    createBaseVNode("span", null, "下面这 " + toDisplayString(books.value.length) + " 本是「沾边」结果 —— 名字里带这几个字，但不一定是你要的那本。补上作者名一起搜会准很多。", 1)
+                  ])
+                ])) : createCommentVNode("", true),
+                (openBlock(true), createElementBlock(Fragment, null, renderList(list.value, (b, i) => {
+                  return openBlock(), createElementBlock("div", {
+                    key: groupKey(b),
+                    class: normalizeClass(["book", { open: open.value.has(groupKey(b)) }]),
+                    "data-gk": groupKey(b),
+                    style: normalizeStyle({ "--mo-i": i })
+                  }, [
+                    createBaseVNode("div", _hoisted_18, [
+                      createVNode(_sfc_main$4, {
+                        cover: b.cover,
+                        hue: b.hue,
+                        title: displayTitle(b),
+                        author: b.author
+                      }, null, 8, ["cover", "hue", "title", "author"]),
+                      createBaseVNode("div", _hoisted_19, [
+                        createBaseVNode("h3", null, toDisplayString(displayTitle(b)), 1),
+                        createBaseVNode("div", _hoisted_20, toDisplayString(b.author || "作者未知"), 1),
+                        createBaseVNode("div", _hoisted_21, [
+                          b.intro ? (openBlock(), createElementBlock(Fragment, { key: 0 }, [
+                            createTextVNode(toDisplayString(b.intro), 1)
+                          ], 64)) : (openBlock(), createElementBlock("span", _hoisted_22, "收录于 " + toDisplayString(siteNames(b)), 1))
+                        ]),
+                        createBaseVNode("div", _hoisted_23, [
+                          (openBlock(true), createElementBlock(Fragment, null, renderList(tagsOf(b), (t, ti) => {
+                            return openBlock(), createElementBlock("span", {
+                              key: ti,
+                              class: normalizeClass(["pill", t.cls])
+                            }, toDisplayString(t.text), 3);
+                          }), 128))
+                        ])
+                      ])
+                    ]),
+                    createBaseVNode("div", _hoisted_24, [
+                      createVNode(unref(Button), {
+                        size: "small",
+                        type: "primary",
+                        "data-act": "read",
+                        "data-u": uOf(best(b)),
+                        onClick: ($event) => onAct("read", b, best(b))
+                      }, {
+                        default: withCtx(() => [..._cache[11] || (_cache[11] = [
+                          createTextVNode("开始阅读", -1)
+                        ])]),
+                        _: 1
+                      }, 8, ["data-u", "onClick"]),
+                      createVNode(unref(Button), {
+                        size: "small",
+                        "data-act": "toggle",
+                        onClick: ($event) => toggleOpen(b)
+                      }, {
+                        default: withCtx(() => [
+                          createTextVNode(" 来源 " + toDisplayString(b.source_count) + " ▾ ", 1)
+                        ]),
+                        _: 2
+                      }, 1032, ["onClick"]),
+                      createVNode(unref(Button), {
+                        size: "small",
+                        "data-act": "dl",
+                        "data-u": uOf(best(b)),
+                        title: "导出文件",
+                        onClick: ($event) => onAct("dl", b, best(b))
+                      }, {
+                        default: withCtx(() => [..._cache[12] || (_cache[12] = [
+                          createTextVNode("↧", -1)
+                        ])]),
+                        _: 1
+                      }, 8, ["data-u", "onClick"])
+                    ]),
+                    createBaseVNode("div", _hoisted_25, [
+                      (openBlock(true), createElementBlock(Fragment, null, renderList(b.sources, (s, si) => {
+                        return openBlock(), createElementBlock("div", {
+                          key: si,
+                          class: "srow"
+                        }, [
+                          createBaseVNode("span", _hoisted_26, toDisplayString(s.source_display || s.source), 1),
+                          createBaseVNode("span", {
+                            class: normalizeClass(["pill", srcPill(s).cls])
+                          }, toDisplayString(srcPill(s).text), 3),
+                          _cache[13] || (_cache[13] = createBaseVNode("span", { class: "grow" }, null, -1)),
+                          createBaseVNode("span", _hoisted_27, toDisplayString(s.probe_ms ? s.probe_ms + "ms" : ""), 1),
+                          s.readable || s.available ? (openBlock(), createElementBlock("button", {
+                            key: 0,
+                            class: "mini pri",
+                            "data-act": "read",
+                            "data-u": uOf(s),
+                            onClick: ($event) => onAct("read", b, s)
+                          }, "阅读", 8, _hoisted_28)) : createCommentVNode("", true),
+                          createBaseVNode("button", {
+                            class: "mini",
+                            "data-act": "dl",
+                            "data-u": uOf(s),
+                            onClick: ($event) => onAct("dl", b, s)
+                          }, "导出", 8, _hoisted_29)
+                        ]);
+                      }), 128))
+                    ])
+                  ], 14, _hoisted_17);
+                }), 128))
+              ], 64)) : createCommentVNode("", true)
+            ]),
+            createBaseVNode("div", {
+              id: "homeEmpty",
+              class: normalizeClass(["empty", { hidden: !showHomeEmpty.value }])
+            }, [
+              _cache[14] || (_cache[14] = createBaseVNode("div", {
+                class: "empty-art",
+                "aria-hidden": "true"
+              }, null, -1)),
+              createBaseVNode("h3", null, toDisplayString(emptyTitle.value), 1),
+              createBaseVNode("p", null, toDisplayString(emptyText.value), 1)
+            ], 2),
+            createBaseVNode("div", {
+              id: "confirmBox",
+              innerHTML: confirmHTML.value
+            }, null, 8, _hoisted_30)
+          ]);
+        };
+      }
+    };
+    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-b2643a52"]]);
     const _sfc_main = {
       __name: "App",
       props: {
@@ -18137,7 +18556,7 @@ ${style}
       },
       setup(__props) {
         const props = __props;
-        const REGISTRY = { RanksPanel, ShelfPanel, FilesPanel };
+        const REGISTRY = { RanksPanel, ShelfPanel, FilesPanel, DiscoverPanel };
         const comp = computed(() => REGISTRY[props.only] || RanksPanel);
         return (_ctx, _cache) => {
           return openBlock(), createBlock(unref(ConfigProvider_default), {
@@ -18155,7 +18574,8 @@ ${style}
     const MOUNTS = [
       { name: "RanksPanel", sel: "[data-vue-ranks]" },
       { name: "ShelfPanel", sel: "[data-vue-shelf]" },
-      { name: "FilesPanel", sel: "[data-vue-files]" }
+      { name: "FilesPanel", sel: "[data-vue-files]" },
+      { name: "DiscoverPanel", sel: "[data-vue-discover]" }
     ];
     let mounted = 0;
     for (const m of MOUNTS) {

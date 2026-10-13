@@ -135,6 +135,12 @@ LIVE_SUITES = [
     # `.value` 取到 None，导出会静默用错格式。
     # 写这条断言时特地做了回退验证（换回 n-select 立刻报红）。
     ("test_files_ui.py", "文件界面"),
+    # 发现页结果区（Vue 迁移后）。test_buttons 的 A/B 组验的是搜索**行为**，
+    # 这条专盯"结果区交给 Vue 之后"的回归：组件挂错位置、状态桥
+    # （discover:state）没接上导致"搜完了却一条不显示"、`#q`/`#btnSearch`
+    # 被顺手搬进 Vue 破坏跨模块契约、空态与结果列表同时显示。
+    # 全部断言都做了回退验证（断桥 / 搬 #q / 空态恒显示，三处都能报红）。
+    ("test_discover_ui.py", "发现界面"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -154,6 +160,7 @@ LIVE_ARGS = {
     "test_auth_race.py": "--url",
     "test_shelf_ui.py": "--url",
     "test_files_ui.py": "--url",
+    "test_discover_ui.py": "--url",
 }
 
 

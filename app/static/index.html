@@ -117,6 +117,13 @@
 </header>
 
 <!-- ==================== 发现 ==================== -->
+<!-- ⚠ 发现页是**半迁移**状态，边界要看清：
+       · `.hero`（标题 + 双水豚 + 搜索框 #q/#btnSearch）**仍是静态 HTML** ——
+         main.js 的 `$("#q")`、test_buttons 的 A 组、深链 searchFromHash
+         都按原生元素找它们，迁进 Vue 只会把这些跨模块契约挡住。
+       · hero 以下的**结果区**归 Vue（frontend/src/components/DiscoverPanel.vue）：
+         #statbar / #netLive / #filters / #results / #homeEmpty / #confirmBox。
+         `data-vue-discover` 就是那份"这块归 Vue"的标记。 -->
 <section id="view-home" data-view>
   <div class="wrap">
     <div class="hero">
@@ -150,10 +157,7 @@
                autocomplete="off" spellcheck="false"/>
         <button class="btn primary" id="btnSearch">噜噜去找</button>
       </div>
-      <div id="confirmBox"></div>
     </div>
-
-    <div class="statbar" id="statbar"></div>
 
     <!-- 热门榜单：不知道读什么的时候，看看别人都在读什么。
          数据来自已适配站点的公开榜单（见 app/ranks.py）。
@@ -161,39 +165,20 @@
          ⚠ 这一块已迁移到 Vue（frontend/src/components/RanksPanel.vue）。
          `data-vue-ranks` 是给 Vue 的挂载信号：有它就挂载组件，
          没有就说明这页还没迁 —— 旧代码与 Vue 因此能在同一页共存。
-         `#ranksBox` 这个 id 保留（旧测试与旧代码还会找它）。 -->
+         `#ranksBox` 这个 id 保留（旧测试与旧代码还会找它）。
+
+         ⚠ 它必须留在 **DiscoverPanel 的容器之外**：
+           Vue 只能把整棵树渲进一个元素，若把榜单放进 `[data-vue-discover]`，
+           它会跟发现页组件抢同一个渲染入口（真踩过这类"组件渲错地方"）。 -->
     <section class="ranks" id="ranksBox" data-vue-ranks hidden>
       <div id="vue-root"></div>
     </section>
 
-    <!-- 联网发现实况：本地来源都搜不到时，这里一步步显示「出去找」的过程 -->
-    <div class="netlive hidden" id="netLive" aria-live="polite">
-      <div class="nl-head">
-        <span class="nl-spin" id="netLiveSpin"></span>
-        <b id="netLiveTitle">正在联网找书…</b>
-        <span class="nl-sub" id="netLiveSub"></span>
-        <span class="grow"></span>
-        <button class="btn ghost sm" id="netLiveToggle">收起</button>
-      </div>
-      <ol class="nl-steps" id="netLiveSteps"></ol>
-    </div>
-
-    <div class="filters hidden" id="filters">
-      <label class="switch"><input type="checkbox" id="onlyOk" checked><span class="track"></span>只看能读的</label>
-      <span style="width:1px;height:15px;background:var(--s-line)"></span>
-      <div class="srcchips" id="srcChips"></div>
-      <div class="spacer"></div>
-      <button class="btn ghost sm" id="btnClearSearch">清空结果</button>
-    </div>
-
-    <div class="grid" id="results"></div>
-    <div id="homeEmpty" class="empty">
-      <!-- 状态 → 素材的对应关系见 js/art.js（那里是唯一的事实来源） -->
-      <img class="empty-art" src="/static/img/lumei/empty_wait@480.webp"
-           width="480" height="360" alt="" loading="lazy" decoding="async">
-      <h3>说个书名，噜噜就跑去找</h3>
-      <p>搜到的每一本都会先验证一遍，确认真能读到正文，才敢说它「能读」。</p>
-    </div>  </div>
+    <!-- 结果区（Vue）。上面 hero 里的 #q / #btnSearch 留在静态 HTML 里，
+         这块是**有状态**的部分（搜索状态栏 / 来源筛选 / 结果卡 / 联网实况 /
+         书名确认框）—— 旧代码用 innerHTML 拼字符串的重灾区，迁到 Vue。 -->
+    <div id="vue-root-discover" data-vue-discover></div>
+  </div>
 </section>
 
 <!-- ==================== 书架 ==================== -->

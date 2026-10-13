@@ -29,10 +29,11 @@ frontend/
     │   └── naive.js      # 装主题 + 监听主题切换
     ├── legacy/           # 迁移期桥接旧模块（见下）
     └── components/
-        ├── RanksPanel.vue  # 热门榜单（第一个迁移的页面）
-        ├── ShelfPanel.vue  # 书架页
-        ├── FilesPanel.vue  # 文件页
-        └── BookCover.vue   # 复用的书封（榜单/书架共用）
+        ├── RanksPanel.vue    # 热门榜单（第一个迁移的页面）
+        ├── ShelfPanel.vue    # 书架页
+        ├── FilesPanel.vue    # 文件页
+        ├── DiscoverPanel.vue # 发现页结果区（半迁移：hero 仍是静态 HTML）
+        └── BookCover.vue     # 复用的书封（榜单/书架/发现共用）
 ```
 
 ## 三个必须知道的硬约束
@@ -137,8 +138,35 @@ Vue 重写渲染方式时，**要把这些钩子保留下来**，而不是去改
 - [x] 热门榜单（`RanksPanel.vue`）
 - [x] 书架页（`ShelfPanel.vue` + 复用的 `BookCover.vue`）
 - [x] 文件页（`FilesPanel.vue`）
-- [ ] 发现页搜索结果区
+- [x] 发现页结果区（`DiscoverPanel.vue`）—— **半迁移**，见下
 - [ ] 阅读器（最大，995 行，最后迁）
+
+### 发现页为什么是"半迁移"
+
+发现页分两块，边界是**有意划的**，改之前先看清：
+
+| 块 | 归属 | 原因 |
+|---|---|---|
+| `.hero`（标题 + 双水豚 + 搜索框 `#q` / `#btnSearch`） | **静态 HTML** | `#q` / `#btnSearch` 是跨模块契约：main.js 的 `$("#q")`、深链 `searchFromHash`、`test_buttons.py` A 组都按**原生元素**找它们。迁进 Vue 只会把这些依赖变成"不可靠" |
+| hero 以下（`#statbar` / `#netLive` / `#filters` / `#results` / `#homeEmpty` / `#confirmBox`） | **Vue**（`DiscoverPanel.vue`） | 这些是"有状态 + 反复重画"的部分，旧代码用 `innerHTML` 拼字符串的重灾区 |
+
+两块靠 **事件总线**通信（不是互相 import）：
+
+```
+discover.js（数据层 + 状态机，保留）
+   │  状态变化 → bus.emit("discover:state", 快照)
+   ▼
+DiscoverPanel.vue（渲染层，新）
+   │  用户操作 → legacy("setOnlyOk" / "toggleSource" / "clearSearch")
+   ▼
+discover.js（同一条被验证过的路径）
+```
+
+- Vue 组件挂载后调 `legacy("attachDiscover")(fn)` 注册自己，`discover.js`
+  据此知道"该 emit 了"；卸载时 `detachDiscover()`。
+- `discover.js` 里所有 DOM 写入都包了一层（`setStat` / `setFilters` /
+  `setHomeEmpty` / `setConfirm`）：Vue 在就更新影子状态 + 推快照，否则写 DOM。
+  这样同一个数据层能喂两种渲染实现，迁移期任一侧出问题页面都不会空白。
 
 每迁完一个页面，删掉对应的旧模块和 `legacy/` 里的桥接项。
 全迁完后 `legacy/` 整个目录都可以删。
@@ -152,7 +180,8 @@ Vue 重写渲染方式时，**要把这些钩子保留下来**，而不是去改
 | id / 结构 | 谁在读 | 丢了会怎样 |
 |---|---|---|
 | `#fmtPick`（**必须是原生 `<select>`**） | `main.js` 3 处 `fmt: $("#fmtPick").value` | 导出静默用错格式。n-select 渲成 `div`，`.value` 取到 `None` —— 踩过，`test_files_ui.py` 第 2 节有断言 |
-| `#q` `#btnSearch` `#statbar` `#results` `#filters` `#homeEmpty` `#confirmBox` | `discover.js` 搜索流程 | 搜索整条链断 |
+| `#q` `#btnSearch`（**必须原生、且留在 Vue 容器之外**） | `main.js` 的 `$("#q")`、深链 `searchFromHash`、`test_buttons.py` A 组 | 搜索入口整个断掉。**故意没迁进 Vue** —— 见「发现页为什么是半迁移」。`test_discover_ui.py` 第 2 节有断言 |
+| `#statbar` `#results` `#filters` `#homeEmpty` `#confirmBox` `#netLive` | `discover.js` 搜索流程 / `test_buttons.py` A 组 | 搜索整条链断。**已迁到 Vue**，id 由 `DiscoverPanel.vue` 渲染，`discover.js` 通过 `vueOwnsDiscover()` 让出写入权 |
 | `#view-<name>` + `data-view` | `shell.js` 的 `nav()` 切 `.hidden` | 导航点了没反应 |
 | `#shelfList` `#shelfEmpty` `#shelfStat` `#shelfN` | `shelf.js` / 真机测试 | 书架刷新失效 |
 | `#fileList` `#fileEmpty` | `files.js` / 真机测试 | 文件列表不更新 |

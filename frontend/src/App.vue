@@ -21,12 +21,13 @@ import { themeState } from "./theme/naive.js";
 import RanksPanel from "./components/RanksPanel.vue";
 import ShelfPanel from "./components/ShelfPanel.vue";
 import FilesPanel from "./components/FilesPanel.vue";
+import DiscoverPanel from "./components/DiscoverPanel.vue";
 
 const props = defineProps({
   /** 这个 app 实例负责渲染哪个组件（见 main.js 的 MOUNTS） */
   only: { type: String, default: "" },
 });
 
-const REGISTRY = { RanksPanel, ShelfPanel, FilesPanel };
+const REGISTRY = { RanksPanel, ShelfPanel, FilesPanel, DiscoverPanel };
 const comp = computed(() => REGISTRY[props.only] || RanksPanel);
 </script>

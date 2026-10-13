@@ -273,8 +273,43 @@ def group_b(t: Tab, s: Suite):
     s.check("B4 再点收起", opened2 is False)
 
     # B2 来源行里的小「阅读」按钮
-    n_mini = t.js("document.querySelectorAll('#results .book [data-act=\"read\"].mini').length") or 0
-    s.check(f"B2 来源行有「阅读」小按钮（{n_mini} 个）", n_mini >= 1)
+    #
+    # ⚠ 这条原来写成 `n_mini >= 1`，是个**会随网络漂移的假红/假绿**：
+    #   一个书名（比如「三体」）最终并成几本、每本有几个来源、这些来源
+    #   探没探通，全取决于这一轮抓取 —— 冷启动（ship 每次起全新服务）
+    #   时经常「done 到了但所有来源都是 available:null」，于是来源行一个
+    #   「阅读」都不该有，而断言却要求 ≥1 → 报红；热缓存时又永远有 → 假绿。
+    #   （写发现页迁移时就是这么被 ship 拦下来的，分析半天才确认不是渲染 bug。）
+    #
+    #   改成**契约式**判据：直接问页面「有几行是"该有阅读按钮"的」，
+    #   再对账「实际有几个按钮」。页面的判定口径就写在 discover.js 里
+    #   （`s.readable || s.available`），这里用同一口径 —— 不该有按钮时
+    #   不强制有，该有却没给才报红。
+    n_rows = t.js("document.querySelectorAll('#results .book .srow').length") or 0
+    n_mini = t.js(
+        "document.querySelectorAll('#results .book .srow [data-act=\"read\"].mini').length") or 0
+    if n_rows == 0:
+        s.check("B2 来源行有内容（0 行，跳过按钮对账）", False,
+                "一张来源行都没有 —— 来源列表没渲染")
+    else:
+        # 本轮有几个来源"可读或目录可达"？由页面自己算（它知道 readable/available）。
+        n_expect = t.js("""
+          (function(){
+            var m = window.__lumeiLegacy && window.__lumeiLegacy.discoverExpectRead;
+            return m ? m() : -1;
+          })()
+        """)
+        if n_expect is None or n_expect < 0:
+            # 兜底：拿不到计数就退回"来源行 ≥1 就必须有阅读入口"的弱判据
+            s.check(f"B2 来源行有「阅读」小按钮（{n_mini} 个 / {n_rows} 行）", n_mini >= 1)
+        elif n_expect == 0:
+            # 这一轮没有可读来源（冷启动/网络受限），无从对账 —— 但**说清楚**，
+            # 不默默算过（否则真把按钮删了也会"绿"）。
+            s.check(f"B2 本轮无可读来源（{n_rows} 行均为未验证），跳过按钮对账", True,
+                    "冷启动/网络受限时的正常形态")
+        else:
+            s.check(f"B2 可读来源都有「阅读」小按钮（{n_mini}/{n_expect}）",
+                    n_mini >= n_expect)
 
     # B3 导出按钮存在
     n_dl = t.js("document.querySelectorAll('#results .book [data-act=\"dl\"]').length") or 0

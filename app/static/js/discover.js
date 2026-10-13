@@ -37,6 +37,7 @@ try {
 export async function loadSources() {
   try {
     M.sources = await api.get("/api/sources");
+    if (vueOwnsDiscover()) { syncAll(); return; }
     const wrap = $("#srcChips");
     wrap.innerHTML = M.sources.map(s =>
       `<button class="chip" data-src="${esc(s.name)}">${esc(s.display)}</button>`).join("");
@@ -49,15 +50,110 @@ export async function loadSources() {
   } catch {}
 }
 
+/* ==========================================================================
+   迁移桥（Vue 版结果区）
+   --------------------------------------------------------------------------
+   发现页的**结果区**已迁到 Vue（frontend/src/components/DiscoverPanel.vue）。
+   本模块继续持有**数据层与状态机**（SSE 流式解析、Abort 竞态守卫、分组），
+   只是不再自己拼 HTML —— 每次状态变化把一份快照 emit 给 Vue 侧重画。
+
+   判断谁渲染：容器上有没有 `data-vue-discover`（语义同 shelf.js/files.js 的
+   vueOwnsXxx：容器在就 Vue 管，容器不在旧实现顶上，两边都不空）。
+
+   ⚠ hero 里的 `#q` / `#btnSearch` **没迁**，仍是原生元素：
+     main.js 的 `$("#q")`、test_buttons 的 A 组、深链 searchFromHash 都按它找。
+     所以本模块对它们的读写**不受 Vue 影响**，不需要分支。
+   ========================================================================== */
+function vueOwnsDiscover() {
+  return !!document.querySelector("[data-vue-discover]");
+}
+
+/* Vue 侧挂载后会调它，把自己注册进来 —— 于是本模块知道"该 emit 了"。
+   做成注册式而不是"直接 import Vue 组件"：旧代码不能在构建期依赖 Vue，
+   否则在没有 Vue 的页面（仍是旧实现）里会连带崩掉。 */
+let _vueApply = null;
+export function attachDiscover(apply) {
+  _vueApply = apply;
+  syncAll();
+}
+export function detachDiscover() {
+  _vueApply = null;
+}
+
+/* 把当前状态推给 Vue 侧。整块推，不做增量 ——
+   旧实现本来就是"整块重写 innerHTML"，语义完全一致。 */
+function syncAll() {
+  if (!_vueApply) return;
+  _vueApply({
+    books: M.books,
+    searching: M.searching,
+    onlyOk: M.onlyOk,
+    fuzzy: M.fuzzy,
+    confirmed: M.confirmed,
+    statHTML: _statHTML,
+    filtersVisible: _filtersVisible,
+    confirmHTML: $("#confirmBox") ? ($("#confirmBox").innerHTML || "") : "",
+    steps: M.steps,
+    netTitle: _netTitle,
+    netSub: _netSub,
+    netDone: _netDone,
+    netFolded: _netFolded,
+    sources: M.sources,
+    srcOn: [...M.srcFilter],
+  });
+}
+
+/* 这几份"影子状态"是为了让 Vue 侧拿到与旧 DOM 完全一致的呈现。
+   为什么不直接读 DOM：Vue 渲染时那些元素由它自己管理，
+   读回来会形成循环（且时序上不可靠）。所以由本模块维护一份真相。 */
+let _statHTML = "";
+let _filtersVisible = false;
+let _netTitle = "正在联网找书…";
+let _netSub = "";
+let _netDone = false;
+let _netFolded = false;
+
+/** 写状态栏：Vue 在就更新影子状态 + 推快照，否则写 DOM。 */
+function setStat(html) {
+  _statHTML = html;
+  if (vueOwnsDiscover()) { syncAll(); return; }
+  const el = $("#statbar");
+  if (el) el.innerHTML = html;
+}
+
+/** 切筛选条显隐。 */
+function setFilters(visible) {
+  _filtersVisible = !!visible;
+  if (vueOwnsDiscover()) { syncAll(); return; }
+  const el = $("#filters");
+  if (el) el.classList.toggle("hidden", !visible);
+}
+
+/** 切首屏空态显隐。 */
+function setHomeEmpty(visible) {
+  _homeEmptyVisible = !!visible;
+  if (vueOwnsDiscover()) { syncAll(); return; }
+  const el = $("#homeEmpty");
+  if (el) el.classList.toggle("hidden", !visible);
+}
+let _homeEmptyVisible = true;
+
+/** 清空 / 写入确认框内容（Vue 在时内容照样生成，只是交给它渲染）。 */
+function setConfirm(html) {
+  const el = $("#confirmBox");
+  if (el) el.innerHTML = html;
+  if (vueOwnsDiscover()) syncAll();
+}
+
 /* ---------- 书名确认 ---------- */
 const kickConfirm = debounce(async text => {
-  if (!text || text.trim().length < 2) { $("#confirmBox").innerHTML = ""; return; }
+  if (!text || text.trim().length < 2) { setConfirm(""); return; }
   try {
     const d = await api.post("/api/confirm", { text });
     M.confirmData = d;
-    if (!d.suspect) { $("#confirmBox").innerHTML = ""; return; }
+    if (!d.suspect) { setConfirm(""); return; }
     renderConfirm(d);
-  } catch { $("#confirmBox").innerHTML = ""; }
+  } catch { setConfirm(""); }
 }, 320);
 
 function renderConfirm(d) {
@@ -66,7 +162,7 @@ function renderConfirm(d) {
   // ⚠ 这里以前整块写行内 style —— 主题层够不到（同 confirmBox 的老毛病）。
   //   改成 .cfs 类组件；"🤔" emoji 也去掉了：这个框是**让用户做决定**的，
   //   不需要情绪插画抢戏。
-  $("#confirmBox").innerHTML = `
+  setConfirm(`
     <div class="cfs">
       <div class="cfs-h">
         <div class="cfs-b">
@@ -79,12 +175,12 @@ function renderConfirm(d) {
         <button class="btn ghost sm" id="cfCancel">再改改</button>
         <button class="btn primary sm" id="cfGo">就搜《${esc(d.keyword)}》</button>
       </div>
-    </div>`;
-  $("#cfGo").onclick = () => { $("#confirmBox").innerHTML = ""; runSearch(d.keyword, true); };
-  $("#cfCancel").onclick = () => { $("#confirmBox").innerHTML = ""; $("#q").focus(); };
+    </div>`);
+  $("#cfGo").onclick = () => { setConfirm(""); runSearch(d.keyword, true); };
+  $("#cfCancel").onclick = () => { setConfirm(""); $("#q").focus(); };
   $$("#confirmBox .chip").forEach(c => c.onclick = () => {
     $("#q").value = c.dataset.t;
-    $("#confirmBox").innerHTML = "";
+    setConfirm("");
     runSearch(c.dataset.t, true);
   });
 }
@@ -106,14 +202,14 @@ export async function runSearch(kw, toastIt) {
   M.books = []; M.flat = []; M.byUrl.clear(); M.fuzzy = false;
   M.steps = []; resetNetLive();
 
-  $("#confirmBox").innerHTML = "";
-  $("#filters").classList.remove("hidden");
-  $("#homeEmpty").classList.add("hidden");
+  setConfirm("");
+  setFilters(true);
+  setHomeEmpty(false);
   renderSkeleton();
 
   const n = M.srcFilter.size || M.sources.length;
-  $("#statbar").innerHTML = `正在${n ? ` ${n} 个来源` : "全部来源"}里找《<b>${esc(kw)}</b>》…
-    <span class="sep"></span>先搜后验，稍等几秒`;
+  setStat(`正在${n ? ` ${n} 个来源` : "全部来源"}里找《<b>${esc(kw)}</b>》…
+    <span class="sep"></span>先搜后验，稍等几秒`);
 
   const ctrl = new AbortController(); M.ctrl = ctrl;
   let last = 0;
@@ -178,14 +274,14 @@ function handleEvent(ev) {
     const disc = M.discovered
       ? `<span class="sep"></span><span style="color:var(--a-1)">联网找回 <b>${M.discovered}</b> 个来源</span>`
       : "";
-    $("#statbar").innerHTML =
+    setStat(
       `<span>看遍 <b>${M.stats.sources_queried || 0}</b> 个来源</span><span class="sep"></span>` +
       `<span>原始 <b>${M.stats.raw || 0}</b> 条</span><span class="sep"></span>` +
       `<span>滤掉噪音 <b>${M.stats.filtered || 0}</b> 条</span><span class="sep"></span>` +
       `<span>并成 <b>${M.books.length}</b> 本</span><span class="sep"></span>` +
       `<span style="color:var(--ok)">正文验证通过 <b>${M.stats.readable || 0}</b></span>` +
       disc +
-      `<span class="sep"></span><span>耗时 <b>${((M.stats.ms || 0) / 1000).toFixed(1)}s</b></span>`;
+      `<span class="sep"></span><span>耗时 <b>${((M.stats.ms || 0) / 1000).toFixed(1)}s</b></span>`);
   } else if (ev.type === "error") {
     toast("搜索失败：" + ev.msg, "err");
   }
@@ -193,6 +289,11 @@ function handleEvent(ev) {
 
 /* ---------- 联网发现实况面板 ---------- */
 function resetNetLive() {
+  _netDone = false;
+  _netFolded = false;
+  _netTitle = "正在联网找书…";
+  _netSub = "";
+  if (vueOwnsDiscover()) { syncAll(); return; }
   const box = $("#netLive");
   if (!box) return;
   box.classList.add("hidden");
@@ -205,13 +306,18 @@ function resetNetLive() {
 }
 
 function renderNetLive() {
+  if (!M.steps.length) return;
+  const last = M.steps[M.steps.length - 1];
+  _netTitle = last.title;
+  _netSub = last.detail || "";
+  if (vueOwnsDiscover()) { syncAll(); return; }
+
   const box = $("#netLive");
-  if (!box || !M.steps.length) return;
+  if (!box) return;
   box.classList.remove("hidden");
 
-  const last = M.steps[M.steps.length - 1];
-  $("#netLiveTitle").textContent = last.title;
-  $("#netLiveSub").textContent = last.detail || "";
+  $("#netLiveTitle").textContent = _netTitle;
+  $("#netLiveSub").textContent = _netSub;
 
   const ul = $("#netLiveSteps");
   const hitWords = /发现可用来源|来源库命中|来源库已更新|收录/;
@@ -225,24 +331,33 @@ function renderNetLive() {
 }
 
 function finishNetLive() {
-  const box = $("#netLive");
-  if (!box || !M.steps.length) return;
-  renderNetLive();
-  box.classList.add("done");
+  if (!M.steps.length) return;
+  _netDone = true;
 
   const fromLib = M.steps.some(s => /来源库命中/.test(s.title));
   const n = M.discovered || 0;
   if (fromLib) {
-    $("#netLiveTitle").textContent = `来源库里已经有 ${n} 个来源`;
-    $("#netLiveSub").textContent = "不用再联网搜了";
+    _netTitle = `来源库里已经有 ${n} 个来源`;
+    _netSub = "不用再联网搜了";
   } else if (n) {
-    $("#netLiveTitle").textContent = `联网找回 ${n} 个来源`;
-    $("#netLiveSub").textContent = "已记进来源库，下次搜这本会快很多";
-    box.classList.add("folded");   // 步骤收起，别抢搜索结果的位置
-    $("#netLiveToggle").textContent = "展开";
+    _netTitle = `联网找回 ${n} 个来源`;
+    _netSub = "已记进来源库，下次搜这本会快很多";
+    _netFolded = true;   // 步骤收起，别抢搜索结果的位置
   } else {
-    $("#netLiveTitle").textContent = "联网没找到能用的来源";
-    $("#netLiveSub").textContent = "";
+    _netTitle = "联网没找到能用的来源";
+    _netSub = "";
+  }
+  if (vueOwnsDiscover()) { syncAll(); return; }
+
+  const box = $("#netLive");
+  if (!box) return;
+  renderNetLive();
+  box.classList.add("done");
+  $("#netLiveTitle").textContent = _netTitle;
+  $("#netLiveSub").textContent = _netSub;
+  if (n && !fromLib) {
+    box.classList.add("folded");
+    $("#netLiveToggle").textContent = "展开";
   }
 }
 
@@ -263,6 +378,7 @@ function fallbackGroup(flat) {
 }
 
 function renderSkeleton() {
+  if (vueOwnsDiscover()) { syncAll(); return; }
   // 骨架屏只**画结构**，不放插画 —— 它的工作是在首屏抢先占位，
   // 插一张 480px 的图反而会让"正在搜"变慢（图还没到就先空了）。
   // 插画留给"已经在等了、需要一点安慰"的场景（见 reader 的 setStageBusy）。
@@ -335,6 +451,13 @@ export function visibleBooks() {
 
 export function renderResults() {
   const list = visibleBooks();
+  if (vueOwnsDiscover()) {
+    // 首页空态的显隐：搜完且一本都没有 → 露出来（内容由 Vue 按 books 长度决定，
+    // 与旧版两种"没结果"文案一一对应）；有结果或还在搜 → 藏起来。
+    setHomeEmpty(!M.searching && !list.length);
+    syncAll();
+    return;
+  }
   const box = $("#results");
   if (!list.length) {
     if (M.searching) { box.innerHTML = ""; return; }
@@ -506,8 +629,8 @@ function bindBooks() {
 
 /* ---------- 绑定 ---------- */
 export function mountDiscover() {
-  $("#onlyOk").checked = M.onlyOk;
-  $("#onlyOk").onchange = e => { M.onlyOk = e.target.checked; PRE.set("onlyOk", M.onlyOk); renderResults(); };
+  // hero 里的搜索框**永远是原生元素**（没迁到 Vue，理由见顶部迁移桥注释），
+  // 所以这几条绑定无条件挂上：
   $("#btnSearch").onclick = submitSearch;
   $("#q").addEventListener("keydown", e => { if (e.key === "Enter") submitSearch(); });
   $("#q").addEventListener("input", e => {
@@ -515,24 +638,50 @@ export function mountDiscover() {
     hintUrlBox(isUrl(v) ? v : "");
     if (!isUrl(v)) kickConfirm(v);
   });
+
+  // ⚠ 以下都是**结果区**的绑定。结果区迁到 Vue 之后，这些元素由组件渲染，
+  //   在启动这一刻还不存在 —— 所以必须先判断再取，不能直接挂。
+  //   （踩过同类坑：书架/文件页迁移时，`$("#x").onclick` 在 null 上抛错，
+  //     而这个函数在 main.js 启动链里，一抛整条链就断。）
+  if (vueOwnsDiscover()) return;
+
+  $("#onlyOk").checked = M.onlyOk;
+  $("#onlyOk").onchange = e => { M.onlyOk = e.target.checked; PRE.set("onlyOk", M.onlyOk); renderResults(); };
   const nlToggle = $("#netLiveToggle");
   if (nlToggle) nlToggle.onclick = () => {
     const box = $("#netLive");
     const folded = box.classList.toggle("folded");
     nlToggle.textContent = folded ? "展开" : "收起";
   };
-  $("#btnClearSearch").onclick = () => {
-    M.books = []; M.flat = []; M.byUrl.clear();
-    resetNetLive();
-    renderResults();
-    $("#statbar").innerHTML = "";
-    $("#filters").classList.add("hidden");
-    $("#homeEmpty").classList.remove("hidden");
-    $("#q").value = "";
-    $("#confirmBox").innerHTML = "";
-    hintUrlBox("");
-    M.confirmed = "";
-  };
+  $("#btnClearSearch").onclick = () => clearSearch();
+}
+
+/* 结果区的三个交互动作。**抽成导出函数**是为了让 Vue 侧复用同一条路径 ——
+   事件挂在 Vue 渲染的元素上，但"点了之后做什么"必须与旧实现完全一致
+   （比如清空时要把 M 的多个字段一起复位，漏一个就会"清空后切来源还在过滤"）。 */
+export function setOnlyOk(v) {
+  M.onlyOk = !!v;
+  PRE.set("onlyOk", M.onlyOk);
+  renderResults();
+}
+
+export function toggleSource(name) {
+  if (M.srcFilter.has(name)) M.srcFilter.delete(name); else M.srcFilter.add(name);
+  if (vueOwnsDiscover()) syncAll();
+  if (M.confirmed) runSearch(M.confirmed, false);
+}
+
+export function clearSearch() {
+  M.books = []; M.flat = []; M.byUrl.clear();
+  resetNetLive();
+  renderResults();
+  setStat("");
+  setFilters(false);
+  setHomeEmpty(true);
+  $("#q").value = "";
+  setConfirm("");
+  hintUrlBox("");
+  M.confirmed = "";
 }
 
 /* --------------------------------------------------------------------------
@@ -549,10 +698,8 @@ function isUrl(s) {
 function hintUrlBox(url) {
   const btn = $("#btnSearch");
   if (btn) btn.textContent = url ? "直接抓这个地址" : "开始找书";
-  const box = $("#confirmBox");
-  if (!box) return;
-  if (!url) { if (M.confirmData && !M.confirmData.suspect) box.innerHTML = ""; return; }
-  box.innerHTML = `
+  if (!url) { if (M.confirmData && !M.confirmData.suspect) setConfirm(""); return; }
+  setConfirm(`
     <div class="cfs">
       <div class="cfs-h" style="align-items:center">
         <span class="cfs-ic" aria-hidden="true">🔗</span>
@@ -563,7 +710,7 @@ function hintUrlBox(url) {
           </div>
         </div>
       </div>
-    </div>`;
+    </div>`);
 }
 
 async function runFetchUrl(url) {
@@ -575,11 +722,11 @@ async function runFetchUrl(url) {
   const ctrl = new AbortController();
   M.ctrl = ctrl;
   M.confirmed = "";
-  $("#confirmBox").innerHTML = "";
+  setConfirm("");
   resetNetLive();
-  $("#homeEmpty").classList.add("hidden");
-  $("#filters").classList.add("hidden");
-  $("#statbar").innerHTML = `<span class="dot"></span>正在打开这个地址…`;
+  setHomeEmpty(false);
+  setFilters(false);
+  setStat(`<span class="dot"></span>正在打开这个地址…`);
   renderSkeleton();
 
   let d;
@@ -589,18 +736,20 @@ async function runFetchUrl(url) {
     if (M.ctrl !== ctrl) return;          // 已被新流程顶掉，别动界面
     M.searching = false;
     if (e.name === "AbortError") return;  // 自己放弃的，不算错误
-    $("#results").innerHTML = "";
+    M.books = []; M.flat = []; M.byUrl.clear();
+    renderResults();
     toast("打不开这个地址：" + e.message, "err");
-    $("#statbar").innerHTML = `<span style="color:var(--err)">${esc(e.message)}</span>`;
+    setStat(`<span style="color:var(--err)">${esc(e.message)}</span>`);
     return;
   }
   if (M.ctrl !== ctrl) return;            // 同上：慢请求回来时已经换人了
   M.searching = false;
 
   if (!d || !d.ok) {
-    $("#results").innerHTML = "";
-    $("#homeEmpty").classList.remove("hidden");
-    $("#statbar").innerHTML = `<span style="color:var(--err)">${esc((d && d.error) || "这个页面不像小说页")}</span>`;
+    M.books = []; M.flat = []; M.byUrl.clear();
+    renderResults();
+    setHomeEmpty(true);
+    setStat(`<span style="color:var(--err)">${esc((d && d.error) || "这个页面不像小说页")}</span>`);
     return;
   }
 
@@ -624,21 +773,21 @@ async function runFetchUrl(url) {
       sources: [src],
     }];
     M.flat = [src]; M.byUrl = new Map([[d.url, src]]);
-    $("#results").classList.remove("hidden");
     renderResults();
-    $("#statbar").innerHTML = s.readable
+    setStat(s.readable
       ? `<span style="color:var(--ok)">认出了目录 · <b>${d.chapters || 0}</b> 章
          <span class="sep"></span>正文抽了 <b>${s.chars || 0}</b> 字，读得到</span>
          <span class="sep"></span>来源 <b>${esc(host)}</b>`
       : `<span style="color:var(--warn)">认出了目录 · <b>${d.chapters || 0}</b> 章
          <span class="sep"></span>但正文抓不到${s.note ? "：" + esc(s.note) : ""}</span>
-         <span class="sep"></span>来源 <b>${esc(host)}</b>`;
+         <span class="sep"></span>来源 <b>${esc(host)}</b>`);
   } else {
     // 给的是一张正文页：不算「一本书」，直接说清
-    $("#results").innerHTML = "";
-    $("#homeEmpty").classList.remove("hidden");
+    M.books = []; M.flat = []; M.byUrl.clear();
+    renderResults();
+    setHomeEmpty(true);
     toast(`这个地址是一章正文（${d.chars || 0} 字），不是目录页`, "warn");
-    $("#statbar").innerHTML = `<span>这是一张正文页，不是目录页 —— 换成书的目录地址我才能列章</span>`;
+    setStat(`<span>这是一张正文页，不是目录页 —— 换成书的目录地址我才能列章</span>`);
   }
 }
 
@@ -650,6 +799,28 @@ export function searchFromHash(kw) {
   runSearch(kw, true);
 }
 
-/* 迁移桥：Vue 侧点榜单书名要走同一条搜索路径（理由见 util.js 末尾）。
-   挂 searchFromHash 而不是 runSearch —— 前者会顺手填好输入框，语义更完整。 */
-window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, { searchFromHash });
+/* 给测试用的探针：当前可见列表里，**有几个来源是"该有阅读按钮"的**。
+   口径与渲染同源（`s.readable || s.available`）—— 这样 tools/test_buttons.py
+   的 B2 可以"按页面的口径对账按钮数"，而不是写死一个会在冷启动时漂移的数量
+   （写死 ≥1 会在"本轮所有来源都没探通"时假红，热缓存时又假绿）。
+
+   ⚠ 这是**只读**的：返回一个数字，不改任何状态。 */
+export function discoverExpectRead() {
+  let n = 0;
+  for (const b of visibleBooks()) {
+    for (const s of (b.sources || [])) if (s.readable || s.available) n++;
+  }
+  return n;
+}
+
+/* 迁移桥：Vue 侧要复用**同一条**搜索/渲染路径（理由见 util.js 末尾）。
+   · searchFromHash —— 榜单点书名走它（会顺手填输入框，语义完整）
+   · attachDiscover / detachDiscover —— Vue 组件注册渲染回调
+   · setOnlyOk / toggleSource / clearSearch —— 结果区三个交互的同路径入口
+   · stagger —— 列表错峰由动效层统一编排，组件不自己写 delay */
+window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, {
+  searchFromHash,
+  attachDiscover, detachDiscover,
+  setOnlyOk, toggleSource, clearSearch,
+  discoverExpectRead,
+});

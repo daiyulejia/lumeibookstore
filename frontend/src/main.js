@@ -34,6 +34,7 @@ const MOUNTS = [
   { name: "RanksPanel", sel: "[data-vue-ranks]" },
   { name: "ShelfPanel", sel: "[data-vue-shelf]" },
   { name: "FilesPanel", sel: "[data-vue-files]" },
+  { name: "DiscoverPanel", sel: "[data-vue-discover]" },
 ];
 
 let mounted = 0;
