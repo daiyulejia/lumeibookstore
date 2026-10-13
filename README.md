@@ -172,6 +172,7 @@ grep 'search.fail'   logs/app.log      # 失败在哪个阶段、什么原因
 grep 'ui.error'      logs/app.log      # 浏览器里的 JS 报错（带堆栈）
 grep 'ui.reject'     logs/app.log      # 未处理的 Promise 拒绝
 grep 'ui.api.fail'   logs/app.log      # 接口失败（用户说"搜不出来"先查这条）
+grep 'cover\.'       logs/app.log      # 封面取不到 / 被安全策略拦（查"有的书没图"）
 ```
 
 事件名登记在 `app/logging_setup.py` 的 `EVENTS` 里，加埋点时照抄风格，

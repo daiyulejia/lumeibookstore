@@ -32,6 +32,9 @@ class BookResult:
 
     source_display: str = ""        # 来源中文名（探测时回填）
     library_id: str = ""            # 已入书架的话给出 id
+    # 封面图（探测时打开详情页顺手扒到的 og:image）。空字符串 = 这站没有，
+    # 前端渲染渐变兜底封面 —— 不留空框，也不影响任何判断逻辑。
+    cover: str = ""
 
     # —— 「这到底是不是同一本书」——
     # 书名撞词比想象中严重：搜《活着》，一堆站会返回「原神：活着」
@@ -104,6 +107,7 @@ class BookResult:
             "sampled": self.sampled,
             "readable": self.readable,
             "library_id": self.library_id,
+            "cover": self.cover,
             "tightness": round(self.tightness, 2),
             "tight": self.tight,
             "by_author": self.by_author,

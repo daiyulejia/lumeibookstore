@@ -234,6 +234,9 @@ class RegistrySource(Source):
             result.author = data["author"]
         if data.get("intro") and not result.intro:
             result.intro = data["intro"]
+        # 顺手把封面带回来 —— 探测本来就要打开这页，白拿的。
+        if data.get("cover") and not result.cover:
+            result.cover = data["cover"]
         toc = data.get("toc") or []
         return [Chapter(index=i, title=c["title"], url=c["url"])
                 for i, c in enumerate(toc, 1)]

@@ -49,6 +49,9 @@
 
 埋点
   POST   /api/log                 前端错误/慢接口回传（写进 logs/app.log）
+
+资源代理
+  GET    /api/cover?u=            代理来源站的封面图（带 Referer 破防盗链 + 落盘缓存）
 """
 from __future__ import annotations
 
@@ -79,6 +82,11 @@ from . import security, tunnel
 from .engine import Engine, source_meta
 from .errors import Cancelled, SourceBlocked
 from .exporter import DOWNLOAD_DIR, export as export_book
+
+# 封面缓存目录。刻意放在 `cache/` 下而不是 `downloads/`：
+# downloads 是给用户看的成品目录（会被 /api/files 列出来），
+# 封面只是渲染用的中间件，混进去会污染文件列表。
+COVER_CACHE_DIR = DOWNLOAD_DIR.parent / "cache" / "covers"
 from .library import book_id as lib_book_id
 from .library import valid_id
 from .logging_setup import get_logger, get_request_id, log_event, set_request_id
@@ -190,6 +198,12 @@ MAX_TASKS_KEPT = 60
 _prefetch_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="prefetch")
 _prefetch_lock = threading.Lock()
 _prefetch_inflight: set[tuple[str, int]] = set()
+# 预取待办上限。`_prefetch_inflight` 同时充当「在跑的」和「排队的」两本账
+# （job 的 finally 里才 discard），所以这个数就是**队列深度**。
+# 3 个 worker × 每人 3 章缓冲 = 12 就够用了；留一点余量到 16。
+# 超了就干脆不预取（见 _schedule_prefetch 注释）—— 预取是锦上添花，
+# 不能反过来让「用户已翻过去的旧章节」霸占来源站的限速配额。
+PREFETCH_MAX_INFLIGHT = 16
 
 
 # ---------------------------------------------------------------------------
@@ -1213,6 +1227,19 @@ def _schedule_prefetch(bid: str, from_index: int, ahead: int = 3) -> None:
 
     只在「未缓存」时才排任务，并用 in-flight 集合去重，
     避免用户快速翻页时把同几章重复请求好几遍。
+
+    ⚠ 这里踩过一个**队列积压**的坑，行为完全是反的：
+    原先是「先登记 in-flight，再丢进池子排队」。看着没问题，但
+    `_prefetch_pool` 只有 3 个 worker，而排队**不计入 in-flight 的去重逻辑** ——
+    用户连翻 100 章（或按住下一章键），就登记 100 个 key、往队列里塞 100 个任务，
+    真正并发执行的永远只有 3 个。
+    后果：① 更要命的 —— 用户已经停在第 100 章了，队列里还排着第 8 章，
+       worker 会把**远在身后**的章节一章章抓回来，占着网速和来源站的限速配额，
+       「预取」变成了「补历史」，用户真正要的下一章反而排在队尾；
+    ② 队列没有上限，翻一整本书就能堆出上千个待办任务，内存和连接都被拖住。
+
+    正确做法：**满了就丢**。预取本来就是「锦上添花」—— 排不上队就不排，
+    用户真翻到那一章时再同步抓，慢一点而已，绝不该反过来拖累当前阅读。
     """
     try:
         total = len(engine.library.toc(bid))
@@ -1221,6 +1248,14 @@ def _schedule_prefetch(bid: str, from_index: int, ahead: int = 3) -> None:
     for idx in range(from_index + 1, min(from_index + 1 + ahead, total + 1)):
         key = (bid, idx)
         with _prefetch_lock:
+            # 队列里已经攒够待办了 → 不再接新的，直接放弃这次预取。
+            # 判在再加锁之内，避免多个请求同时读到「还没满」而一起挤进去。
+            if len(_prefetch_inflight) >= PREFETCH_MAX_INFLIGHT:
+                logger.info(
+                    "预取队列已满（%d 个待办），跳过 %s 第 %d 章 —— "
+                    "不拖累当前阅读，用户翻到再同步抓",
+                    len(_prefetch_inflight), bid, idx)
+                return
             if key in _prefetch_inflight or engine.library.has_chapter(bid, idx):
                 continue
             _prefetch_inflight.add(key)
@@ -1575,20 +1610,144 @@ async def get_file(name: str):
     return FileResponse(path, filename=name, media_type=mime)
 
 
+@app.get("/api/cover")
+async def get_cover(u: str = ""):
+    """把来源站的封面图**代理**回来。
+
+    ⚠ 为什么不能在前端直接 <img src="外站封面">：
+      ① 小说站基本都有 Referer 防盗链，浏览器直连一律 403，图全裂；
+      ② 等于让用户的浏览器去连几十个陌生站，把 IP 和访问记录送出去。
+    所以由服务端带正确 Referer 去取，取回来的字节缓存到磁盘，之后直接吐。
+
+    安全：`assert_public_url` 挡 SSRF（.local / 内网 IP / 云元数据地址），
+    content-type 必须是 image/*，体积上限 8MB —— 防止有人拿这个接口
+    当「任意 URL 转发器」去探测内网。
+    """
+    from .security import BlockedURL, assert_public_url
+
+    u = (u or "").strip()
+    if not u:
+        return JSONResponse({"error": "no url"}, status_code=400)
+
+    # 缓存键用 URL 的哈希 —— 避免把 URL 里的怪字符写进文件名
+    key = hashlib.sha256(u.encode("utf-8")).hexdigest()[:32]
+    ext = ".img"
+    cache_dir = COVER_CACHE_DIR
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 命中磁盘缓存：直接吐，连 URL 校验都不用做（我们自己存下来的）
+    for cand_ext in (".jpg", ".png", ".gif", ".webp", ".img"):
+        cp = cache_dir / f"{key}{cand_ext}"
+        if cp.exists() and cp.stat().st_size > 0:
+            return FileResponse(cp, media_type=_cover_mime(cand_ext),
+                                headers={"Cache-Control": "public, max-age=604800"})
+
+    try:
+        safe_u = assert_public_url(u)
+    except BlockedURL as e:
+        log_event(logger, "cover.blocked", logging.WARNING, 地址=u[:120], 原因=str(e))
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+    def _grab() -> tuple[bytes, str] | None:
+        from .utils import DEFAULT_HEADERS, get_client, host_of
+        h = dict(DEFAULT_HEADERS)
+        # 带 Referer 骗过防盗链 —— 取值用图片自己所在的站点根，
+        # 和「在浏览器里从那个页面看图」的效果一致。
+        host = host_of(safe_u)
+        if host:
+            h["Referer"] = f"https://{host}/"
+        h["Accept"] = "image/avif,image/webp,image/*,*/*;q=0.8"
+        r = get_client().get(safe_u, headers=h, timeout=8, follow_redirects=True)
+        if r.status_code != 200:
+            return None
+        ct = (r.headers.get("content-type") or "").lower()
+        if not ct.startswith("image/"):
+            return None  # 不是图片：多半是防盗链页面 / 404 页
+        body = r.content
+        if not body or len(body) > 8 * 1024 * 1024:
+            return None
+        return body, ct
+
+    try:
+        loop = asyncio.get_running_loop()
+        got = await loop.run_in_executor(None, _grab)
+    except Exception as e:  # noqa: BLE001
+        log_event(logger, "cover.fail", logging.WARNING, 地址=u[:120],
+                  原因=f"{type(e).__name__}: {e}")
+        return JSONResponse({"error": "fetch failed"}, status_code=502)
+
+    if not got:
+        log_event(logger, "cover.fail", logging.WARNING, 地址=u[:120], 原因="不是图片或取不到")
+        return JSONResponse({"error": "not an image"}, status_code=404)
+
+    body, ct = got
+    ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+           "image/webp": ".webp"}.get(ct.split(";")[0].strip(), ".img")
+    try:
+        (cache_dir / f"{key}{ext}").write_bytes(body)
+    except Exception:  # noqa: BLE001
+        pass
+
+    from fastapi.responses import Response
+    return Response(content=body, media_type=ct,
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
+def _cover_mime(ext: str) -> str:
+    return {".jpg": "image/jpeg", ".png": "image/png",
+            ".gif": "image/gif", ".webp": "image/webp"}.get(ext, "image/jpeg")
+
+
 @app.get("/api/read/{name}")
 async def read_file(name: str, offset: int = 0, limit: int = 20000):
-    """在线读一段文件内容（给页面上的「试读」用）。"""
+    """在线读一段文件内容（给页面上的「试读」用）。
+
+    ⚠ 以前是 `path.read_text()` **整个文件读进内存**再切片 —— 试读只要 2 万字符，
+    却先把整本书（几 MB，UTF-8 中文一字 3 字节）拉进内存；更要命的是它是
+    async 路由，`read_text` 是同步阻塞调用，直接卡在事件循环上 ——
+    一本 20MB 的 txt 能让**整个服务**停住几百毫秒，其它请求全排队。
+    （用户下载整本书的正文都在这儿，20MB 不是极端情况。）
+
+    现在：按**字节**窗口读 + 增量解码。中文一个字 3 字节，所以字节窗口
+    取 limit 的 3 倍再多留 64 字节余量，保证够凑出 limit 个字符；
+    `errors="ignore"` 让窗口边界切在半个汉字上时丢掉那个残字而不是报错。
+    真实文件远比窗口大时 `total` 拿精确值（stat 一下就有，不用读内容）。
+    """
     path = _safe_path(name)
     if path is None or not path.exists():
         return JSONResponse({"error": "not found"}, status_code=404)
-    text = path.read_text(encoding="utf-8", errors="replace")
-    chunk = text[offset : offset + limit]
+
+    limit = max(0, min(int(limit), 200_000))
+    offset = max(0, int(offset))
+
+    # 中文 UTF-8 一字最多 3 字节；多读 64 字节兜住窗口边界
+    win = limit * 3 + 64
+    with path.open("rb") as f:
+        f.seek(offset)
+        raw = f.read(win)
+    chunk = raw.decode("utf-8", errors="ignore")
+    # 按**字符**截断到 limit（上面按字节读的窗口通常比 limit 长一点点）
+    chunk = chunk[:limit]
+
+    # total 用字节数近似「字符数上限」，只在文件确实大于窗口时才可能不准 ——
+    # 而那种情况下前端本来也是「还有更多，继续翻」，不需要精确总数。
+    try:
+        if offset + len(raw) < path.stat().st_size:
+            total = None  # 未知精确值：让前端按 has_more 判断
+        else:
+            total = offset + len(chunk)
+    except OSError:
+        total = offset + len(chunk)
+
     return {
         "name": name,
-        "total": len(text),
+        "total": total,
         "offset": offset,
-        "next": offset + len(chunk),
-        "has_more": offset + len(chunk) < len(text),
+        "next": offset + len(raw),
+        "has_more": len(raw) >= win - 64 and bool(raw),
         "content": chunk,
     }
 

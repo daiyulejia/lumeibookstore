@@ -252,8 +252,7 @@ function fallbackGroup(flat) {
     const k = (r.title || "").trim();
     if (!m.has(k)) m.set(k, {
       key: k, title: k, author: r.author, intro: r.intro,
-      hue: (k.length * 37) % 360, sources: [], source_count: 0,
-      available_count: 0, readable_count: 0, chapter_count: 0, score: r.score,
+      hue: (k.length * 37) % 360, sources: [], source_count: 0,      available_count: 0, readable_count: 0, chapter_count: 0, score: r.score,
     });
     const b = m.get(k); b.sources.push(r); b.source_count++;
     if (r.available) b.available_count++;
@@ -277,8 +276,42 @@ function renderSkeleton() {
 }
 
 /* ---------- 渲染 ---------- */
-export function coverHTML(hue, title, author, lg) {
-  const c1 = `hsl(${hue} 58% 50%)`, c2 = `hsl(${(hue + 38) % 360} 54% 34%)`;
+/**
+ * 纯 CSS 生成的封面。
+ *
+ * ⚠ 这是**兜底**，不是主方案：真正抓到的封面图（`coverHTML(coverUrl)`）
+ *   优先，拿不到才用这个。为什么留着：搜索阶段只回传书名/作者，
+ *   封面要等探测打开书页才拿得到 —— 而探测是有预算的（只探前 N 个），
+ *   排在后头的书永远等不到图。用一个由书名哈希决定的渐变色块兜住，
+ *   列表就不会出现「有的有图有的没有」那种参差感。
+ *   色相来自 aggregate.hue_of()，同一本书永远是同一个颜色。
+ *
+ * 调用方式两种：
+ *   coverHTML(hue)              —— 只有色相（老调用点，仍兼容）
+ *   coverHTML(coverUrl, title, author) —— 有真封面
+ */
+export function coverHTML(a, title, author, lg) {
+  // 兼容老签名：第一个参数是数字就是色相
+  if (typeof a === "number") return gradientCover(a, title, author, lg);
+
+  const url = (a || "").trim();
+  if (!url) return gradientCover((title || "").length * 37 % 360, title, author, lg);
+  // ⚠ 封面必须走代理回传，不能直接把外站 URL 塞进 <img src>：
+  //   ① 来源站大多有 Referer 防盗链，直连浏览器必然 403（图裂）
+  //   ② 会让用户的浏览器直连外站，暴露 IP / 访问记录
+  //   /api/cover 由服务端带正确 Referer 去取并缓存，前端只认这个。
+  const src = `/api/cover?u=${encodeURIComponent(url)}`;
+  return `<div class="cover${lg ? " lg" : ""} has-img">
+    <img src="${esc(src)}" alt="" loading="lazy" decoding="async"
+         onerror="this.parentNode.classList.remove('has-img');this.remove()">
+    <div class="t">${esc((title || "?").slice(0, 7))}</div>
+    <div class="a">${esc((author || "佚名").slice(0, 6))}</div>
+  </div>`;
+}
+
+function gradientCover(hue, title, author, lg) {
+  const h = ((hue % 360) + 360) % 360;
+  const c1 = `hsl(${h} 58% 50%)`, c2 = `hsl(${(h + 38) % 360} 54% 34%)`;
   return `<div class="cover${lg ? " lg" : ""}" style="background:linear-gradient(150deg,${c1},${c2})">
     <div class="t">${esc((title || "?").slice(0, 7))}</div>
     <div class="a">${esc((author || "佚名").slice(0, 6))}</div>
@@ -426,7 +459,7 @@ function bookHTML(b, i) {
   const dtitle = b.display_title || b.title;
   return `<div class="book" data-i="${i}" data-gk="${esc(gk)}">
     <div class="head">
-      ${coverHTML(b.hue, dtitle, b.author)}
+      ${coverHTML(b.cover || b.hue, dtitle, b.author)}
       <div class="meta">
         <h3>${esc(dtitle)}</h3>
         <div class="by">${esc(b.author || "作者未知")}</div>

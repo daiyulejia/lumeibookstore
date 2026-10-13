@@ -309,6 +309,24 @@ input:focus,select:focus,textarea:focus{
 .cover .a{font-size:9.5px;opacity:.86;text-shadow:0 1px 3px rgba(0,0,0,.34)}
 .cover.lg{width:78px;height:110px}
 
+/* 有真封面图时（.has-img）：图铺满，书名/作者作为**兜底文案**垫在底下。
+   ⚠ 图加载成功就把它盖住文字层；加载失败（onerror）JS 会摘掉 .has-img，
+   于是自动退回纯渐变封面 —— 不留白框、不留裂图图标。
+   文字层刻意保留在 DOM 里而不是删掉：万一图是"半透明 PNG"，
+   底下有字也不至于看出空洞。 */
+.cover.has-img{background:#2b2b30;padding:0}
+.cover.has-img .t,.cover.has-img .a{display:none}
+.cover.has-img img{
+  position:absolute;inset:0;width:100%;height:100%;
+  object-fit:cover;display:block;z-index:1;
+}
+/* 图上再压一道从下往上的暗角 —— 有些封面是浅色底，
+   直接放进来会和卡片背景糊在一起，看不出边界。 */
+.cover.has-img::before{
+  content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+  background:linear-gradient(180deg,transparent 55%,rgba(0,0,0,.28));
+}
+
 .book .meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
 .book h3{margin:0;font-size:16.5px;font-weight:800;line-height:1.34;letter-spacing:-.01em}
 .book .by{font-size:12.5px;color:var(--t-3);font-weight:600}

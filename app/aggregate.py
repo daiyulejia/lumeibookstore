@@ -116,6 +116,9 @@ def group(results: list[BookResult]) -> list[dict]:
             "author": _pick_author(items),
             "intro": _pick_intro(items),
             "hue": hue_of(title),
+            # 封面：多个来源里挑第一个有图的。**不按 score 挑** ——
+            # 封面和相关性无关，有图就是好，谁先探到用谁的。
+            "cover": next((r.cover for r in items if r.cover), ""),
             "sources": [r.to_dict() for r in items],
             "source_count": len(items),
             # 「目录能打开」和「正文真能读」是两件事，分开数 ——

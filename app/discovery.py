@@ -127,6 +127,7 @@ def from_registry(keyword: str, *, limit: int = 8) -> list[BookResult]:
             source="web", url=b["url"], intro=b.get("intro", ""),
             source_display="联网发现",
         )
+        r.cover = b.get("cover", "") or ""
         r.chapter_count = int(b.get("chapters", 0) or 0)
         host = b.get("host", "")
         r.note = f"来自 {registry.site_label(host)}" if host else ""

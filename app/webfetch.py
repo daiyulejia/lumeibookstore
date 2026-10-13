@@ -682,6 +682,100 @@ def extract_meta(html: str) -> dict:
     return {"title": title[:60], "author": author[:40], "intro": intro[:300]}
 
 
+# 封面图。取 og:image 是首选 —— 中文小说站几乎都在详情页放了它，
+# 而且它是**绝对地址**（或相对 base 的地址），比自己猜 DOM 里哪张 <img> 是封面稳得多。
+_COVER_META_KEYS = (
+    "og:image", "og:image:url", "og:image:secure_url",
+    "twitter:image", "twitter:image:src", "image",
+)
+
+# 站点自带的「没有封面」占位图。
+# ⚠ 一定要认出来，否则我们不但拿不到图，还会把占位图当封面**缓存到本地**，
+#   之后这本书永远显示那张灰色占位图 —— 比没有封面更糟
+#   （没有封面时前端会画渐变封面，至少好看）。
+_COVER_PLACEHOLDER_RE = re.compile(
+    r"(nocover|no-cover|no_cover|nocoverimg|default[-_]?cover|book[-_]?default"
+    r"|placeholder|blank\.|empty\.|loading\.|icon[-_]?book|nophoto)",
+    re.I,
+)
+
+
+def _looks_like_placeholder(url: str) -> bool:
+    return bool(_COVER_PLACEHOLDER_RE.search(url or ""))
+
+
+def extract_cover(html: str, base: str = "") -> str:
+    """从详情页扒封面图地址（绝对 URL）。
+
+    为什么必须服务端扒、不能前端直接 <img src="外站">：
+      ① 小说站基本都有 Referer 防盗链，浏览器直连一律 403，图全裂；
+      ② 让用户浏览器去连几十个陌生站，等于把 IP 和访问记录送出去。
+    所以这里只负责**找到**地址，真正的取图交给 /api/cover 由服务端带 Referer 去拿。
+
+    返回 "" 表示这页没有可用的封面 —— 调用方渲染成渐变兜底封面，不留空框。
+
+    实测踩过的两种坑（都是从真实站点上抓到的）：
+      · **懒加载**：`<img class="thumbnail" src="nocover.jpg" data-src="真封面.jpg">`
+        —— 只读 `src` 会永远拿不到真图，必须优先读 `data-src` 这类真实地址。
+      · **占位图**：站点没封面时给一张 `nocover.jpg`。必须识别并丢弃，
+        否则会把占位图缓存下来，那本书从此永远显示灰图。
+    """
+    raw = ""
+    for k in _COVER_META_KEYS:
+        raw = _meta_content(html, k)
+        if raw and not _looks_like_placeholder(raw):
+            break
+        raw = ""
+    if not raw:
+        # meta 缺失时退一步：详情页常见的 <img class="cover|bookimg|thumbnail"> 写法。
+        for tag in _COVER_IMG_RE.findall(_prep(html)):
+            src, lazy = _img_inner(tag)
+            # 懒加载地址优先 —— 它的 src 通常就是占位图
+            cand = (lazy or src or "").strip()
+            if cand and not cand.startswith("data:") and not _looks_like_placeholder(cand):
+                raw = cand
+                break
+    raw = (raw or "").strip()
+    if not raw or raw.startswith("data:") or _looks_like_placeholder(raw):
+        # data: 内联图多数是占位符/加载动画，不是封面
+        return ""
+    try:
+        # urljoin 顺带处理了「//host/x.jpg」和「/x.jpg」两种相对写法
+        return urljoin(base or "", raw)[:500]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+# ⚠ 属性顺序在这个正则里被**刻意放宽**了：真实站点写成
+#   `<img class="thumbnail" src="…" data-src="…">`（src 在前），
+#   也会写成 `<img data-src="…" class="cover">`。
+#   所以「筛标签」和「取属性」分成两步，不假设 src / data-src 谁先谁后。
+#
+# ⚠ 类名匹配**不能用 `\bcover\b`**：`\b` 在 `-` 和字母之间不成立，
+#   于是 `book-cover` 能中但 `coverbox` 不中 —— 而后者恰恰是常见的
+#   骨架类名。这里改成「显式分隔符 + 子串」，`cover`/`thumbnail`/`bookimg`
+#   用子串匹配（宁可多认几个也别漏），再靠上面的占位图/尺寸校验兜住误判。
+_COVER_IMG_RE = re.compile(
+    r"""<img\b(?=[^>]*\b(?:class|id)\s*=\s*["'][^"']*(?:cover|thumbnail|bookimg|book_img|book-img)[^"']*["'])"""
+    r"""[^>]*?>""",
+    re.I,
+)
+_IMG_SRC_RE = re.compile(r"""\bsrc\s*=\s*["']([^"']+)["']""", re.I)
+_IMG_LAZY_RE = re.compile(
+    r"""\b(?:data-src|data-original|data-lazy-src|data-echo|data-url)\s*=\s*["']([^"']+)["']""",
+    re.I,
+)
+
+
+def _img_inner(raw_tag: str) -> tuple[str, str]:
+    """从 <img ...> 标签里取 (src, 懒加载真地址)。"""
+    m = _IMG_SRC_RE.search(raw_tag)
+    src = m.group(1) if m else ""
+    m2 = _IMG_LAZY_RE.search(raw_tag)
+    lazy = m2.group(1) if m2 else ""
+    return src, lazy
+
+
 # ---------------------------------------------------------------------------
 # 页面级入口：给一个 URL，自己判断是详情页还是正文页
 # ---------------------------------------------------------------------------
@@ -709,6 +803,9 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
 
     toc = extract_toc(html, base, tpl_hint=site.get("toc_tpl") or "")
     meta = extract_meta(html)
+    # 封面只在这里取一次，随 analyze 的返回值一起带出去 ——
+    # 前端列表卡直接用，不必再为每本书单独打一次详情页。
+    cover = extract_cover(html, base)
     # 站名顺手学一下（只学一次，`note_site` 里 name 为空才填）
     sname = extract_site_name(html)
 
@@ -745,6 +842,7 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
                 "kind": "toc", "url": url, "final_url": base, "host": host,
                 "site_name": sname,
                 "title": meta["title"], "author": meta["author"], "intro": meta["intro"],
+                "cover": cover,
                 "toc": toc, "quality": quality, "size": len(html),
             }
         registry.note_site(host, ok=False, name=sname)
@@ -770,7 +868,7 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
         return {
             "kind": "chapter", "url": url, "final_url": base, "host": host,
             "site_name": sname,
-            "title": meta["title"], "content": body, "size": len(html),
+            "title": meta["title"], "content": body, "cover": cover, "size": len(html),
         }
 
     registry.note_site(host, ok=False, name=sname)

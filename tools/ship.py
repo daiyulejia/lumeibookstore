@@ -85,6 +85,10 @@ STATIC_SUITES = [
     # 结尾点空格、空名。这些在 Linux 上**全都不存在**，所以本地/线上都测不出，
     # 只有真的在 Windows 上跑才暴露。见 tools/test_filename.py 的注释。
     ("test_filename.py", "文件名安全"),
+    # 封面抽取：拿错封面比拿不到更糟 —— 站点占位图（nocover.jpg）一旦被
+    # 当成真封面缓存下来，那本书就永远显示灰图；懒加载站（src=占位、
+    # data-src=真图）只读 src 则 100% 拿错。两种写法都是从真实站点抄来的。
+    ("test_cover.py", "封面抽取"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）

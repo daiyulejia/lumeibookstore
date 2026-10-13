@@ -158,6 +158,38 @@ def test_hash_injection(tab: Tab, base: str) -> None:
         check(f"URL 参数未执行 {q[:26]}…", not hit, f"哨兵被触发: {hit}")
 
 
+def test_cover_is_safe(tab: Tab, base: str) -> None:
+    """封面图必须是走 /api/cover 代理的，且**不能**是外站直连。
+
+    为什么放在 XSS 套件里：封面地址来自第三方站点的页面（og:image），
+    属于典型的**不可信输入**。如果前端直接把外站 URL 塞进 <img src>：
+      · 恶意站可以塞 `javascript:` 或 `data:text/html,<script>…` 做 XSS
+      · 也会让用户浏览器直连外站（泄露 IP / 访问记录、绕过防盗链限制）
+    所以断言两件事：① 卡片里的封面 <img> 一律指向同源的 /api/cover；
+    ② 页面上不存在 src 以 javascript: 开头的 img。
+    """
+    print("\n[4] 封面图安全性（外站地址必须走代理）")
+    goto(tab, base, wait=2.0)
+    type_and_search(tab, "三体")
+    time.sleep(6.0)     # 等结果卡 + 探测回填封面
+
+    n_cover = js(tab, "document.querySelectorAll('#results .cover img').length") or 0
+    off_site = js(tab, """(()=>{
+      return [].slice.call(document.querySelectorAll('#results .cover img'))
+        .filter(i => { try { return new URL(i.src, location.href).origin !== location.origin; }
+                       catch(e){ return true; } }).length;
+    })()""") or 0
+    js_imgs = js(tab, """[].slice.call(document.querySelectorAll('img'))
+        .filter(i => (i.getAttribute('src')||'').trim().toLowerCase().startsWith('javascript:')).length""") or 0
+
+    # 封面数量取决于站点有没有图，**不能**断言"必须有" —— 没有图是正常的
+    # （前端画渐变封面兜底）。能断言的是"有图的话必须同源"。
+    check("封面 <img> 全部同源（走 /api/cover 代理）", int(off_site) == 0,
+          f"{off_site} 个直连外站（共 {n_cover} 个封面）")
+    check("没有 src=javascript: 的 img", int(js_imgs) == 0, f"找到 {js_imgs} 个")
+    print(f"    （本次搜到 {n_cover} 个封面图；0 个也正常 —— 站点没图时前端画渐变封面）")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8000")
@@ -190,6 +222,7 @@ def main() -> int:
         test_keyword_injection(tab, a.url)
         test_text_is_escaped(tab, a.url)
         test_hash_injection(tab, a.url)
+        test_cover_is_safe(tab, a.url)
 
         print(f"\n{'✅ 全部通过' if not BAD else f'❌ {BAD} 项失败'}"
               f"（{OK} 通过 / {BAD} 失败）")
