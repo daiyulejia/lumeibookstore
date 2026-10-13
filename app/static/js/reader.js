@@ -66,6 +66,10 @@ export async function openReader(meta) {
   RD.meta = meta;
   RD.total = meta.total || 0;
   RD.pages = []; RD.page = 0; RD._pre = null;
+  // 换书必须清掉目录去重哨兵（见 setTocHTML 的注释）——否则这本新书的
+  // 目录若与上一本"恰好逐字相同"（比如同一本书重开），会被判成重复而
+  // **不推给 Vue**，表现为"打开这本书目录是空的 / 还是上一本的"。
+  _rdTocHTMLSent = null;
 
   const el = $("#reader");
   el.classList.add("on");
@@ -141,8 +145,7 @@ export function closeReader() {
   RD.open = false;
   RD.bid = "";
   destroyFlip();
-  setReaderField("tocOpen", false);
-  setReaderField("setOpen", false);
+  setReaderFields({ tocOpen: false, setOpen: false });
   // 必须无条件把滚动锁摘掉：一旦这行被跳过，body 就永久 overflow:hidden，
   // 手机上表现就是"整个页面卡住、上滑没反应"。宁可多清一次，也不能漏清。
   unlockScrollGuard();
@@ -655,13 +658,33 @@ function updateBar() {
   // 手机上一行放不下「第 2 / 341 章 · 1/10 页」，会被省略号吃掉后半段 ——
   // 而页码恰恰是翻页时最需要看到的信息。窄屏改用紧凑写法。
   const narrow = window.innerWidth < 560;
-  setReaderField("chap", narrow
+  const chapTxt = narrow
     ? `${RD.index}/${total} 章 · ${RD.page + 1}/${Math.max(RD.pages.length, 1)} 页`
     : (RD.mode === "scroll"
         ? `第 ${RD.index} / ${total} 章`
-        : `第 ${RD.index} / ${total} 章 · ${RD.page + 1}/${Math.max(RD.pages.length, 1)} 页`));
-  setReaderField("pct", pct + "%");
-  setReaderField("progress", overall);
+        : `第 ${RD.index} / ${total} 章 · ${RD.page + 1}/${Math.max(RD.pages.length, 1)} 页`);
+
+  // ⚠⚠ 这三个字段**必须一次推完**，不能各自调一次 setReaderField。
+  //
+  //   为什么（实测卡顿的根因，两层）：
+  //   ① `setReaderField` 内部会调 `syncReader()`，每次推**一份完整快照**。
+  //      翻一页要改 chap/pct/progress 三个字段 → 旧写法连调三次 → 推三份。
+  //   ② 更狠的是：`syncReader()` 的快照里**曾经还带着 `tocHTML`**
+  //      —— 整本书的目录，大书几千条 `<a>`、几 MB 的字符串。
+  //      于是"翻一页"= 把整份目录序列化并过一遍 Vue 响应式，而且 ×3。
+  //      一本 3000 章的书，一次翻页就在搬几 MB 字符串 ×3 次。
+  //
+  //   这就是「阅读器有点卡」的来源。跟"几个人访问"完全无关 ——
+  //   它纯粹是**单机**开销，人多人少一样卡（多人在线只会让服务器忙，
+  //   但那是另一条链路，不是这里）。
+  //
+  //   修法（两处一起改才根治）：
+  //   · 这里改成一次 `setReaderFields({chap, pct, progress})`，内部只 sync 一次；
+  //   · `syncReader()` 里**删掉 `tocHTML`**，目录改由 renderToc()/setTocHTML()
+  //     在目录真的变化时单独推。
+  //   Vue 那边本来就是把这几个字段合并渲染的，一次推和三次推**结果完全相同**，
+  //   只是少了两次全量 diff（以及几 MB 的无谓字符串传递）。
+  setReaderFields({ chap: chapTxt, pct: pct + "%", progress: overall });
   const sf = $("#rdSeekF"); if (sf) sf.style.width = (overall * 100) + "%";
   const sh = $("#rdSeekH"); if (sh) sh.style.left = (overall * 100) + "%";
 
@@ -845,9 +868,19 @@ function bindOnce() {
   bindOnce.done = true;
 
   // --- 点击分区：左翻、右翻、中间出工具栏 ---
+  //   ⚠ 与下面的拖拽是这样分工的：**先按下并移动超过阈值 → 判为拖拽**
+  //   （拖拽已经在 pointerup 里翻好页了，这里直接跳过）；
+  //   只有"按下即抬起、几乎没移动"才算点击。
+  //   不这样分的话，一次滑动翻页会在结束时**再触发一次 click**，
+  //   变成"滑一页翻两页"。`_sawDragAt` 就是用来消掉这次多余 click 的。
   $(".rd-zones").addEventListener("click", e => {
     const z = e.target.closest(".rd-zone");
     if (!z) return;
+    // 刚刚是拖拽（600ms 内）→ 这次 click 是浏览器补发的，吞掉。
+    // ⚠ 用"时间戳"而不是布尔 + 定时器：定时器要处理"拖拽中又移动"
+    //   （反复重置）、"endDrag 没跑"（永不复位）两种情况，很容易写错；
+    //   时间戳是纯读的判据，到点自然失效，不会卡死。
+    if (now() - _sawDragAt < 600) return;
     // 用户正在选字，别把页面翻走
     if (String(window.getSelection?.() || "").length > 2) return;
     if (z.classList.contains("l")) pagePrev();
@@ -855,21 +888,44 @@ function bindOnce() {
     else toggleChrome();
   });
 
-  // --- 平移模式：跟手拖拽 ---
+  // --- 跟手拖拽翻页（平移模式自己实现；仿真模式交给 StPageFlip）---
+  //
+  //  ⚠ 两种模式的分工必须写清，否则会互相打架：
+  //    · slide → 本段代码全权处理（拖 strip、松手按位移决定翻不翻）
+  //    · flip  → **不要**在 pointerdown 里建 `_drag` —— StPageFlip 自己有
+  //      `useMouseEvents:true` + `swipeDistance:22`，它监听 mouse 事件翻页。
+  //      我们再插一手会把它的拖拽打断（而且 `_drag` 对 flip 也没意义：
+  //      strip 在 flip 模式下不存在 / 不可见）。
+  //    之前 flip 的滑动"能用但别扭"，根因不是这里，而是 `.rd-zones`
+  //    那层覆盖 div 没有 `touch-action:none`（见 reader.css）——
+  //    手指一动的 pointer 流被浏览器取消去滚动页面了。
   const strip = $("#rdSlideStrip");
   const stage = $(".rd-stage");
   stage.addEventListener("pointerdown", e => {
     if (RD.mode !== "slide") return;
     if (e.pointerType === "mouse" && e.button !== 0) return;
-    if (e.target.closest(".rd-zone.c")) return;
-    RD._drag = { x0: e.clientX, y0: e.clientY, dx: 0, active: true };
+    // 让**中间区**也能起手拖 —— 以前这里直接 `return` 掉了（`.rd-zone.c`），
+    // 于是"从屏幕正中左右滑"永远没反应，只有边缘 26% 能滑，
+    // 而正中占 48% 宽 —— 这正是"只会点击翻页"观感的主要来源。
+    RD._drag = { x0: e.clientX, y0: e.clientY, dx: 0, active: true, moved: false };
   });
   stage.addEventListener("pointermove", e => {
     const d = RD._drag;
     if (!d || !d.active) return;
     d.dx = e.clientX - d.x0;
     // 纵向意图更明显 → 放行，交给滚动/系统手势
-    if (Math.abs(e.clientY - d.y0) > Math.abs(d.dx) && Math.abs(d.dx) < 28) { d.active = false; return; }
+    if (Math.abs(e.clientY - d.y0) > Math.abs(d.dx) && Math.abs(d.dx) < 28) {
+      d.active = false;
+      d.moved = false;
+      return;
+    }
+    // 位移够大才算"真的在拖" —— 这个标记有两个用途：
+    //   ① 记下"刚刚是拖拽"，让松手后那次多余的 click 不翻页（防"滑一页翻两页"）；
+    //   ② 没超阈值时不算拖，纯点击照常走 toggleChrome。
+    if (Math.abs(d.dx) > 8) {
+      d.moved = true;
+      _sawDragAt = now();
+    }
     const W = stage.clientWidth || 1;
     const base = -RD.page * W;
     let x = base + d.dx;
@@ -886,10 +942,14 @@ function bindOnce() {
     if (!d || !d.active) return;
     strip.classList.remove("dragging");
     const W = stage.clientWidth || 1;
-    if (d.dx < -W * 0.18) slideTo(RD.page + 1);
-    else if (d.dx > W * 0.18) slideTo(RD.page - 1);
+    // 阈值从 18% 降到 12%：手机上"轻扫一下"通常只有屏幕宽的一成多，
+    // 18% 要求手指划过近 1/5 屏才算数，体感偏"滑不动"。
+    const TH = 0.12;
+    if (d.dx < -W * TH) slideTo(RD.page + 1);
+    else if (d.dx > W * TH) slideTo(RD.page - 1);
     else slideTo(RD.page);
-    if (Math.abs(d.dx) > W * 0.18) flash();
+    if (Math.abs(d.dx) > W * TH) flash();
+    // 松手后浏览器补的那次 click 由 `_sawDragAt` 时效自然吞掉，这里不用动。
   };
   stage.addEventListener("pointerup", endDrag);
   stage.addEventListener("pointercancel", endDrag);
@@ -1171,11 +1231,20 @@ export function detachReader() {
 }
 
 /** 把外壳需要的全部状态打成一份快照推给 Vue。
- *  ⚠ 目录（toc）不在这里 —— 它由 renderToc() 单独推（见下），
- *    因为它可能是几百条、且有自己的搜索过滤态，混进来会让每次
- *    "翻一页"都重传一遍整个目录列表。 */
+ *
+ *  ⚠⚠ 目录（tocHTML）**绝不能**放进这份快照。它由 renderToc() 单独推 ——
+ *     因为它是几百上千条 `<a>` 拼出来的大字符串（大书几 MB），而
+ *     syncReader() 走的是**每次翻页**都要跑的高频路径。曾经这里带着
+ *     `tocHTML`，结果翻一页就得把整份目录重新过一遍 Vue 响应式 ——
+ *     这就是线上反馈「阅读器有点卡」的根因（跟几个人访问无关，是纯单机开销）。
+ *     谁把它加回来，翻页就会立刻变慢；tools/test_reader_ui.py 的
+ *     test_perf 里有一条断言专门盯这个（数 syncReader 的调用次数）。
+ *
+ *  ⚠ 另外：一次事件里要改多个字段时，必须走 setReaderFields({...})
+ *     批量推**一次**，不要连调多次 setReaderField（那是"翻一页推三遍全量"）。 */
 function syncReader() {
   if (!_rdApply) return;
+  _rdSyncCount++;                    // 诊断计数（见 rdSyncCount()），纯读、无副作用
   _rdApply({
     open: RD.open,
     title: RD.title,
@@ -1184,12 +1253,20 @@ function syncReader() {
     modes: { mode: RD.mode },
     fs: RD.fs, lh: RD.lh, ff: RD.ff, w: RD.w,
     themesHTML: _rdThemesHTML,
-    tocHTML: _rdTocHTML,
     chap: _rdChap, pct: _rdPct,
     tocOpen: !!_rdTocOpen, setOpen: !!_rdSetOpen,
     progress: _rdProgress,
   });
 }
+
+/* syncReader 被调用的累计次数。
+   为什么要暴露它：翻页的"卡"本质是**每次翻页推了几份快照**，
+   这是个行为量、与环境负载无关，比测耗时稳得多。测试用它做根因级断言：
+   翻一页 syncReader 只该 +1。回归（有人把字段拆成多次推、或把
+   tocHTML 重新塞回快照）会立刻体现成 +3 或耗时暴涨。 */
+let _rdSyncCount = 0;
+/** 读累计同步次数（诊断用；不支持重置，测试取差值即可）。 */
+export function rdSyncCount() { return _rdSyncCount; }
 
 /* 影子状态：Vue 在时写这里 + syncReader()，不在时写 DOM。
    为什么要影子而不是直接读 DOM：Vue 在时 DOM 是 Vue 的产物，
@@ -1202,17 +1279,51 @@ let _rdProgress = 0;
 let _rdTocOpen = false;
 let _rdSetOpen = false;
 
-function setReaderField(field, val) {
-  if (field === "sub") _rdSub = val;
-  else if (field === "chap") _rdChap = val;
-  else if (field === "pct") _rdPct = val;
-  else if (field === "progress") _rdProgress = val;
-  else if (field === "tocOpen") _rdTocOpen = !!val;
-  else if (field === "setOpen") _rdSetOpen = !!val;
+/* 「刚刚那一下是拖拽，不是点击」的时间戳（毫秒）。
+   为什么需要它：拖拽翻页在 pointerup 里就翻完了，但浏览器紧接着还会
+   在同一个位置补一个 click —— 那个 click 会命中 `.rd-zone` 再翻一次，
+   就成了"滑一页翻两页"。所以拖拽结束时记下时间，click 处理器看到
+   "刚刚（600ms 内）才拖过"就直接让过去。
+   ⚠ 用时间戳而不是布尔标记：布尔需要"用完置回 false"，而"什么时候
+   置回"很难做对 —— 浏览器可能不补 click（pointercancel / 指针移出窗口），
+   标记就永久为真，把**用户之后每一次正经点击**都吞掉（"点了没反应"）。
+   时间戳没有复位动作，到点自然失效，不会卡死。 */
+let _sawDragAt = 0;
+/** 当前时间（毫秒）。单独包一层：方便在测试里改时钟，也免得散落 Date.now()。 */
+const now = () => Date.now();
 
+/** 批量写多个字段 —— **一次 syncReader()**，而不是每个字段各推一次。
+ *
+ *  存在的唯一理由就是性能：`syncReader()` 推的是**整份外壳快照**
+ *  （open/title/theme/fs/lh/... 一整套）。翻页这种高频路径上，
+ *  每多推一次就是一次不必要的全量 diff —— 旧写法在 `updateBar()` 里
+ *  连推三次（chap/pct/progress），就是线上「阅读器有点卡」的直接来源。
+ *  见 `updateBar()` 的注释。
+ *
+ *  ⚠ 注意：快照里**已经不含 `tocHTML`**（目录单独推，见 syncReader 的注释），
+ *    所以单次 sync 的成本已经不高；但"少推两次"依然是实打实的收益，
+ *    而且这条纪律能防止将来有人再往快照里加字段时又退化成多次推。
+ */
+function setReaderFields(patch) {
+  for (const [field, val] of Object.entries(patch)) {
+    if (field === "sub") _rdSub = val;
+    else if (field === "chap") _rdChap = val;
+    else if (field === "pct") _rdPct = val;
+    else if (field === "progress") _rdProgress = val;
+    else if (field === "tocOpen") _rdTocOpen = !!val;
+    else if (field === "setOpen") _rdSetOpen = !!val;
+  }
   if (vueOwnsReaderShell()) { syncReader(); return; }
+  for (const [field, val] of Object.entries(patch)) writeReaderFieldDom(field, val);
+}
 
-  // —— 旧实现：直接写 DOM ——
+/** 单个字段写入。语义等价于「设一个值然后刷新」，保留给一次性调用点用。 */
+function setReaderField(field, val) {
+  setReaderFields({ [field]: val });
+}
+
+/** 把单个字段写进旧实现的 DOM（Vue 不在时走这条路）。 */
+function writeReaderFieldDom(field, val) {
   const el = field === "sub" ? $("#rdSub")
     : field === "chap" ? $("#rdChap")
     : field === "pct" ? $("#rdPct")
@@ -1225,15 +1336,30 @@ function setReaderField(field, val) {
   else el.classList.toggle("on", !!val);
 }
 
-/** 目录列表：单独一个入口，避免每次翻页都重传几百条。 */
-let _rdTocHTML = "";
-
 /** 色卡那一排的 HTML（内容固定，挂载时算一次）。 */
 let _rdThemesHTML = "";
 
+/** 目录列表：单独一个入口，避免每次翻页都重传几百条。 */
+let _rdTocHTML = "";
+
+/* 上一次真正推给 Vue 的目录 HTML。用来做**去重**：
+   markToc() 在每次换章时都会重拼一遍 box.innerHTML（就为了挪一个
+   `.on` 高亮类）然后 setTocHTML() 推过去。而目录一旦加载完，
+   条目数量是不变的 —— 变的只是某个 `<a>` 上的 class。
+   大目录（几千条）每次换章都整段重推，就是白搬几百 KB。
+   只加高亮、不改结构时，字符串其实**完全相同**，直接跳过即可。
+   ⚠ 不能用 `_rdTocHTML` 做判据 —— 那个一直被赋新值；这里要的是
+   "上次真的送出去的是什么"。 */
+let _rdTocHTMLSent = null;
+
 function setTocHTML(html) {
   _rdTocHTML = html;
-  if (_rdApply) _rdApply({ tocHTML: html });
+  // 内容一字不差就不要再推一遍（换章重推整份目录的主要浪费就在这里）。
+  // 注意首次（_rdTocHTMLSent=null）必须推，否则目录永远不显示。
+  if (_rdApply && html !== _rdTocHTMLSent) {
+    _rdTocHTMLSent = html;
+    _rdApply({ tocHTML: html });
+  }
   if (vueOwnsReaderShell()) return;
   const box = $("#rdTocList");
   if (box) box.innerHTML = html;
@@ -1291,13 +1417,12 @@ export function rdSetTheme(id) { RD.theme = id; applyPrefs(); }
 
 /** 开合两个侧边面板（互斥：开目录就关设置，反之亦然）。 */
 export function rdTogglePanel(which) {
-  if (which === "toc") { setReaderField("setOpen", false); setReaderField("tocOpen", !_rdTocOpen); }
-  else { setReaderField("tocOpen", false); setReaderField("setOpen", !_rdSetOpen); }
+  if (which === "toc") setReaderFields({ setOpen: false, tocOpen: !_rdTocOpen });
+  else setReaderFields({ tocOpen: false, setOpen: !_rdSetOpen });
 }
 
 export function rdClosePanels() {
-  setReaderField("tocOpen", false);
-  setReaderField("setOpen", false);
+  setReaderFields({ tocOpen: false, setOpen: false });
 }
 
 /** 目录里点某一章。 */
@@ -1355,4 +1480,9 @@ window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, {
   rdSetOpt, rdSetTheme, rdTogglePanel, rdClosePanels, rdGoChapter, rdFilterToc,
   rdBack, rdExport, rdCache, rdPrevChapter, rdNextChapter,
   readerExpect,
+  // 只读诊断探针（同 discover.js 的 __ndState 约定）：
+  // 排障时在 Console 敲 `__lumeiLegacy.rdSyncCount()` 能看到
+  // syncReader 被推了多少次。翻一页只该 +1 —— 如果是 +3，
+  // 说明有人把字段拆成多次推、又或者把 tocHTML 塞回了快照。
+  rdSyncCount,
 });

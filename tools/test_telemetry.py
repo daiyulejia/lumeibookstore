@@ -75,7 +75,51 @@ def read_tail(path: Path, n: int = 400) -> str:
         return ""
 
 
+# ⚠⚠ 埋点只能读 **logs/app.log**（以及它的轮转备份 app.log.YYYY-MM-DD），
+#     不能"挑 mtime 最新的那个 .log"。
+#
+#     踩过的坑（ship 里偶发假红，症状极具迷惑性）：
+#     `logs/` 里除了 app.log 还有一堆别的东西 —— serve*.log、ship*.log、
+#     server-YYYY-MM-DD.log 等（手工起服务 / 别的脚本留下的）。
+#     "按 mtime 取最新"于是会**随机读到那个不相干的文件** ——
+#     而那些文件里当然没有 `ui.error` 标记 → 报"钩子没生效"。
+#     更阴的是：单独跑这个套件时它读到 app.log 就过了，
+#     一进 ship 就红 —— 看着像"埋点坏了"，实际是**读错了文件**。
+#
+#     权威来源：`app/logging_setup.py` 的 TimedRotatingFileHandler
+#     固定写 `logs/app.log`（midnight 轮转，backupCount=14，
+#     备份名形如 app.log.2026-10-12）。所有 logger 都走它。
+#     所以这里**只认 app.log 家族**，并把它排在最前。
+def app_log_files() -> list[Path]:
+    """app.log 家族（当前文件 + 轮转备份），当前文件排最前。"""
+    d = ROOT / "logs"
+    if not d.is_dir():
+        return []
+    cur = d / "app.log"
+    rots = sorted(d.glob("app.log.*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    out: list[Path] = []
+    if cur.is_file():
+        out.append(cur)
+    out.extend(p for p in rots if p.is_file())
+    return out
+
+
 def newest_log_text() -> str:
+    """取 app.log 家族里**能读到标记**的那一段。
+
+    为什么把整族都拼起来而不是只读 app.log：轮转刚好发生在
+    测试前后时，标记可能落在备份文件里（跨零点跑 ship 就会遇到）。
+    拼起来成本很低（几百 KB），却把"跨轮转"这个偶发窗口也堵住了。
+    """
+    parts: list[str] = []
+    for p in app_log_files():
+        t = read_tail(p, 4000)
+        if t:
+            parts.append(t)
+    if parts:
+        return "\n".join(parts)
+    # 兜底：完全找不到 app.log 家族时（比如日志目录被重定向），
+    # 退回旧行为 —— 但这时至少不会静默读空字符串。
     fs = log_files()
     return read_tail(fs[0]) if fs else ""
 

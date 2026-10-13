@@ -164,13 +164,25 @@
 /* 点按分区提示：轻触左右边缘时浮现一条呼吸光，告诉用户"这里能翻" */
 .rd-zones{position:absolute;inset:0;z-index:3;display:none}
 #reader[data-rd-mode="slide"] .rd-zones,
-#reader[data-rd-mode="flip"] .rd-zones{display:block}
+#reader[data-rd-mode="flip"] .rd-zones{display:block;touch-action:none}
+/* ⚠⚠ 上面那个 `touch-action:none` 是**左右滑动翻页能不能用**的关键，
+   不能删。踩过的坑：这层 `.rd-zones` 是铺满舞台的覆盖层（inset:0），
+   它盖在正文之上，所以手机上你手指落下的**第一个目标**是它、
+   而不是下面的 `.rd-page`。此前只在 `@media (hover:none)` 里给
+   `.rd-page/.rd-flip-page` 加了 `touch-action:none` —— 可那两层在
+   覆盖层**下面**，根本收不到手势。于是浏览器把这层当成可滚区域，
+   手指一动就把后续 pointermove 事件取消掉去滚动页面，
+   结果就是「只有点击生效、左右滑动没反应」。
+   给覆盖层自己也声明 `touch-action:none`，指针流才不会被系统抢走。 */
 .rd-zone{
   position:absolute;top:0;bottom:0;width:26%;cursor:pointer;
   display:grid;place-items:center;opacity:0;transition:opacity var(--dur-m) var(--ease);
 }
 .rd-zone.l{left:0} .rd-zone.r{right:0}
-.rd-zone.c{left:26%;right:26%;width:auto;cursor:default}
+/* 中间区：既是"点一下出工具栏"，也要允许从中间起手左右拖。
+   所以不能 cursor:default（那就看不出可拖了）—— 用 grab 表示可拖动。 */
+.rd-zone.c{left:26%;right:26%;width:auto;cursor:grab}
+.rd-zone.c:active{cursor:grabbing}
 .rd-zone .arw{
   font-size:26px;color:var(--rd-fg);opacity:.5;
   width:46px;height:46px;border-radius:50%;display:grid;place-items:center;

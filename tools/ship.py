@@ -141,6 +141,14 @@ STATIC_SUITES = [
     # 而且这类坏法全都不报错，只是界面上那块永远空着 / 没样式。
     # 见 tools/test_search_history.py 的注释。
     ("test_search_history.py", "历史/访客接线"),
+    # 阅读器热路径（纯静态）。为什么要在"静态层"再钉一遍：
+    # 线上报「阅读器有点卡」，根因是 syncReader() 的快照里带着整本书的
+    # tocHTML，而它走的是**每次翻页**的高频路径（再加上 updateBar 连推
+    # 三次）—— 翻一页搬几 MB 字符串 ×3。真机 test_reader_ui.test_perf
+    # 能把它数出来，但那要 Chrome + 本地服务；这条在纯静态层读源码就拦，
+    # 快、必然能跑，没装 Chrome 的环境也有保护。
+    # 见 tools/test_reader_perf_static.py 的注释。
+    ("test_reader_perf_static.py", "阅读器热路径"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）

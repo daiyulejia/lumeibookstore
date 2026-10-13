@@ -168,6 +168,292 @@ def test_slide(tab: Tab, base: str, bid: str) -> None:
     check("点左侧 → 位移复原", t2 == t0, f"{t2} vs {t0}")
 
 
+def test_swipe(tab: Tab, base: str, bid: str) -> None:
+    """左右滑动翻页 —— 一个此前**完全没有测试覆盖**的行为。
+
+    为什么要补这一条
+    ----------------
+    线上反馈「翻页只支持点击，不支持左右滑动」。查下来是 `.rd-zones`
+    那层铺满舞台的覆盖 div **没有 `touch-action:none`` —— 手指一动的
+    pointer 流被浏览器取消去滚动页面，于是 pointermove 收不到、
+    松手也不会翻页。而点击是 click 事件，不受影响 —— 所以表现成
+    「只有点击能用」。
+
+    此前之所以没测出来：`test_slide` 只测了 `.rd-zone.r/.l` 的 **click**，
+    `test_touch` 只量按钮尺寸。**没有任何一条断言真的"滑"过一次。**
+
+    这条测试用合成 PointerEvent 走完整的 down → move×N → up 序列
+    （不是直接调 slideTo），所以它验的是**事件链通不通**，
+    而不是"函数能不能用"。谁把 touch-action 删掉、或在 pointerdown
+    里加了 return，这条就会红。
+    """
+    print("\n—— 左右滑动翻页（触摸）——")
+    open_reader(tab, base, bid, "slide")
+    ok = wait(tab, "document.querySelectorAll('.rd-page').length>2", 20)
+    check("分页渲染出足够多页", ok,
+          js(tab, "document.querySelectorAll('.rd-page').length").get("value"))
+    if not ok:
+        return
+    # ⚠ 必须等**首次分页彻底结束**再动手。踩过：导航后旧 DOM 的 .rd-page
+    #   还在，`.rd-page>2` 立刻为真，可此时新书才刚 paginate 完、还有
+    #   一个排队的 slideTo(page) 要落 —— 我们滑到下一页后它紧接着把
+    #   transform 复位成 0，读到的 t0==t1 就"看起来没翻页"（假红）。
+    #   判据：连续两次采样 transform 相同，才算布局稳了。
+    wait(tab, """(() => {
+        const s = document.querySelector('#rdSlideStrip');
+        if (!s) return false;
+        window.__tprev = window.__tprev || null;
+        const cur = s.style.transform;
+        const same = window.__tprev === cur;
+        window.__tprev = cur;
+        return same;
+    })()""", 20)
+    js(tab, "window.__tprev = null")
+    time.sleep(0.4)
+
+    # 关键前置：覆盖层的 touch-action 必须是 none，否则手势会被浏览器抢走。
+    ta = js(tab, """(() => {
+        const z = document.querySelector('.rd-zones');
+        if (!z) return null;
+        return getComputedStyle(z).touchAction;
+    })()""")["value"]
+    check("舞台覆盖层 touch-action=none（手势不被浏览器抢走）",
+          ta == "none", f"touch-action={ta!r}（应为 none）")
+
+    # 用 PointerEvent 走完整序列。写成一个可复用的函数注入进去，
+    # 免得每条断言都重抄一遍坐标算错的合成事件。
+    #
+    # ⚠ 事件要派发到**该点最上层的元素**（elementFromPoint），不能直接派给
+    #   `.rd-stage` —— 手指落下时命中的是盖在上面的 `.rd-zone`，事件靠
+    #   bubbles 冒泡回 stage 才被我们听到。直接派给 stage 虽然也能冒泡到，
+    #   但那是在"假设没有覆盖层"，等于没验到真正的链路。
+    # ⚠ 整段必须包在 IIFE 里。踩过：直接写
+    #     `window.__swipe = (...) => {...}; return 1;`
+    #   会被 Runtime.evaluate 当成 script，最后的 `return` 抛
+    #   SyntaxError（报成 "Invalid or unexpected token"），于是
+    #   **__swipe 根本没定义**，后面每次调用都是 Uncaught —— 而断言
+    #   只看到"transform 没变"，误以为是产品没做滑动。包一层 IIFE
+    #   后返回值和副作用都明确，不会再被解析规则坑。
+    js(tab, """
+    (() => {
+      window.__swipe = (fromX, toX, y) => {
+        const stage = document.querySelector('.rd-stage');
+        if (!stage) return 'no-stage';
+        const r = stage.getBoundingClientRect();
+        const yy = r.top + (y != null ? y : r.height / 2);
+        const x0 = r.left + (fromX === 'center' ? r.width / 2 : fromX);
+        const x1 = r.left + (toX === 'center' ? r.width / 2 : toX);
+        const mk = (type, x) => new PointerEvent(type, {
+          pointerId: 1, pointerType: 'touch', isPrimary: true,
+          clientX: x, clientY: yy, bubbles: true, cancelable: true, buttons: 1,
+        });
+        const hit = (x) => document.elementFromPoint(x, yy) || stage;
+        hit(x0).dispatchEvent(mk('pointerdown', x0));
+        const N = 8;
+        for (let i = 1; i <= N; i++) {
+          const x = x0 + (x1 - x0) * i / N;
+          hit(x).dispatchEvent(mk('pointermove', x));
+        }
+        hit(x1).dispatchEvent(mk('pointerup', x1));
+        return 'ok';
+      };
+      return typeof window.__swipe;
+    })()
+    """)
+
+    # 先确认注入真的成功了 —— 否则后面的断言全是假红。
+    inj = js(tab, "typeof window.__swipe")["value"]
+    check("滑动注入脚本就绪（__swipe 是函数）", inj == "function", f"typeof={inj}")
+
+    t0 = js(tab, "document.querySelector('#rdSlideStrip').style.transform")["value"]
+    # 从**屏幕正中**往左滑 —— 正中是用户最自然的起手位置，
+    # 也正是此前被 `.rd-zone.c` 的 `return` 拦掉的地方。
+    js(tab, "window.__swipe('center', 60, null)")
+    time.sleep(0.8)
+    t1 = js(tab, "document.querySelector('#rdSlideStrip').style.transform")["value"]
+    check("从屏幕正中向左滑 → 翻到下一页", t0 != t1, f"{t0} -> {t1}")
+
+    # 反方向滑回来
+    js(tab, "window.__swipe('center', window.innerWidth - 60, null)")
+    time.sleep(0.8)
+    t2 = js(tab, "document.querySelector('#rdSlideStrip').style.transform")["value"]
+    check("向右滑 → 回到上一页", t2 == t0, f"{t2} vs {t0}")
+
+    # 滑完**不能**再被那一下多余的 click 翻一页（"滑一页翻两页"）。
+    # 上面滑回来正好回到 t0；若那次多余 click 没被吞掉，会再多往前一页。
+    # 判据：连滑两次得到的两个位置必须各不相同、且都不等于 t0
+    # —— 只数"不同值个数"是抓不住的（三个不同值也可能包含重复翻）。
+    js(tab, "window.__swipe('center', 60, null)")
+    time.sleep(0.8)
+    t3 = js(tab, "document.querySelector('#rdSlideStrip').style.transform")["value"]
+    js(tab, "window.__swipe('center', 60, null)")
+    time.sleep(0.8)
+    t4 = js(tab, "document.querySelector('#rdSlideStrip').style.transform")["value"]
+    check("连滑两次 = 前进两页（且没有被多余的 click 多翻）",
+          t3 == t1 and t4 != t3 and t4 != t1,
+          f"t0={t0} t1={t1} t3={t3} t4={t4}（期望 t3==t1 且 t4 又是新的一页）")
+
+    # 纵向滑动不能被误判成翻页（那是想滚动/误触）
+    before = js(tab, "document.querySelector('#rdSlideStrip').style.transform")["value"]
+    js(tab, """
+    (() => {
+      const stage = document.querySelector('.rd-stage');
+      const r = stage.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const mk = (type, x, y) => new PointerEvent(type, {
+        pointerId: 2, pointerType: 'touch', isPrimary: true,
+        clientX: x, clientY: y, bubbles: true, cancelable: true, buttons: 1,
+      });
+      const hit = (x, y) => document.elementFromPoint(x, y) || stage;
+      hit(x, r.top + 200).dispatchEvent(mk('pointerdown', x, r.top + 200));
+      for (let i = 1; i <= 6; i++) {
+        const yy = r.top + 200 - i * 30;
+        hit(x + 3, yy).dispatchEvent(mk('pointermove', x + 3, yy));
+      }
+      hit(x + 3, r.top + 20).dispatchEvent(mk('pointerup', x + 3, r.top + 20));
+      return 1;
+    })()
+    """)
+    time.sleep(0.6)
+    after = js(tab, "document.querySelector('#rdSlideStrip').style.transform")["value"]
+    check("纵向滑动不翻页（那是想滚动手势）", before == after,
+          f"{before} -> {after}")
+
+
+def test_perf(tab: Tab, base: str, bid: str) -> None:
+    """翻页开销 —— 守住"阅读器不卡"。
+
+    背景：线上反馈「阅读器有点卡」（用户强调"最多就两人访问"）。
+    查到的根因跟并发无关，是**纯单机**开销，两层叠加：
+
+      ① `updateBar()` 连调三次 `setReaderField`（chap / pct / progress），
+         而每个都会 `syncReader()` 推**一份完整快照** → 翻一页推三份；
+      ② `syncReader()` 的快照里**还带着 `tocHTML`** —— 整本书的目录，
+         大书几千条 `<a>`、几 MB 字符串。于是翻一页 = 搬几 MB × 3。
+
+    修法：① 改 `setReaderFields({...})` 一次推完（内部只 sync 一次）；
+         ② 把 `tocHTML` 从快照里删掉，目录改由 renderToc()/setTocHTML()
+            在目录真的变化时单独推。
+
+    这条测什么、为什么这么测
+    ------------------------
+    主判据是 **`syncReader()` 的调用次数**，不是耗时。理由：
+    翻页"卡"的本质是"每次翻页推了几份快照"，这是**行为量**，
+    与机器负载、CI 快慢全无关 —— 不会 flaky。耗时只当辅助（阈值放宽）。
+    回归长什么样：有人把 updateBar 写回三次 setReaderField（→ +3），
+    或者把 tocHTML 塞回快照（→ 耗时暴涨），这里立刻报红。
+
+    同时保留一条耗时断言，专门盯"目录巨大"时的搬字符串开销 ——
+    那是"没把 tocHTML 从快照里摘掉"的唯一可观测信号。
+    """
+    print("\n—— 翻页开销（防卡顿回归）——")
+    open_reader(tab, base, bid, "slide")
+    ok = wait(tab, "document.querySelectorAll('.rd-page').length>2", 20)
+    check("分页就绪", ok)
+    if not ok:
+        return
+    # 等首次分页彻底结束（同 test_swipe 的理由，见那里的注释）
+    wait(tab, """(() => {
+        const s = document.querySelector('#rdSlideStrip');
+        if (!s) return false;
+        window.__tp2 = window.__tp2 || null;
+        const cur = s.style.transform;
+        const same = window.__tp2 === cur;
+        window.__tp2 = cur;
+        return same;
+    })()""", 20)
+    js(tab, "window.__tp2 = null")
+    time.sleep(0.4)
+
+    # 诊断探针必须可用（reader.js 挂在 __lumeiLegacy 上）。
+    probe = js(tab, "typeof (window.__lumeiLegacy||{}).rdSyncCount")["value"]
+    check("rdSyncCount 诊断探针可用", probe == "function", f"typeof={probe}")
+    if probe != "function":
+        return
+
+    # ── 主判据：翻一页，syncReader 只该 +1 ────────────────────────────
+    # 数差值而不是绝对值（页面加载 / 挂载本身也会推几次）。
+    r = js(tab, """
+    (() => {
+      const cnt = () => window.__lumeiLegacy.rdSyncCount();
+      const strip = document.querySelector('#rdSlideStrip');
+      const before = strip.style.transform;
+      const c0 = cnt();
+      document.querySelector('.rd-zone.r').click();
+      const c1 = cnt();
+      return {delta: c1 - c0, before: before, after: strip.style.transform};
+    })()
+    """)
+    v = (r or {}).get("value") or {}
+    check("翻一页 syncReader 只 +1（没有重复推全量快照）",
+          v.get("delta") == 1, f"delta={v.get('delta')}（应为 1；旧的连推写法是 3）")
+    check("点击翻页仍然生效（改造没改坏行为）",
+          v.get("before") != v.get("after") and "translate3d" in str(v.get("after")),
+          f"{v.get('before')} -> {v.get('after')}")
+
+    # ── 辅助判据：目录巨大时，一次翻页的同步耗时仍要很小 ──────────────
+    # 把目录 DOM 撑大（模拟大书）—— 若 tocHTML 还在快照里，
+    # 每推一次就要把这一大坨过一遍，耗时立刻显形。
+    js(tab, """
+    (() => {
+      const host = document.querySelector('#rdTocList');
+      if (host) {
+        let s = '';
+        for (let i = 0; i < 3000; i++) {
+          s += '<a data-i="' + i + '">第 ' + i + ' 章 一段用来占体积的章节标题文字</a>';
+        }
+        host.innerHTML = s;
+      }
+      return 1;
+    })()
+    """)
+    time.sleep(0.3)
+
+    r = js(tab, """
+    (() => {
+      const cnt = () => window.__lumeiLegacy.rdSyncCount();
+      const strip = document.querySelector('#rdSlideStrip');
+      const zone = document.querySelector('.rd-zone.r');
+      const per = [], deltas = [];
+      for (let k = 0; k < 8; k++) {
+        const c0 = cnt();
+        const t = performance.now();
+        zone.click();
+        per.push(performance.now() - t);
+        deltas.push(cnt() - c0);
+      }
+      per.sort((a, b) => a - b);
+      return {median: per[4], max: per[7], deltas: deltas,
+              moved: strip.style.transform};
+    })()
+    """)
+    v2 = (r or {}).get("value") or {}
+    # ⚠ 判据为什么不是 `deltas == [1]*8`：实测第 6 次点击会赶上一次
+    #   **重新分页**（页数 7 → 9，多半是字体/图片加载完触发的重排），
+    #   那一次会合法地多推几下（实测 delta=4）。把它当成失败是**假红** ——
+    #   我们要防的是"每次翻页都推多份"（旧写法 = 每页 3 份），
+    #   不是"偶发重排多推几下"。
+    #   所以判据改成：**至少 6 次是 1**（正常翻页的基准），且**没有任何一次 > 4**
+    #   （重排最多 4；旧写法是每页 3 份且每页都为真，会被下面更严的那条抓住）。
+    deltas = v2.get("deltas") or []
+    ones = sum(1 for d in deltas if d == 1)
+    check("大多数翻页只推 1 次快照（正常路径没有重复推）",
+          len(deltas) == 8 and ones >= 6, f"deltas={deltas}（1 的个数={ones}）")
+    check("没有任何一次翻页推送超过 4 份快照（旧连推写法会是每页 3）",
+          all(isinstance(d, int) and d <= 4 for d in deltas), f"deltas={deltas}")
+    check(f"目录 3000 条下连翻 8 页中位数 {v2.get('median', 0):.1f}ms < 40ms",
+          isinstance(v2.get("median"), (int, float)) and v2.get("median") < 40,
+          f"median={v2.get('median')} max={v2.get('max')}")
+
+    # ── 底栏仍要被刷新（不能为了快就把更新省掉）──────────────────────
+    before_txt = js(tab, "document.querySelector('#rdChap').textContent")["value"]
+    js(tab, "document.querySelector('.rd-zone.r').click()")
+    time.sleep(0.4)
+    after_txt = js(tab, "document.querySelector('#rdChap').textContent")["value"]
+    check("翻页后底栏页码确实更新了（没为了省事跳过）",
+          before_txt != after_txt, f"{before_txt!r} -> {after_txt!r}")
+
+
 def test_scroll(tab: Tab, base: str, bid: str) -> None:
     print("\n—— 上下滚动 ——")
     open_reader(tab, base, bid, "scroll")
@@ -442,6 +728,8 @@ def main() -> int:
 
         test_flip(tab, a.url, bid)
         test_slide(tab, a.url, bid)
+        test_swipe(tab, a.url, bid)
+        test_perf(tab, a.url, bid)
         test_scroll(tab, a.url, bid)
         test_persist(tab, a.url, bid)
         test_toc_integrity(tab, a.url, bid)

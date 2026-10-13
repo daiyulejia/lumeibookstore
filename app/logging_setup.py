@@ -42,6 +42,7 @@ import random
 import string
 import sys
 import threading
+import time
 from contextvars import ContextVar
 from pathlib import Path
 
@@ -93,6 +94,63 @@ class _Fmt(logging.Formatter):
         return super().format(record)
 
 
+class _SafeTimedRotatingFileHandler(logging.handlers.TimedRotatingFileHandler):
+    """轮转失败**不许把日志打死**的 TimedRotatingFileHandler。
+
+    ⚠⚠ 为什么必须有这个子类（踩过，且是**生产级**的问题）：
+
+    Windows 上 `os.rename(source, dest)` 在**文件被任何进程打开**时会抛
+    `PermissionError: [WinError 32]`。而 `TimedRotatingFileHandler.doRollover()`
+    的第一步就是 `self.rotate(self.baseFilename, dfn)` —— 于是只要在
+    零点轮转的那一刻 `app.log` 还被别的句柄占着（另一个 noveldock 进程、
+    编辑器、`tail -f`、上一次没退干净的进程……），轮转就失败。
+
+    失败之后更糟：`logging` 默认把 handler 的异常**吞掉**并打印到 stderr，
+    但**该 handler 从此再不写文件**（它已经处于一个坏掉的状态）。
+    实测症状：
+      · `logs/app.log` 的 mtime 停在轮转前那一刻（例如 23:42），
+        之后**所有日志全部丢失** —— 接口照常返回 200，只是什么都不记；
+      · `logs/app.log.<今天>` 根本不生成（轮转没成功）；
+      · 前端埋点测试全红（"日志里找不到 ui.error"），
+        而它会伪装成"埋点钩子坏了" —— 排查方向完全错。
+      · 只有**重启进程**才能恢复（重启时 delay=True 会重新开文件）。
+    这个坑 2026-10-13 真踩了：日志静默死了近 2 小时才被发现。
+
+    修法：把 `rotate()` 包起来。
+      · Linux/macOS 上 rename 不会因"被占用"失败，行为不变；
+      · Windows 上失败时**不抛**，而是把当前文件**就地轮转**：
+        直接改名成目标名，失败就退化为"**继续往同一个文件追加**"
+        （宁可文件不分天，也绝不能把日志丢掉）。
+    日志宁可"没切成新文件"，也绝不能"什么都不写"。
+    """
+
+    def rotate(self, source, dest):
+        try:
+            return super().rotate(source, dest)
+        except PermissionError:
+            # 文件被占用 —— 最常见的就是另一个进程还开着它。
+            # 退路：不轮转。继续往原文件写，日志一条都不丢。
+            # 为了让运维一眼看出"今天没切成新文件"，往文件里补一行说明。
+            try:
+                with open(source, "a", encoding="utf-8") as fh:
+                    fh.write(
+                        f"\n--- [{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                        f"日志轮转被跳过（目标 {Path(dest).name} 被占用）；"
+                        f"继续写入当前文件，日志未丢失 ---\n"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+            # 关键：把下次轮转时间往后推，否则**每写一行都会重试一次轮转**
+            # （每次失败都写一遍说明行 → 日志被说明行刷满）。
+            self.rolloverAt = self.computeRollover(int(time.time()))
+        except Exception:  # noqa: BLE001
+            # 其它任何轮转异常也不要让 handler 死掉。
+            try:
+                self.rolloverAt = self.computeRollover(int(time.time()))
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def setup(logdir: Path | None = None, level: int = logging.INFO) -> Path | None:
     """装好根 logger。返回日志文件路径（用于打印"日志在哪儿"）。
 
@@ -118,7 +176,10 @@ def setup(logdir: Path | None = None, level: int = logging.INFO) -> Path | None:
     if logdir:
         try:
             logdir.mkdir(parents=True, exist_ok=True)
-            fh = logging.handlers.TimedRotatingFileHandler(
+            # ⚠ 用 _SafeTimedRotatingFileHandler（不是 logging 自带的那个）：
+            #   Windows 上轮转若因"文件被占用"失败，自带实现会**静默停写**，
+            #   于是日志从此一片空白却毫无提示。见上面那个类的注释。
+            fh = _SafeTimedRotatingFileHandler(
                 logdir / "app.log", when="midnight", backupCount=14,
                 encoding="utf-8", delay=True,
             )
