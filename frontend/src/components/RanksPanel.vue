@@ -237,8 +237,27 @@ async function loadRanks(kind) {
     refreshedAt.value = 0;
   } catch (e) {
     if (cur.value !== want) return;
-    error.value = e.message || String(e);
-    items.value = [];
+    // ⚠ 自动重试一次。
+    //   榜单接口是**现抓现算**的慢接口（全量榜单要十几秒），
+    //   在机器忙 / 首次冷启动时很容易偶发超时或 5xx。
+    //   旧代码失败就是失败、面板空着；用户只看到"没有内容"，
+    //   得自己点刷新。这里给它一次自愈机会 —— 绝大多数抖动
+    //   第二次就成了，用户无感。
+    //   只重试一次：真挂了（后端没起、数据源全废）就别无限重试烧资源。
+    try {
+      await new Promise((r) => setTimeout(r, 700));
+      if (cur.value !== want) return;
+      const d2 = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
+      if (!d2 || !d2.ok) throw new Error((d2 && d2.error) || "拿不到榜单");
+      items.value = d2.items || [];
+      emptyHint.value = d2.empty_hint || "";
+      if (typeof d2.age === "number") age.value = d2.age;
+      refreshedAt.value = 0;
+    } catch (e2) {
+      if (cur.value !== want) return;
+      error.value = e2.message || String(e2);
+      items.value = [];
+    }
   } finally {
     if (cur.value === want) loading.value = false;
   }
@@ -330,8 +349,20 @@ onMounted(async () => {
   const box = document.getElementById("ranksBox");
   // 恢复上次的收起状态（类名也要同步，否则展开/收起的视觉状态对不上）
   if (box) box.classList.toggle("folded", !!folded.value);
+
+  // 拿榜单目录。⚠ 允许重试一次 —— 这里失败的话整个区块都不显示，
+  //   用户连"榜单"两个字都看不到，代价比多打一个请求大得多。
+  //   （kinds 本身很轻，重试几乎不花钱。）
+  let d = null;
+  for (let attempt = 0; attempt < 2 && !d; attempt++) {
+    try {
+      d = await api.get("/api/ranks/kinds");
+    } catch {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+
   try {
-    const d = await api.get("/api/ranks/kinds");
     kinds.value = (d && d.kinds) || [];
     if (!kinds.value.length) {
       // 拿不到榜单目录（比如后端版本旧）→ 整个区块不显示，不打扰用户
@@ -348,6 +379,10 @@ onMounted(async () => {
 
   // 书架变了 → 重画「已在书架」标记（走事件总线，与旧约定一致）
   ensureShelf(true);
+  // ⚠ 用 bus.on 的**返回值**退订（它现在会返回一个退订函数）。
+  //   以前写成 `off1 = bus.on(...)`，而那时 on 不返回东西 ——
+  //   off1 是 undefined，onUnmounted 里 `off1 && off1()` 静默不执行，
+  //   监听一直泄漏（组件卸载后旧事件还在往死组件上写）。
   off1 = bus.on("task:done", () => ensureShelf(true));
   off2 = bus.on("shelf:changed", () => ensureShelf(true));
 });

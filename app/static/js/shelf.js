@@ -19,6 +19,19 @@ function shelfFingerprint(list) {
 }
 let shelfPrint = "";
 
+/* 书架页是否已交给 Vue 渲染。
+   ⚠ 迁移期两种实现并存的方式：Vue 版的容器上会带 `data-vue-shelf`。
+     为真时这里**只维护状态**（shelfCache / shelf:changed / 顶栏计数），
+     不再碰 #shelfList、#shelfStat、#shelfEmpty 这三个 DOM ——
+     它们已经不存在于 index.html 里（搬进 Vue 组件了），
+     继续写会拿到 null 然后崩。
+   ⚠ 为什么状态部分不能一起搬走：`shelfCache` 是"这本书在不在书架里"的
+     真相源，阅读器、搜索页、榜单星标都在查它；`shelf:changed` 也还有
+     ranks.js 在听。所以留在这里、由 Vue 组件反过来调用（见组件注释）。 */
+function vueOwnsShelf() {
+  return !!document.querySelector("[data-vue-shelf]");
+}
+
 export async function loadShelf() {
   try {
     const list = await api.get("/api/library");
@@ -28,7 +41,19 @@ export async function loadShelf() {
       shelfPrint = fp;
       bus.emit("shelf:changed");
     }
-    $("#shelfN").textContent = list.length ? `(${list.length})` : "";
+
+    // 顶栏那个「书架 (4)」的计数归 shell.js 管，跟 #view-shelf 无关，
+    // 所以 Vue 接管了也要更新。
+    const n = $("#shelfN");
+    if (n) n.textContent = list.length ? `(${list.length})` : "";
+
+    // 把最新数据广播出去。谁渲染谁订阅 —— 迁移期是 Vue 组件，
+    // 迁完之前是下面这段 DOM 代码。这样"切到书架 / 缓存跑完 / 阅读器关闭"
+    // 所有刷新路径都只有**一个**数据出口，不会出现"缓存跑完可见列表还是旧值"。
+    bus.emit("shelf:loaded", list);
+
+    if (vueOwnsShelf()) return;   // 下面的 DOM 都归 Vue 了，别碰
+
     $("#shelfStat").textContent = list.length ? `共 ${list.length} 本` : "";
     $("#shelfEmpty").classList.toggle("hidden", list.length > 0);
 
@@ -97,6 +122,15 @@ export function findShelfBook(id) {
 }
 
 export function mountShelf() {
+  // ⚠ 书架页已迁到 Vue 时直接跳过：
+  //   #btnShelfReload 在 index.html 里已经不存在了（搬进组件），
+  //   这里 `$("#btnShelfReload").onclick = ...` 会 TypeError 把
+  //   main.js 的启动流程整个炸掉 —— 后面 mountFiles/mountTasks/wireEvents
+  //   全都不执行，页面看着"半死不活"（真机测试会一片红，但原因藏在
+  //   一个 null 上，极难定位）。监听也交给组件自己订（它会在卸载时摘掉，
+  //   而这里订的是永不摘的全局监听，两边都订会刷新两遍）。
+  if (vueOwnsShelf()) return;
+
   $("#btnShelfReload").onclick = loadShelf;
   bus.on("reader:closed", loadShelf);
   // ⚠ 缓存/导出跑完必须重拉书架。
@@ -107,3 +141,15 @@ export function mountShelf() {
   //   会连发两次，没必要打两遍接口。
   bus.on("task:done", debounce(loadShelf, 300));
 }
+
+/* ---------- 迁移桥（Vue 侧要复用这两个） ----------
+   ⚠ 为什么书架迁到 Vue 了还要留着这里的东西：
+     ① `loadShelf` 被**别处的旧代码**调（main.js 的 reader:closed /
+        task:done 处理链、ranks.js 的 shelf:changed 联动），
+        这个函数还是旧代码在跑；
+     ② shelfCache 是搜索页/阅读器查"这本书在不在书架里"的真相源。
+     Vue 组件**不重写**这段逻辑，而是复用同一份 —— 否则又是"两份状态"。
+     等全部迁完再一起删。 */
+window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, {
+  loadShelf, findShelfBook,
+});

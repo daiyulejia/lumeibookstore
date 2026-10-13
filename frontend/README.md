@@ -132,10 +132,25 @@ Vue 重写渲染方式时，**要把这些钩子保留下来**，而不是去改
 - [x] 构建体系（Vite + Vue 3 + Naive UI + 产物自检）
 - [x] 主题桥（7 套主题的 CSS 变量 → Naive themeOverrides）
 - [x] 热门榜单（`RanksPanel.vue`）
+- [x] 书架页（`ShelfPanel.vue` + 复用的 `BookCover.vue`）
 - [ ] 发现页搜索结果区
-- [ ] 书架页
 - [ ] 文件页
 - [ ] 阅读器（最大，995 行，最后迁）
 
 每迁完一个页面，删掉对应的旧模块和 `legacy/` 里的桥接项。
 全迁完后 `legacy/` 整个目录都可以删。
+
+## 挂载模型（很重要，改之前先看这条）
+
+**一个容器挂一个 app 实例**，不是"一个 App 挂到某一个 #vue-root"。
+
+- `app/static/index.html` 里哪个容器带 `data-vue-*`，那块就归 Vue；
+- `src/main.js` 的 `MOUNTS` 列出所有容器的选择器，
+  对每个容器各 `createApp(App, { only: "<组件名>" })` + `mount`；
+- `App.vue` 用 `only` 决定这个实例渲染哪个页面组件。
+
+⚠ 为什么必须这样：Vue **只能把整棵树渲进一个元素**。
+第一版是单挂载点（`#vue-root` 放在榜单区里），结果书架组件被渲进了
+榜单区内部，`#view-shelf` 里的容器永远是空的 —— 页面看着"没生效"，
+控制台一点错都没有（真踩过）。
+`tools/test_shelf_ui.py` 第 1 节专门断言"书架在它该在的地方、没串到榜单区"。

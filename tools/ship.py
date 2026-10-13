@@ -125,6 +125,10 @@ LIVE_SUITES = [
     # 榜单整块不显示，而**本地因 /api 免令牌永远不复现**。
     # 这条不看结果看时序（请求发车时 authReady 了没），本地也有牙。
     ("test_auth_race.py", "鉴权时序"),
+    # 书架页（Vue 迁移后）。test_buttons 的 E 组只验"点了会怎样"，
+    # 验不到渲染层：组件挂错容器（真踩过，一个 app 管多处 DOM，
+    # 书架被渲进榜单区内部、页面静默空白）、插画消失、请求回声。
+    ("test_shelf_ui.py", "书架界面"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -142,6 +146,7 @@ LIVE_ARGS = {
     "test_telemetry.py": "--url",
     "test_disconnect.py": "--url",
     "test_auth_race.py": "--url",
+    "test_shelf_ui.py": "--url",
 }
 
 

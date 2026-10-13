@@ -197,22 +197,11 @@
 </section>
 
 <!-- ==================== 书架 ==================== -->
+<!-- data-vue-shelf：这一块的渲染权交给 Vue（见 frontend/src/App.vue）。
+     ⚠ 外层的 #view-shelf + data-view 必须留着 —— shell.js 的 nav() 靠
+       #view-<name> 切换 .hidden 来显示/隐藏整页，摘了导航就废了。 -->
 <section id="view-shelf" class="hidden" data-view>
-  <div class="wrap">
-    <div class="filters">
-      <div style="font-size:19px;font-weight:800">我的书架</div>
-      <span id="shelfStat" style="font-size:13px;color:var(--t-3)"></span>
-      <div class="spacer"></div>
-      <button class="btn ghost sm" id="btnShelfReload">刷新</button>
-    </div>
-    <div class="shelfgrid" id="shelfList"></div>
-    <div id="shelfEmpty" class="empty">
-      <img class="empty-art" src="/static/img/lumei/empty_sleep@480.webp"
-           width="480" height="360" alt="" loading="lazy" decoding="async">
-      <h3>书架空空，噜噜睡得正香</h3>
-      <p>在「发现」里点「开始阅读」，书就会落到这里 —— 之后打开秒进，断网也能看。</p>
-    </div>
-  </div>
+  <div id="vue-root-shelf" data-vue-shelf></div>
 </section>
 
 <!-- ==================== 文件 ==================== -->

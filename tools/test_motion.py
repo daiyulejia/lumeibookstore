@@ -449,6 +449,50 @@ def t_live(base: str) -> None:
 
 
 # ===========================================================================
+def t_bus_contract() -> None:
+    """4. 事件总线的接口契约（Vue 迁移期最容易踩的一处）。
+
+    两条硬约束：
+      a) `bus.on()` **必须返回退订函数**。Vue 组件里最常见的写法是
+         `const off = bus.on("x", fn); onUnmounted(() => off())`。
+         如果 on 不返回东西，off 就是 undefined、`off && off()` 静默不执行，
+         **监听泄漏且零报错**（真踩过：RanksPanel 的 off1/off2 一直是
+         undefined，组件卸载后旧事件还在往死组件上写）。
+      b) `bus.off()` 必须存在。旧代码一次性 mount、永不卸载，没有 off
+         也不暴露问题；组件会反复挂载/卸载，没有 off 就没法摘干净。
+    """
+    section("4. 事件总线契约（on 返回退订 / off 存在）")
+    txt = read(JS / "util.js")
+
+    if re.search(r"off\s*\(\s*ev\s*,\s*fn\s*\)\s*\{", txt):
+        ok("bus 有 off(ev, fn)")
+    else:
+        bad("bus 缺 off() —— Vue 组件卸载时摘不掉监听，会越挂越多")
+
+    # on 里必须有一句 return（返回退订函数）
+    m = re.search(r"\bon\s*\(\s*ev\s*,\s*fn\s*\)\s*\{(.*?)\n  \}", txt, re.S)
+    if not m:
+        bad("没找到 bus.on 的实现，无法校验")
+    elif re.search(r"\breturn\b", m.group(1)):
+        ok("bus.on() 会返回值（退订函数）")
+    else:
+        bad("bus.on() 没有 return —— 组件里 `const off = bus.on(...)` "
+            "会拿到 undefined，卸载时摘不掉监听（静默泄漏）")
+
+    # 组件里用 bus.on 的返回值退订时，不该再依赖不存在的 bus.off 变体
+    comp_dir = ROOT / "frontend" / "src" / "components"
+    if comp_dir.is_dir():
+        for f in sorted(comp_dir.glob("*.vue")):
+            c = f.read_text("utf-8")
+            if "bus.on(" in c and "onUnmounted" in c and "bus.off(" not in c \
+                    and not re.search(r"=\s*bus\.on\(", c):
+                bad(f"{f.name}: 订了 bus.on 但既没用返回值退订、也没调 bus.off "
+                    "—— 卸载后会泄漏")
+                return
+        ok("Vue 组件都正确地摘了监听（用返回值或 bus.off）")
+
+
+# ===========================================================================
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="", help="可选：线上地址，额外验产物")
@@ -461,6 +505,7 @@ def main() -> int:
     t_mounted()
     t_tokens()
     t_stagger()
+    t_bus_contract()
     t_a11y()
     t_theme_coverage()
     t_assets()

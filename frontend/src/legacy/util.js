@@ -46,6 +46,17 @@ export function toast(msg, kind) {
 }
 export const PRE = new Proxy({}, { get: (_t, k) => pick("PRE")[k] });
 
+export function confirmBox(opts) {
+  return pick("confirmBox")(opts);
+}
+export function debounce(fn, ms) {
+  return pick("debounce")(fn, ms);
+}
+/** 取某个旧模块暴露的东西（如 shelf.js 的 loadShelf）。 */
+export function legacy(name) {
+  return pick(name);
+}
+
 /**
  * 等到「旧代码完成了鉴权初始化」再继续。
  *

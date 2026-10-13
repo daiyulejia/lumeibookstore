@@ -24,8 +24,8 @@ var require_vue_app = __commonJS({
     (key.charCodeAt(2) > 122 || key.charCodeAt(2) < 97);
     const isModelListener = (key) => key.startsWith("onUpdate:");
     const extend = Object.assign;
-    const remove = (arr, el2) => {
-      const i = arr.indexOf(el2);
+    const remove = (arr, el) => {
+      const i = arr.indexOf(el);
       if (i > -1) {
         arr.splice(i, 1);
       }
@@ -2526,15 +2526,15 @@ var require_vue_app = __commonJS({
               };
               return emptyPlaceholder(child);
             } else if (mode === "in-out" && innerChild.type !== Comment) {
-              leavingHooks.delayLeave = (el2, earlyRemove, delayedLeave) => {
+              leavingHooks.delayLeave = (el, earlyRemove, delayedLeave) => {
                 const leavingVNodesCache = getLeavingNodesForType(
                   state,
                   oldInnerChild
                 );
                 leavingVNodesCache[String(oldInnerChild.key)] = oldInnerChild;
-                el2[leaveCbKey] = () => {
+                el[leaveCbKey] = () => {
                   earlyRemove();
-                  el2[leaveCbKey] = void 0;
+                  el[leaveCbKey] = void 0;
                   delete enterHooks.delayedLeave;
                   oldInnerChild = void 0;
                 };
@@ -2616,7 +2616,7 @@ var require_vue_app = __commonJS({
       const hooks = {
         mode,
         persisted,
-        beforeEnter(el2) {
+        beforeEnter(el) {
           let hook = onBeforeEnter;
           if (!state.isMounted) {
             if (appear) {
@@ -2625,8 +2625,8 @@ var require_vue_app = __commonJS({
               return;
             }
           }
-          if (el2[leaveCbKey]) {
-            el2[leaveCbKey](
+          if (el[leaveCbKey]) {
+            el[leaveCbKey](
               true
               /* cancelled */
             );
@@ -2635,9 +2635,9 @@ var require_vue_app = __commonJS({
           if (leavingVNode && isSameVNodeType(vnode, leavingVNode) && leavingVNode.el[leaveCbKey]) {
             leavingVNode.el[leaveCbKey]();
           }
-          callHook2(hook, [el2]);
+          callHook2(hook, [el]);
         },
-        enter(el2) {
+        enter(el) {
           if (leavingVNodesCache[key] === vnode) return;
           let hook = onEnter;
           let afterHook = onAfterEnter;
@@ -2652,30 +2652,30 @@ var require_vue_app = __commonJS({
             }
           }
           let called = false;
-          el2[enterCbKey$1] = (cancelled) => {
+          el[enterCbKey$1] = (cancelled) => {
             if (called) return;
             called = true;
             if (cancelled) {
-              callHook2(cancelHook, [el2]);
+              callHook2(cancelHook, [el]);
             } else {
-              callHook2(afterHook, [el2]);
+              callHook2(afterHook, [el]);
             }
             if (hooks.delayedLeave) {
               hooks.delayedLeave();
             }
-            el2[enterCbKey$1] = void 0;
+            el[enterCbKey$1] = void 0;
           };
-          const done = el2[enterCbKey$1].bind(null, false);
+          const done = el[enterCbKey$1].bind(null, false);
           if (hook) {
-            callAsyncHook(hook, [el2, done]);
+            callAsyncHook(hook, [el, done]);
           } else {
             done();
           }
         },
-        leave(el2, remove2) {
+        leave(el, remove2) {
           const key2 = String(vnode.key);
-          if (el2[enterCbKey$1]) {
-            el2[enterCbKey$1](
+          if (el[enterCbKey$1]) {
+            el[enterCbKey$1](
               true
               /* cancelled */
             );
@@ -2683,26 +2683,26 @@ var require_vue_app = __commonJS({
           if (state.isUnmounting) {
             return remove2();
           }
-          callHook2(onBeforeLeave, [el2]);
+          callHook2(onBeforeLeave, [el]);
           let called = false;
-          el2[leaveCbKey] = (cancelled) => {
+          el[leaveCbKey] = (cancelled) => {
             if (called) return;
             called = true;
             remove2();
             if (cancelled) {
-              callHook2(onLeaveCancelled, [el2]);
+              callHook2(onLeaveCancelled, [el]);
             } else {
-              callHook2(onAfterLeave, [el2]);
+              callHook2(onAfterLeave, [el]);
             }
-            el2[leaveCbKey] = void 0;
+            el[leaveCbKey] = void 0;
             if (leavingVNodesCache[key2] === vnode) {
               delete leavingVNodesCache[key2];
             }
           };
-          const done = el2[leaveCbKey].bind(null, false);
+          const done = el[leaveCbKey].bind(null, false);
           leavingVNodesCache[key2] = vnode;
           if (onLeave) {
-            callAsyncHook(onLeave, [el2, done]);
+            callAsyncHook(onLeave, [el, done]);
           } else {
             done();
           }
@@ -3003,7 +3003,43 @@ var require_vue_app = __commonJS({
     function onErrorCaptured(hook, target = currentInstance) {
       injectHook("ec", hook, target);
     }
+    const COMPONENTS = "components";
     const NULL_DYNAMIC_COMPONENT = /* @__PURE__ */ Symbol.for("v-ndc");
+    function resolveDynamicComponent(component) {
+      if (isString(component)) {
+        return resolveAsset(COMPONENTS, component, false) || component;
+      } else {
+        return component || NULL_DYNAMIC_COMPONENT;
+      }
+    }
+    function resolveAsset(type, name, warnMissing = true, maybeSelfReference = false) {
+      const instance = currentRenderingInstance || currentInstance;
+      if (instance) {
+        const Component = instance.type;
+        {
+          const selfName = getComponentName(
+            Component,
+            false
+          );
+          if (selfName && (selfName === name || selfName === camelize(name) || selfName === capitalize(camelize(name)))) {
+            return Component;
+          }
+        }
+        const res = (
+          // local registration
+          // check instance[type] first which is resolved for options API
+          resolve(instance[type] || Component[type], name) || // global registration
+          resolve(instance.appContext[type], name)
+        );
+        if (!res && maybeSelfReference) {
+          return Component;
+        }
+        return res;
+      }
+    }
+    function resolve(registry, name) {
+      return registry && (registry[name] || registry[camelize(name)] || registry[capitalize(camelize(name))]);
+    }
     function renderList(source, renderItem, cache, index) {
       let ret;
       const cached = cache;
@@ -3201,7 +3237,7 @@ var require_vue_app = __commonJS({
         // lifecycle
         created,
         beforeMount,
-        mounted,
+        mounted: mounted2,
         beforeUpdate,
         updated,
         activated,
@@ -3284,7 +3320,7 @@ var require_vue_app = __commonJS({
         }
       }
       registerLifecycleHook(onBeforeMount, beforeMount);
-      registerLifecycleHook(onMounted, mounted);
+      registerLifecycleHook(onMounted, mounted2);
       registerLifecycleHook(onBeforeUpdate, beforeUpdate);
       registerLifecycleHook(onUpdated, updated);
       registerLifecycleHook(onActivated, activated);
@@ -3936,22 +3972,22 @@ var require_vue_app = __commonJS({
       }
       return nextProp !== prevProp;
     }
-    function updateHOCHostEl({ vnode, parent, suspense }, el2) {
+    function updateHOCHostEl({ vnode, parent, suspense }, el) {
       while (parent) {
         const root2 = parent.subTree;
         if (root2.suspense && root2.suspense.activeBranch === vnode) {
-          root2.suspense.vnode.el = root2.el = el2;
+          root2.suspense.vnode.el = root2.el = el;
           vnode = root2;
         }
         if (root2 === vnode) {
-          (vnode = parent.vnode).el = el2;
+          (vnode = parent.vnode).el = el;
           parent = parent.parent;
         } else {
           break;
         }
       }
       if (suspense && suspense.activeBranch === vnode) {
-        suspense.vnode.el = el2;
+        suspense.vnode.el = el;
       }
     }
     const internalObjectProto = {};
@@ -4455,9 +4491,9 @@ var require_vue_app = __commonJS({
             anchor
           );
         } else {
-          const el2 = n2.el = n1.el;
+          const el = n2.el = n1.el;
           if (n2.children !== n1.children) {
-            hostSetText(el2, n2.children);
+            hostSetText(el, n2.children);
           }
         }
       };
@@ -4482,21 +4518,21 @@ var require_vue_app = __commonJS({
           n2.anchor
         );
       };
-      const moveStaticNode = ({ el: el2, anchor }, container, nextSibling) => {
+      const moveStaticNode = ({ el, anchor }, container, nextSibling) => {
         let next;
-        while (el2 && el2 !== anchor) {
-          next = hostNextSibling(el2);
-          hostInsert(el2, container, nextSibling);
-          el2 = next;
+        while (el && el !== anchor) {
+          next = hostNextSibling(el);
+          hostInsert(el, container, nextSibling);
+          el = next;
         }
         hostInsert(anchor, container, nextSibling);
       };
-      const removeStaticNode = ({ el: el2, anchor }) => {
+      const removeStaticNode = ({ el, anchor }) => {
         let next;
-        while (el2 && el2 !== anchor) {
-          next = hostNextSibling(el2);
-          hostRemove(el2);
-          el2 = next;
+        while (el && el !== anchor) {
+          next = hostNextSibling(el);
+          hostRemove(el);
+          el = next;
         }
         hostRemove(anchor);
       };
@@ -4540,21 +4576,21 @@ var require_vue_app = __commonJS({
         }
       };
       const mountElement = (vnode, container, anchor, parentComponent, parentSuspense, namespace, slotScopeIds, optimized) => {
-        let el2;
+        let el;
         let vnodeHook;
         const { props, shapeFlag, transition, dirs } = vnode;
-        el2 = vnode.el = hostCreateElement(
+        el = vnode.el = hostCreateElement(
           vnode.type,
           namespace,
           props && props.is,
           props
         );
         if (shapeFlag & 8) {
-          hostSetElementText(el2, vnode.children);
+          hostSetElementText(el, vnode.children);
         } else if (shapeFlag & 16) {
           mountChildren(
             vnode.children,
-            el2,
+            el,
             null,
             parentComponent,
             parentSuspense,
@@ -4566,15 +4602,15 @@ var require_vue_app = __commonJS({
         if (dirs) {
           invokeDirectiveHook(vnode, null, parentComponent, "created");
         }
-        setScopeId(el2, vnode, vnode.scopeId, slotScopeIds, parentComponent);
+        setScopeId(el, vnode, vnode.scopeId, slotScopeIds, parentComponent);
         if (props) {
           for (const key in props) {
             if (key !== "value" && !isReservedProp(key)) {
-              hostPatchProp(el2, key, null, props[key], namespace, parentComponent);
+              hostPatchProp(el, key, null, props[key], namespace, parentComponent);
             }
           }
           if ("value" in props) {
-            hostPatchProp(el2, "value", null, props.value, namespace);
+            hostPatchProp(el, "value", null, props.value, namespace);
           }
           if (vnodeHook = props.onVnodeBeforeMount) {
             invokeVNodeHook(vnodeHook, parentComponent, vnode);
@@ -4585,27 +4621,27 @@ var require_vue_app = __commonJS({
         }
         const needCallTransitionHooks = needTransition(parentSuspense, transition);
         if (needCallTransitionHooks) {
-          transition.beforeEnter(el2);
+          transition.beforeEnter(el);
         }
-        hostInsert(el2, container, anchor);
+        hostInsert(el, container, anchor);
         if ((vnodeHook = props && props.onVnodeMounted) || needCallTransitionHooks || dirs) {
           queuePostRenderEffect(() => {
             try {
               vnodeHook && invokeVNodeHook(vnodeHook, parentComponent, vnode);
-              needCallTransitionHooks && transition.enter(el2);
+              needCallTransitionHooks && transition.enter(el);
               dirs && invokeDirectiveHook(vnode, null, parentComponent, "mounted");
             } finally {
             }
           }, parentSuspense);
         }
       };
-      const setScopeId = (el2, vnode, scopeId, slotScopeIds, parentComponent) => {
+      const setScopeId = (el, vnode, scopeId, slotScopeIds, parentComponent) => {
         if (scopeId) {
-          hostSetScopeId(el2, scopeId);
+          hostSetScopeId(el, scopeId);
         }
         if (slotScopeIds) {
           for (let i = 0; i < slotScopeIds.length; i++) {
-            hostSetScopeId(el2, slotScopeIds[i]);
+            hostSetScopeId(el, slotScopeIds[i]);
           }
         }
         if (parentComponent) {
@@ -4613,7 +4649,7 @@ var require_vue_app = __commonJS({
           if (vnode === subTree || isSuspense(subTree.type) && (subTree.ssContent === vnode || subTree.ssFallback === vnode)) {
             const parentVNode = parentComponent.vnode;
             setScopeId(
-              el2,
+              el,
               parentVNode,
               parentVNode.scopeId,
               parentVNode.slotScopeIds,
@@ -4639,7 +4675,7 @@ var require_vue_app = __commonJS({
         }
       };
       const patchElement = (n1, n2, parentComponent, parentSuspense, namespace, slotScopeIds, optimized) => {
-        const el2 = n2.el = n1.el;
+        const el = n2.el = n1.el;
         let { patchFlag, dynamicChildren, dirs } = n2;
         patchFlag |= n1.patchFlag & 16;
         const oldProps = n1.props || EMPTY_OBJ;
@@ -4663,13 +4699,13 @@ var require_vue_app = __commonJS({
           dynamicChildren = null;
         }
         if (oldProps.innerHTML && newProps.innerHTML == null || oldProps.textContent && newProps.textContent == null) {
-          hostSetElementText(el2, "");
+          hostSetElementText(el, "");
         }
         if (dynamicChildren) {
           patchBlockChildren(
             n1.dynamicChildren,
             dynamicChildren,
-            el2,
+            el,
             parentComponent,
             parentSuspense,
             resolveChildrenNamespace(n2, namespace),
@@ -4679,7 +4715,7 @@ var require_vue_app = __commonJS({
           patchChildren(
             n1,
             n2,
-            el2,
+            el,
             null,
             parentComponent,
             parentSuspense,
@@ -4690,15 +4726,15 @@ var require_vue_app = __commonJS({
         }
         if (patchFlag > 0) {
           if (patchFlag & 16) {
-            patchProps(el2, oldProps, newProps, parentComponent, namespace);
+            patchProps(el, oldProps, newProps, parentComponent, namespace);
           } else {
             if (patchFlag & 2) {
               if (oldProps.class !== newProps.class) {
-                hostPatchProp(el2, "class", null, newProps.class, namespace);
+                hostPatchProp(el, "class", null, newProps.class, namespace);
               }
             }
             if (patchFlag & 4) {
-              hostPatchProp(el2, "style", oldProps.style, newProps.style, namespace);
+              hostPatchProp(el, "style", oldProps.style, newProps.style, namespace);
             }
             if (patchFlag & 8) {
               const propsToUpdate = n2.dynamicProps;
@@ -4707,18 +4743,18 @@ var require_vue_app = __commonJS({
                 const prev = oldProps[key];
                 const next = newProps[key];
                 if (next !== prev || key === "value") {
-                  hostPatchProp(el2, key, prev, next, namespace, parentComponent);
+                  hostPatchProp(el, key, prev, next, namespace, parentComponent);
                 }
               }
             }
           }
           if (patchFlag & 1) {
             if (n1.children !== n2.children) {
-              hostSetElementText(el2, n2.children);
+              hostSetElementText(el, n2.children);
             }
           }
         } else if (!optimized && dynamicChildren == null) {
-          patchProps(el2, oldProps, newProps, parentComponent, namespace);
+          patchProps(el, oldProps, newProps, parentComponent, namespace);
         }
         if ((vnodeHook = newProps.onVnodeUpdated) || dirs) {
           queuePostRenderEffect(() => {
@@ -4758,13 +4794,13 @@ var require_vue_app = __commonJS({
           );
         }
       };
-      const patchProps = (el2, oldProps, newProps, parentComponent, namespace) => {
+      const patchProps = (el, oldProps, newProps, parentComponent, namespace) => {
         if (oldProps !== newProps) {
           if (oldProps !== EMPTY_OBJ) {
             for (const key in oldProps) {
               if (!isReservedProp(key) && !(key in newProps)) {
                 hostPatchProp(
-                  el2,
+                  el,
                   key,
                   oldProps[key],
                   null,
@@ -4779,11 +4815,11 @@ var require_vue_app = __commonJS({
             const next = newProps[key];
             const prev = oldProps[key];
             if (next !== prev && key !== "value") {
-              hostPatchProp(el2, key, prev, next, namespace, parentComponent);
+              hostPatchProp(el, key, prev, next, namespace, parentComponent);
             }
           }
           if ("value" in newProps) {
-            hostPatchProp(el2, "value", oldProps.value, newProps.value, namespace);
+            hostPatchProp(el, "value", oldProps.value, newProps.value, namespace);
           }
         }
       };
@@ -4930,7 +4966,7 @@ var require_vue_app = __commonJS({
         const componentUpdateFn = () => {
           if (!instance.isMounted) {
             let vnodeHook;
-            const { el: el2, props } = initialVNode;
+            const { el, props } = initialVNode;
             const { bm, m, parent, root: root2, type } = instance;
             const isAsyncWrapperVNode = isAsyncWrapper(initialVNode);
             toggleRecurse(instance, false);
@@ -5340,7 +5376,7 @@ var require_vue_app = __commonJS({
         }
       };
       const move = (vnode, container, anchor, moveType, parentSuspense = null) => {
-        const { el: el2, type, transition, children, shapeFlag } = vnode;
+        const { el, type, transition, children, shapeFlag } = vnode;
         if (shapeFlag & 6) {
           move(vnode.component.subTree, container, anchor, moveType);
           return;
@@ -5354,7 +5390,7 @@ var require_vue_app = __commonJS({
           return;
         }
         if (type === Fragment) {
-          hostInsert(el2, container, anchor);
+          hostInsert(el, container, anchor);
           for (let i = 0; i < children.length; i++) {
             move(children[i], container, anchor, moveType);
           }
@@ -5368,26 +5404,26 @@ var require_vue_app = __commonJS({
         const needTransition2 = moveType !== 2 && shapeFlag & 1 && transition;
         if (needTransition2) {
           if (moveType === 0) {
-            if (transition.persisted && !el2[leaveCbKey]) {
-              hostInsert(el2, container, anchor);
+            if (transition.persisted && !el[leaveCbKey]) {
+              hostInsert(el, container, anchor);
             } else {
-              transition.beforeEnter(el2);
-              hostInsert(el2, container, anchor);
-              queuePostRenderEffect(() => transition.enter(el2), parentSuspense);
+              transition.beforeEnter(el);
+              hostInsert(el, container, anchor);
+              queuePostRenderEffect(() => transition.enter(el), parentSuspense);
             }
           } else {
             const { leave, delayLeave, afterLeave } = transition;
             const remove22 = () => {
               if (vnode.ctx.isUnmounted) {
-                hostRemove(el2);
+                hostRemove(el);
               } else {
-                hostInsert(el2, container, anchor);
+                hostInsert(el, container, anchor);
               }
             };
             const performLeave = () => {
-              const wasLeaving = el2._isLeaving || !!el2[leaveCbKey];
-              if (el2._isLeaving) {
-                el2[leaveCbKey](
+              const wasLeaving = el._isLeaving || !!el[leaveCbKey];
+              if (el._isLeaving) {
+                el[leaveCbKey](
                   true
                   /* cancelled */
                 );
@@ -5395,20 +5431,20 @@ var require_vue_app = __commonJS({
               if (transition.persisted && !wasLeaving) {
                 remove22();
               } else {
-                leave(el2, () => {
+                leave(el, () => {
                   remove22();
                   afterLeave && afterLeave();
                 });
               }
             };
             if (delayLeave) {
-              delayLeave(el2, remove22, performLeave);
+              delayLeave(el, remove22, performLeave);
             } else {
               performLeave();
             }
           }
         } else {
-          hostInsert(el2, container, anchor);
+          hostInsert(el, container, anchor);
         }
       };
       const unmount2 = (vnode, parentComponent, parentSuspense, doRemove = false, optimized = false) => {
@@ -5496,10 +5532,10 @@ var require_vue_app = __commonJS({
         }
       };
       const remove2 = (vnode) => {
-        const { type, el: el2, anchor, transition } = vnode;
+        const { type, el, anchor, transition } = vnode;
         if (type === Fragment) {
           {
-            removeFragment(el2, anchor);
+            removeFragment(el, anchor);
           }
           return;
         }
@@ -5511,14 +5547,14 @@ var require_vue_app = __commonJS({
           return;
         }
         const performRemove = () => {
-          hostRemove(el2);
+          hostRemove(el);
           if (transition && !transition.persisted && transition.afterLeave) {
             transition.afterLeave();
           }
         };
         if (vnode.shapeFlag & 1 && transition && !transition.persisted) {
           const { leave, delayLeave } = transition;
-          const performLeave = () => leave(el2, performRemove);
+          const performLeave = () => leave(el, performRemove);
           if (delayLeave) {
             delayLeave(vnode.el, performRemove, performLeave);
           } else {
@@ -5571,9 +5607,9 @@ var require_vue_app = __commonJS({
         if (vnode.shapeFlag & 128) {
           return vnode.suspense.next();
         }
-        const el2 = hostNextSibling(vnode.anchor || vnode.el);
-        const teleportEnd = el2 && el2[TeleportEndKey];
-        return teleportEnd ? hostNextSibling(teleportEnd) : el2;
+        const el = hostNextSibling(vnode.anchor || vnode.el);
+        const teleportEnd = el && el[TeleportEndKey];
+        return teleportEnd ? hostNextSibling(teleportEnd) : el;
       };
       let isFlushing = false;
       const render2 = (vnode, container, namespace) => {
@@ -5977,6 +6013,11 @@ var require_vue_app = __commonJS({
     }
     function createTextVNode(text = " ", flag = 0) {
       return createVNode(Text, null, text, flag);
+    }
+    function createStaticVNode(content, numberOfNodes) {
+      const vnode = createVNode(Static, null, content);
+      vnode.staticCount = numberOfNodes;
+      return vnode;
     }
     function createCommentVNode(text = "", asBlock = false) {
       return asBlock ? (openBlock(), createBlock(Comment, null, text)) : createVNode(Comment, null, text);
@@ -6428,25 +6469,25 @@ var require_vue_app = __commonJS({
         }
       },
       createElement: (tag, namespace, is, props) => {
-        const el2 = namespace === "svg" ? doc.createElementNS(svgNS, tag) : namespace === "mathml" ? doc.createElementNS(mathmlNS, tag) : is ? doc.createElement(tag, { is }) : doc.createElement(tag);
+        const el = namespace === "svg" ? doc.createElementNS(svgNS, tag) : namespace === "mathml" ? doc.createElementNS(mathmlNS, tag) : is ? doc.createElement(tag, { is }) : doc.createElement(tag);
         if (tag === "select" && props && props.multiple != null) {
-          el2.setAttribute("multiple", props.multiple);
+          el.setAttribute("multiple", props.multiple);
         }
-        return el2;
+        return el;
       },
       createText: (text) => doc.createTextNode(text),
       createComment: (text) => doc.createComment(text),
       setText: (node, text) => {
         node.nodeValue = text;
       },
-      setElementText: (el2, text) => {
-        el2.textContent = text;
+      setElementText: (el, text) => {
+        el.textContent = text;
       },
       parentNode: (node) => node.parentNode,
       nextSibling: (node) => node.nextSibling,
       querySelector: (selector) => doc.querySelector(selector),
-      setScopeId(el2, id) {
-        el2.setAttribute(id, "");
+      setScopeId(el, id) {
+        el.setAttribute(id, "");
       },
       // __UNSAFE__
       // Reason: innerHTML.
@@ -6562,80 +6603,80 @@ var require_vue_app = __commonJS({
         onAppear = onEnter,
         onAppearCancelled = onEnterCancelled
       } = baseProps;
-      const finishEnter = (el2, isAppear, done, isCancelled) => {
-        el2._enterCancelled = isCancelled;
-        removeTransitionClass(el2, isAppear ? appearToClass : enterToClass);
-        removeTransitionClass(el2, isAppear ? appearActiveClass : enterActiveClass);
+      const finishEnter = (el, isAppear, done, isCancelled) => {
+        el._enterCancelled = isCancelled;
+        removeTransitionClass(el, isAppear ? appearToClass : enterToClass);
+        removeTransitionClass(el, isAppear ? appearActiveClass : enterActiveClass);
         done && done();
       };
-      const finishLeave = (el2, done) => {
-        el2._isLeaving = false;
-        removeTransitionClass(el2, leaveFromClass);
-        removeTransitionClass(el2, leaveToClass);
-        removeTransitionClass(el2, leaveActiveClass);
+      const finishLeave = (el, done) => {
+        el._isLeaving = false;
+        removeTransitionClass(el, leaveFromClass);
+        removeTransitionClass(el, leaveToClass);
+        removeTransitionClass(el, leaveActiveClass);
         done && done();
       };
       const makeEnterHook = (isAppear) => {
-        return (el2, done) => {
+        return (el, done) => {
           const hook = isAppear ? onAppear : onEnter;
-          const resolve = () => finishEnter(el2, isAppear, done);
-          callHook(hook, [el2, resolve]);
+          const resolve2 = () => finishEnter(el, isAppear, done);
+          callHook(hook, [el, resolve2]);
           nextFrame(() => {
-            removeTransitionClass(el2, isAppear ? appearFromClass : enterFromClass);
-            addTransitionClass(el2, isAppear ? appearToClass : enterToClass);
+            removeTransitionClass(el, isAppear ? appearFromClass : enterFromClass);
+            addTransitionClass(el, isAppear ? appearToClass : enterToClass);
             if (!hasExplicitCallback(hook)) {
-              whenTransitionEnds(el2, type, enterDuration, resolve);
+              whenTransitionEnds(el, type, enterDuration, resolve2);
             }
           });
         };
       };
       return extend(baseProps, {
-        onBeforeEnter(el2) {
-          callHook(onBeforeEnter, [el2]);
-          addTransitionClass(el2, enterFromClass);
-          addTransitionClass(el2, enterActiveClass);
+        onBeforeEnter(el) {
+          callHook(onBeforeEnter, [el]);
+          addTransitionClass(el, enterFromClass);
+          addTransitionClass(el, enterActiveClass);
         },
-        onBeforeAppear(el2) {
-          callHook(onBeforeAppear, [el2]);
-          addTransitionClass(el2, appearFromClass);
-          addTransitionClass(el2, appearActiveClass);
+        onBeforeAppear(el) {
+          callHook(onBeforeAppear, [el]);
+          addTransitionClass(el, appearFromClass);
+          addTransitionClass(el, appearActiveClass);
         },
         onEnter: makeEnterHook(false),
         onAppear: makeEnterHook(true),
-        onLeave(el2, done) {
-          el2._isLeaving = true;
-          const resolve = () => finishLeave(el2, done);
-          addTransitionClass(el2, leaveFromClass);
-          if (!el2._enterCancelled) {
-            forceReflow(el2);
-            addTransitionClass(el2, leaveActiveClass);
+        onLeave(el, done) {
+          el._isLeaving = true;
+          const resolve2 = () => finishLeave(el, done);
+          addTransitionClass(el, leaveFromClass);
+          if (!el._enterCancelled) {
+            forceReflow(el);
+            addTransitionClass(el, leaveActiveClass);
           } else {
-            addTransitionClass(el2, leaveActiveClass);
-            forceReflow(el2);
+            addTransitionClass(el, leaveActiveClass);
+            forceReflow(el);
           }
           nextFrame(() => {
-            if (!el2._isLeaving) {
+            if (!el._isLeaving) {
               return;
             }
-            removeTransitionClass(el2, leaveFromClass);
-            addTransitionClass(el2, leaveToClass);
+            removeTransitionClass(el, leaveFromClass);
+            addTransitionClass(el, leaveToClass);
             if (!hasExplicitCallback(onLeave)) {
-              whenTransitionEnds(el2, type, leaveDuration, resolve);
+              whenTransitionEnds(el, type, leaveDuration, resolve2);
             }
           });
-          callHook(onLeave, [el2, resolve]);
+          callHook(onLeave, [el, resolve2]);
         },
-        onEnterCancelled(el2) {
-          finishEnter(el2, false, void 0, true);
-          callHook(onEnterCancelled, [el2]);
+        onEnterCancelled(el) {
+          finishEnter(el, false, void 0, true);
+          callHook(onEnterCancelled, [el]);
         },
-        onAppearCancelled(el2) {
-          finishEnter(el2, true, void 0, true);
-          callHook(onAppearCancelled, [el2]);
+        onAppearCancelled(el) {
+          finishEnter(el, true, void 0, true);
+          callHook(onAppearCancelled, [el]);
         },
-        onLeaveCancelled(el2) {
-          finishLeave(el2);
-          callHook(onLeaveCancelled, [el2]);
+        onLeaveCancelled(el) {
+          finishLeave(el);
+          callHook(onLeaveCancelled, [el]);
         }
       });
     }
@@ -6653,17 +6694,17 @@ var require_vue_app = __commonJS({
       const res = toNumber(val);
       return res;
     }
-    function addTransitionClass(el2, cls) {
-      cls.split(/\s+/).forEach((c2) => c2 && el2.classList.add(c2));
-      (el2[vtcKey] || (el2[vtcKey] = /* @__PURE__ */ new Set())).add(cls);
+    function addTransitionClass(el, cls) {
+      cls.split(/\s+/).forEach((c2) => c2 && el.classList.add(c2));
+      (el[vtcKey] || (el[vtcKey] = /* @__PURE__ */ new Set())).add(cls);
     }
-    function removeTransitionClass(el2, cls) {
-      cls.split(/\s+/).forEach((c2) => c2 && el2.classList.remove(c2));
-      const _vtc = el2[vtcKey];
+    function removeTransitionClass(el, cls) {
+      cls.split(/\s+/).forEach((c2) => c2 && el.classList.remove(c2));
+      const _vtc = el[vtcKey];
       if (_vtc) {
         _vtc.delete(cls);
         if (!_vtc.size) {
-          el2[vtcKey] = void 0;
+          el[vtcKey] = void 0;
         }
       }
     }
@@ -6673,28 +6714,28 @@ var require_vue_app = __commonJS({
       });
     }
     let endId = 0;
-    function whenTransitionEnds(el2, expectedType, explicitTimeout, resolve) {
-      const id = el2._endId = ++endId;
+    function whenTransitionEnds(el, expectedType, explicitTimeout, resolve2) {
+      const id = el._endId = ++endId;
       const resolveIfNotStale = () => {
-        if (id === el2._endId) {
-          resolve();
+        if (id === el._endId) {
+          resolve2();
         }
       };
       if (explicitTimeout != null) {
         return setTimeout(resolveIfNotStale, explicitTimeout);
       }
-      const { type, timeout, propCount } = getTransitionInfo(el2, expectedType);
+      const { type, timeout, propCount } = getTransitionInfo(el, expectedType);
       if (!type) {
-        return resolve();
+        return resolve2();
       }
       const endEvent = type + "end";
       let ended = 0;
       const end = () => {
-        el2.removeEventListener(endEvent, onEnd);
+        el.removeEventListener(endEvent, onEnd);
         resolveIfNotStale();
       };
       const onEnd = (e) => {
-        if (e.target === el2 && ++ended >= propCount) {
+        if (e.target === el && ++ended >= propCount) {
           end();
         }
       };
@@ -6703,10 +6744,10 @@ var require_vue_app = __commonJS({
           end();
         }
       }, timeout + 1);
-      el2.addEventListener(endEvent, onEnd);
+      el.addEventListener(endEvent, onEnd);
     }
-    function getTransitionInfo(el2, expectedType) {
-      const styles = window.getComputedStyle(el2);
+    function getTransitionInfo(el, expectedType) {
+      const styles = window.getComputedStyle(el);
       const getStyleProperties = (key) => (styles[key] || "").split(", ");
       const transitionDelays = getStyleProperties(`${TRANSITION}Delay`);
       const transitionDurations = getStyleProperties(`${TRANSITION}Duration`);
@@ -6754,29 +6795,29 @@ var require_vue_app = __commonJS({
       if (s === "auto") return 0;
       return Number(s.slice(0, -1).replace(",", ".")) * 1e3;
     }
-    function forceReflow(el2) {
-      const targetDocument = el2 ? el2.ownerDocument : document;
+    function forceReflow(el) {
+      const targetDocument = el ? el.ownerDocument : document;
       return targetDocument.body.offsetHeight;
     }
-    function patchClass(el2, value, isSVG) {
-      const transitionClasses = el2[vtcKey];
+    function patchClass(el, value, isSVG) {
+      const transitionClasses = el[vtcKey];
       if (transitionClasses) {
         value = (value ? [value, ...transitionClasses] : [...transitionClasses]).join(" ");
       }
       if (value == null) {
-        el2.removeAttribute("class");
+        el.removeAttribute("class");
       } else if (isSVG) {
-        el2.setAttribute("class", value);
+        el.setAttribute("class", value);
       } else {
-        el2.className = value;
+        el.className = value;
       }
     }
     const vShowOriginalDisplay = /* @__PURE__ */ Symbol("_vod");
     const vShowHidden = /* @__PURE__ */ Symbol("_vsh");
     const CSS_VAR_TEXT = /* @__PURE__ */ Symbol("");
     const displayRE = /(?:^|;)\s*display\s*:/;
-    function patchStyle(el2, prev, next) {
-      const style = el2.style;
+    function patchStyle(el, prev, next) {
+      const style = el.style;
       const isCssString = isString(next);
       let hasControlledDisplay = false;
       if (next && !isCssString) {
@@ -6803,7 +6844,7 @@ var require_vue_app = __commonJS({
           const value = next[key];
           if (value != null) {
             if (!shouldPreserveTextareaResizeStyle(
-              el2,
+              el,
               key,
               !isString(prev) && prev ? prev[key] : void 0,
               value
@@ -6825,12 +6866,12 @@ var require_vue_app = __commonJS({
             hasControlledDisplay = displayRE.test(next);
           }
         } else if (prev) {
-          el2.removeAttribute("style");
+          el.removeAttribute("style");
         }
       }
-      if (vShowOriginalDisplay in el2) {
-        el2[vShowOriginalDisplay] = hasControlledDisplay ? style.display : "";
-        if (el2[vShowHidden]) {
+      if (vShowOriginalDisplay in el) {
+        el[vShowOriginalDisplay] = hasControlledDisplay ? style.display : "";
+        if (el[vShowHidden]) {
           style.display = "none";
         }
       }
@@ -6881,56 +6922,56 @@ var require_vue_app = __commonJS({
       }
       return rawName;
     }
-    function shouldPreserveTextareaResizeStyle(el2, key, prev, next) {
-      return el2.tagName === "TEXTAREA" && (key === "width" || key === "height") && isString(next) && prev === next;
+    function shouldPreserveTextareaResizeStyle(el, key, prev, next) {
+      return el.tagName === "TEXTAREA" && (key === "width" || key === "height") && isString(next) && prev === next;
     }
     const xlinkNS = "http://www.w3.org/1999/xlink";
-    function patchAttr(el2, key, value, isSVG, instance, isBoolean = isSpecialBooleanAttr(key)) {
+    function patchAttr(el, key, value, isSVG, instance, isBoolean = isSpecialBooleanAttr(key)) {
       if (isSVG && key.startsWith("xlink:")) {
         if (value == null) {
-          el2.removeAttributeNS(xlinkNS, key.slice(6, key.length));
+          el.removeAttributeNS(xlinkNS, key.slice(6, key.length));
         } else {
-          el2.setAttributeNS(xlinkNS, key, value);
+          el.setAttributeNS(xlinkNS, key, value);
         }
       } else {
         if (value == null || isBoolean && !includeBooleanAttr(value)) {
-          el2.removeAttribute(key);
+          el.removeAttribute(key);
         } else {
-          el2.setAttribute(
+          el.setAttribute(
             key,
             isBoolean ? "" : isSymbol(value) ? String(value) : value
           );
         }
       }
     }
-    function patchDOMProp(el2, key, value, parentComponent, attrName) {
+    function patchDOMProp(el, key, value, parentComponent, attrName) {
       if (key === "innerHTML" || key === "textContent") {
         if (value != null) {
-          el2[key] = key === "innerHTML" ? unsafeToTrustedHTML(value) : value;
+          el[key] = key === "innerHTML" ? unsafeToTrustedHTML(value) : value;
         }
         return;
       }
-      const tag = el2.tagName;
+      const tag = el.tagName;
       if (key === "value" && tag !== "PROGRESS" && // custom elements may use _value internally
       !tag.includes("-")) {
-        const oldValue = tag === "OPTION" ? el2.getAttribute("value") || "" : el2.value;
+        const oldValue = tag === "OPTION" ? el.getAttribute("value") || "" : el.value;
         const newValue = value == null ? (
           // #11647: value should be set as empty string for null and undefined,
           // but <input type="checkbox"> should be set as 'on'.
-          el2.type === "checkbox" ? "on" : ""
+          el.type === "checkbox" ? "on" : ""
         ) : String(value);
-        if (oldValue !== newValue || !("_value" in el2)) {
-          el2.value = newValue;
+        if (oldValue !== newValue || !("_value" in el)) {
+          el.value = newValue;
         }
         if (value == null) {
-          el2.removeAttribute(key);
+          el.removeAttribute(key);
         }
-        el2._value = value;
+        el._value = value;
         return;
       }
       let needRemove = false;
       if (value === "" || value == null) {
-        const type = typeof el2[key];
+        const type = typeof el[key];
         if (type === "boolean") {
           value = includeBooleanAttr(value);
         } else if (value == null && type === "string") {
@@ -6942,20 +6983,20 @@ var require_vue_app = __commonJS({
         }
       }
       try {
-        el2[key] = value;
+        el[key] = value;
       } catch (e) {
       }
-      needRemove && el2.removeAttribute(attrName || key);
+      needRemove && el.removeAttribute(attrName || key);
     }
-    function addEventListener(el2, event, handler, options) {
-      el2.addEventListener(event, handler, options);
+    function addEventListener(el, event, handler, options) {
+      el.addEventListener(event, handler, options);
     }
-    function removeEventListener(el2, event, handler, options) {
-      el2.removeEventListener(event, handler, options);
+    function removeEventListener(el, event, handler, options) {
+      el.removeEventListener(event, handler, options);
     }
     const veiKey = /* @__PURE__ */ Symbol("_vei");
-    function patchEvent(el2, rawName, prevValue, nextValue, instance = null) {
-      const invokers = el2[veiKey] || (el2[veiKey] = {});
+    function patchEvent(el, rawName, prevValue, nextValue, instance = null) {
+      const invokers = el[veiKey] || (el[veiKey] = {});
       const existingInvoker = invokers[rawName];
       if (nextValue && existingInvoker) {
         existingInvoker.value = nextValue;
@@ -6966,9 +7007,9 @@ var require_vue_app = __commonJS({
             nextValue,
             instance
           );
-          addEventListener(el2, name, invoker, options);
+          addEventListener(el, name, invoker, options);
         } else if (existingInvoker) {
-          removeEventListener(el2, name, existingInvoker, options);
+          removeEventListener(el, name, existingInvoker, options);
           invokers[rawName] = void 0;
         }
       }
@@ -7034,43 +7075,43 @@ var require_vue_app = __commonJS({
     }
     const isNativeOn = (key) => key.charCodeAt(0) === 111 && key.charCodeAt(1) === 110 && // lowercase letter
     key.charCodeAt(2) > 96 && key.charCodeAt(2) < 123;
-    const patchProp = (el2, key, prevValue, nextValue, namespace, parentComponent) => {
+    const patchProp = (el, key, prevValue, nextValue, namespace, parentComponent) => {
       const isSVG = namespace === "svg";
       if (key === "class") {
-        patchClass(el2, nextValue, isSVG);
+        patchClass(el, nextValue, isSVG);
       } else if (key === "style") {
-        patchStyle(el2, prevValue, nextValue);
+        patchStyle(el, prevValue, nextValue);
       } else if (isOn(key)) {
         if (!isModelListener(key)) {
-          patchEvent(el2, key, prevValue, nextValue, parentComponent);
+          patchEvent(el, key, prevValue, nextValue, parentComponent);
         }
-      } else if (key[0] === "." ? (key = key.slice(1), true) : key[0] === "^" ? (key = key.slice(1), false) : shouldSetAsProp(el2, key, nextValue, isSVG)) {
-        patchDOMProp(el2, key, nextValue);
-        if (!el2.tagName.includes("-") && (key === "value" || key === "checked" || key === "selected")) {
-          patchAttr(el2, key, nextValue, isSVG, parentComponent, key !== "value");
+      } else if (key[0] === "." ? (key = key.slice(1), true) : key[0] === "^" ? (key = key.slice(1), false) : shouldSetAsProp(el, key, nextValue, isSVG)) {
+        patchDOMProp(el, key, nextValue);
+        if (!el.tagName.includes("-") && (key === "value" || key === "checked" || key === "selected")) {
+          patchAttr(el, key, nextValue, isSVG, parentComponent, key !== "value");
         }
       } else if (
         // #11081 force set props for possible async custom element
-        el2._isVueCE && // #12408 check if it's declared prop or it's async custom element
-        (shouldSetAsPropForVueCE(el2, key) || // @ts-expect-error _def is private
-        el2._def.__asyncLoader && (/[A-Z]/.test(key) || !isString(nextValue)))
+        el._isVueCE && // #12408 check if it's declared prop or it's async custom element
+        (shouldSetAsPropForVueCE(el, key) || // @ts-expect-error _def is private
+        el._def.__asyncLoader && (/[A-Z]/.test(key) || !isString(nextValue)))
       ) {
-        patchDOMProp(el2, camelize(key), nextValue, parentComponent, key);
+        patchDOMProp(el, camelize(key), nextValue, parentComponent, key);
       } else {
         if (key === "true-value") {
-          el2._trueValue = nextValue;
+          el._trueValue = nextValue;
         } else if (key === "false-value") {
-          el2._falseValue = nextValue;
+          el._falseValue = nextValue;
         }
-        patchAttr(el2, key, nextValue, isSVG);
+        patchAttr(el, key, nextValue, isSVG);
       }
     };
-    function shouldSetAsProp(el2, key, value, isSVG) {
+    function shouldSetAsProp(el, key, value, isSVG) {
       if (isSVG) {
         if (key === "innerHTML" || key === "textContent") {
           return true;
         }
-        if (key in el2 && isNativeOn(key) && isFunction$1(value)) {
+        if (key in el && isNativeOn(key) && isFunction$1(value)) {
           return true;
         }
         return false;
@@ -7078,20 +7119,20 @@ var require_vue_app = __commonJS({
       if (key === "spellcheck" || key === "draggable" || key === "translate" || key === "autocorrect") {
         return false;
       }
-      if (key === "sandbox" && el2.tagName === "IFRAME") {
+      if (key === "sandbox" && el.tagName === "IFRAME") {
         return false;
       }
       if (key === "form") {
         return false;
       }
-      if (key === "list" && el2.tagName === "INPUT") {
+      if (key === "list" && el.tagName === "INPUT") {
         return false;
       }
-      if (key === "type" && el2.tagName === "TEXTAREA") {
+      if (key === "type" && el.tagName === "TEXTAREA") {
         return false;
       }
       if (key === "width" || key === "height") {
-        const tag = el2.tagName;
+        const tag = el.tagName;
         if (tag === "IMG" || tag === "VIDEO" || tag === "CANVAS" || tag === "SOURCE") {
           return false;
         }
@@ -7099,12 +7140,12 @@ var require_vue_app = __commonJS({
       if (isNativeOn(key) && isString(value)) {
         return false;
       }
-      return key in el2;
+      return key in el;
     }
-    function shouldSetAsPropForVueCE(el2, key) {
+    function shouldSetAsPropForVueCE(el, key) {
       const props = (
         // @ts-expect-error _def is private
-        el2._def.props
+        el._def.props
       );
       if (!props) {
         return false;
@@ -7149,21 +7190,21 @@ var require_vue_app = __commonJS({
           const movedChildren = prevChildren.filter(applyTranslation);
           forceReflow(instance.vnode.el);
           movedChildren.forEach((c2) => {
-            const el2 = c2.el;
-            const style = el2.style;
-            addTransitionClass(el2, moveClass);
+            const el = c2.el;
+            const style = el.style;
+            addTransitionClass(el, moveClass);
             style.transform = style.webkitTransform = style.transitionDuration = "";
-            const cb = el2[moveCbKey] = (e) => {
-              if (e && e.target !== el2) {
+            const cb = el[moveCbKey] = (e) => {
+              if (e && e.target !== el) {
                 return;
               }
               if (!e || e.propertyName.endsWith("transform")) {
-                el2.removeEventListener("transitionend", cb);
-                el2[moveCbKey] = null;
-                removeTransitionClass(el2, moveClass);
+                el.removeEventListener("transitionend", cb);
+                el[moveCbKey] = null;
+                removeTransitionClass(el, moveClass);
               }
             };
-            el2.addEventListener("transitionend", cb);
+            el.addEventListener("transitionend", cb);
           });
           prevChildren = [];
         });
@@ -7207,12 +7248,12 @@ var require_vue_app = __commonJS({
     });
     const TransitionGroup = TransitionGroupImpl;
     function callPendingCbs(c2) {
-      const el2 = c2.el;
-      if (el2[moveCbKey]) {
-        el2[moveCbKey]();
+      const el = c2.el;
+      if (el[moveCbKey]) {
+        el[moveCbKey]();
       }
-      if (el2[enterCbKey]) {
-        el2[enterCbKey]();
+      if (el[enterCbKey]) {
+        el[enterCbKey]();
       }
     }
     function recordPosition(c2) {
@@ -7224,13 +7265,13 @@ var require_vue_app = __commonJS({
       const dx = oldPos.left - newPos.left;
       const dy = oldPos.top - newPos.top;
       if (dx || dy) {
-        const el2 = c2.el;
-        const s = el2.style;
-        const rect = el2.getBoundingClientRect();
+        const el = c2.el;
+        const s = el.style;
+        const rect = el.getBoundingClientRect();
         let scaleX = 1;
         let scaleY = 1;
-        if (el2.offsetWidth) scaleX = rect.width / el2.offsetWidth;
-        if (el2.offsetHeight) scaleY = rect.height / el2.offsetHeight;
+        if (el.offsetWidth) scaleX = rect.width / el.offsetWidth;
+        if (el.offsetHeight) scaleY = rect.height / el.offsetHeight;
         if (!Number.isFinite(scaleX) || scaleX === 0) scaleX = 1;
         if (!Number.isFinite(scaleY) || scaleY === 0) scaleY = 1;
         if (Math.abs(scaleX - 1) < 0.01) scaleX = 1;
@@ -7240,16 +7281,16 @@ var require_vue_app = __commonJS({
         return c2;
       }
     }
-    function getPosition(el2) {
-      const rect = el2.getBoundingClientRect();
+    function getPosition(el) {
+      const rect = el.getBoundingClientRect();
       return {
         left: rect.left,
         top: rect.top
       };
     }
-    function hasCSSTransform(el2, root2, moveClass) {
-      const clone = el2.cloneNode();
-      const _vtc = el2[vtcKey];
+    function hasCSSTransform(el, root2, moveClass) {
+      const clone = el.cloneNode();
+      const _vtc = el[vtcKey];
       if (_vtc) {
         _vtc.forEach((cls) => {
           cls.split(/\s+/).forEach((c2) => c2 && clone.classList.remove(c2));
@@ -7365,7 +7406,7 @@ var require_vue_app = __commonJS({
           $({ context, props }) {
             arg = typeof arg === "string" ? arg : arg({ context, props });
             context.bem.els = arg.split(",").map((v) => v.trim());
-            return context.bem.els.map((el2) => `${(props === null || props === void 0 ? void 0 : props.bPrefix) || _bPrefix}${context.bem.b}${_ePrefix}${el2}`).join(", ");
+            return context.bem.els.map((el) => `${(props === null || props === void 0 ? void 0 : props.bPrefix) || _bPrefix}${context.bem.b}${_ePrefix}${el}`).join(", ");
           }
         };
       }
@@ -7374,8 +7415,8 @@ var require_vue_app = __commonJS({
           $({ context, props }) {
             arg = typeof arg === "string" ? arg : arg({ context, props });
             const modifiers = arg.split(",").map((v) => v.trim());
-            function elementToSelector(el2) {
-              return modifiers.map((modifier) => `&${(props === null || props === void 0 ? void 0 : props.bPrefix) || _bPrefix}${context.bem.b}${el2 !== void 0 ? `${_ePrefix}${el2}` : ""}${_mPrefix}${modifier}`).join(", ");
+            function elementToSelector(el) {
+              return modifiers.map((modifier) => `&${(props === null || props === void 0 ? void 0 : props.bPrefix) || _bPrefix}${context.bem.b}${el !== void 0 ? `${_ePrefix}${el}` : ""}${_mPrefix}${modifier}`).join(", ");
             }
             const els = context.bem.els;
             if (els !== null) {
@@ -7478,20 +7519,20 @@ var require_vue_app = __commonJS({
       });
       return amp.join(", ").replace(extraSpaceRegex, " ");
     }
-    function removeElement(el2) {
-      if (!el2)
+    function removeElement(el) {
+      if (!el)
         return;
-      const parentElement = el2.parentElement;
+      const parentElement = el.parentElement;
       if (parentElement)
-        parentElement.removeChild(el2);
+        parentElement.removeChild(el);
     }
     function queryElement(id, parent) {
       return (parent !== null && parent !== void 0 ? parent : document.head).querySelector(`style[cssr-id="${id}"]`);
     }
     function createElement(id) {
-      const el2 = document.createElement("style");
-      el2.setAttribute("cssr-id", id);
-      return el2;
+      const el = document.createElement("style");
+      el.setAttribute("cssr-id", id);
+      return el;
     }
     function isMediaOrSupports(selector) {
       if (!selector)
@@ -7685,7 +7726,7 @@ ${unwrappedProps}
         const target = queryElement(id, parent);
         if (target && els.includes(target)) {
           removeElement(target);
-          node.els = els.filter((el2) => el2 !== target);
+          node.els = els.filter((el) => el !== target);
         }
       }
     }
@@ -10357,53 +10398,53 @@ ${style}
       setup(props, {
         slots
       }) {
-        function handleBeforeLeave(el2) {
-          if (props.width) el2.style.maxWidth = `${el2.offsetWidth}px`;
-          else el2.style.maxHeight = `${el2.offsetHeight}px`;
-          el2.offsetWidth;
+        function handleBeforeLeave(el) {
+          if (props.width) el.style.maxWidth = `${el.offsetWidth}px`;
+          else el.style.maxHeight = `${el.offsetHeight}px`;
+          el.offsetWidth;
         }
-        function handleLeave(el2) {
-          if (props.width) el2.style.maxWidth = "0";
-          else el2.style.maxHeight = "0";
-          el2.offsetWidth;
+        function handleLeave(el) {
+          if (props.width) el.style.maxWidth = "0";
+          else el.style.maxHeight = "0";
+          el.offsetWidth;
           const {
             onLeave
           } = props;
           if (onLeave) onLeave();
         }
-        function handleAfterLeave(el2) {
-          if (props.width) el2.style.maxWidth = "";
-          else el2.style.maxHeight = "";
+        function handleAfterLeave(el) {
+          if (props.width) el.style.maxWidth = "";
+          else el.style.maxHeight = "";
           const {
             onAfterLeave
           } = props;
           if (onAfterLeave) onAfterLeave();
         }
-        function handleEnter(el2) {
-          el2.style.transition = "none";
+        function handleEnter(el) {
+          el.style.transition = "none";
           if (props.width) {
-            const memorizedWidth = el2.offsetWidth;
-            el2.style.maxWidth = "0";
-            el2.offsetWidth;
-            el2.style.transition = "";
-            el2.style.maxWidth = `${memorizedWidth}px`;
+            const memorizedWidth = el.offsetWidth;
+            el.style.maxWidth = "0";
+            el.offsetWidth;
+            el.style.transition = "";
+            el.style.maxWidth = `${memorizedWidth}px`;
           } else if (props.reverse) {
-            el2.style.maxHeight = `${el2.offsetHeight}px`;
-            el2.offsetHeight;
-            el2.style.transition = "";
-            el2.style.maxHeight = "0";
+            el.style.maxHeight = `${el.offsetHeight}px`;
+            el.offsetHeight;
+            el.style.transition = "";
+            el.style.maxHeight = "0";
           } else {
-            const memorizedHeight = el2.offsetHeight;
-            el2.style.maxHeight = "0";
-            el2.offsetWidth;
-            el2.style.transition = "";
-            el2.style.maxHeight = `${memorizedHeight}px`;
+            const memorizedHeight = el.offsetHeight;
+            el.style.maxHeight = "0";
+            el.offsetWidth;
+            el.style.transition = "";
+            el.style.maxHeight = `${memorizedHeight}px`;
           }
-          el2.offsetWidth;
+          el.offsetWidth;
         }
-        function handleAfterEnter(el2) {
-          if (props.width) el2.style.maxWidth = "";
-          else if (!props.reverse) el2.style.maxHeight = "";
+        function handleAfterEnter(el) {
+          if (props.width) el.style.maxWidth = "";
+          else if (!props.reverse) el.style.maxHeight = "";
           props.onAfterEnter?.();
         }
         return () => {
@@ -10816,11 +10857,11 @@ ${style}
  height: 1em;
  width: 1em;
  `)])])]);
-    const _hoisted_1$1 = ["viewBox"];
-    const _hoisted_2$1 = ["values", "dur"];
-    const _hoisted_3$1 = ["stroke-width", "cx", "cy", "r", "stroke-dasharray", "stroke-dashoffset"];
-    const _hoisted_4$1 = ["values", "dur"];
-    const _hoisted_5$1 = ["values", "dur"];
+    const _hoisted_1$3 = ["viewBox"];
+    const _hoisted_2$3 = ["values", "dur"];
+    const _hoisted_3$3 = ["stroke-width", "cx", "cy", "r", "stroke-dasharray", "stroke-dashoffset"];
+    const _hoisted_4$2 = ["values", "dur"];
+    const _hoisted_5$2 = ["values", "dur"];
     const duration = "1.6s";
     const exposedLoadingProps = {
       strokeWidth: {
@@ -10890,7 +10931,7 @@ ${style}
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_2$1), createBaseVNode("circle", {
+          }, null, 8, _hoisted_2$3), createBaseVNode("circle", {
             class: normalizeClass$1(`${clsPrefix}-base-loading__icon`),
             fill: "none",
             stroke: "currentColor",
@@ -10909,14 +10950,14 @@ ${style}
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_4$1), createBaseVNode("animate", {
+          }, null, 8, _hoisted_4$2), createBaseVNode("animate", {
             attributeName: "stroke-dashoffset",
             values: `${5.67 * radius};${1.42 * radius};${5.67 * radius}`,
             begin: "0s",
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_5$1)], 10, _hoisted_3$1)])], 14, _hoisted_1$1))], 2)], 2)) : (openBlock(), createElementBlock("div", {
+          }, null, 8, _hoisted_5$2)], 10, _hoisted_3$3)])], 14, _hoisted_1$3))], 2)], 2)) : (openBlock(), createElementBlock("div", {
             key: "placeholder",
             class: normalizeClass$1(`${clsPrefix}-base-loading__placeholder`)
           }, [normalizeVNode(() => this.$slots.default?.())], 2))
@@ -17050,13 +17091,19 @@ ${style}
       return pick$1("toast")(msg, kind);
     }
     const PRE = new Proxy({}, { get: (_t, k) => pick$1("PRE")[k] });
+    function confirmBox(opts) {
+      return pick$1("confirmBox")(opts);
+    }
+    function legacy(name) {
+      return pick$1(name);
+    }
     function whenAuthReady(timeoutMs = 8e3) {
-      return new Promise((resolve) => {
+      return new Promise((resolve2) => {
         const t0 = Date.now();
         const tick = () => {
           const L = window.__lumeiLegacy || {};
           if (L.authReady || Date.now() - t0 > timeoutMs) {
-            resolve(!!L.authReady);
+            resolve2(!!L.authReady);
             return;
           }
           setTimeout(tick, 60);
@@ -17079,45 +17126,45 @@ ${style}
       }
       return target;
     };
-    const _hoisted_1 = { class: "rk-vue" };
-    const _hoisted_2 = { class: "rk-head" };
-    const _hoisted_3 = {
+    const _hoisted_1$2 = { class: "rk-vue" };
+    const _hoisted_2$2 = { class: "rk-head" };
+    const _hoisted_3$2 = {
       class: "rk-age",
       id: "ranksAge"
     };
-    const _hoisted_4 = { class: "rk-actions" };
-    const _hoisted_5 = {
+    const _hoisted_4$1 = { class: "rk-actions" };
+    const _hoisted_5$1 = {
       key: 0,
       id: "ranksTabs",
       class: "rk-tabs",
       role: "tablist"
     };
-    const _hoisted_6 = ["data-kind", "aria-selected", "onClick"];
-    const _hoisted_7 = {
+    const _hoisted_6$1 = ["data-kind", "aria-selected", "onClick"];
+    const _hoisted_7$1 = {
       key: 1,
       class: "rk-desc",
       id: "ranksDesc"
     };
-    const _hoisted_8 = {
+    const _hoisted_8$1 = {
       key: 2,
       class: "rk-body"
     };
-    const _hoisted_9 = {
+    const _hoisted_9$1 = {
       key: 0,
       class: "rk-skel"
     };
-    const _hoisted_10 = ["data-title", "data-kind", "onClick"];
-    const _hoisted_11 = { class: "rk-src" };
-    const _hoisted_12 = {
+    const _hoisted_10$1 = ["data-title", "data-kind", "onClick"];
+    const _hoisted_11$1 = { class: "rk-src" };
+    const _hoisted_12$1 = {
       key: 0,
       class: "rk-owned",
       title: "这本书已经在你书架里了"
     };
-    const _hoisted_13 = {
+    const _hoisted_13$1 = {
       key: 1,
       class: "rk-go"
     };
-    const _hoisted_14 = {
+    const _hoisted_14$1 = {
       key: 2,
       class: "rk-err"
     };
@@ -17125,7 +17172,7 @@ ${style}
       key: 3,
       class: "rk-err"
     };
-    const _sfc_main$1 = {
+    const _sfc_main$3 = {
       __name: "RanksPanel",
       setup(__props) {
         const RefreshIcon = {
@@ -17204,8 +17251,20 @@ ${style}
             refreshedAt.value = 0;
           } catch (e) {
             if (cur.value !== want) return;
-            error.value = e.message || String(e);
-            items.value = [];
+            try {
+              await new Promise((r) => setTimeout(r, 700));
+              if (cur.value !== want) return;
+              const d2 = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
+              if (!d2 || !d2.ok) throw new Error(d2 && d2.error || "拿不到榜单");
+              items.value = d2.items || [];
+              emptyHint.value = d2.empty_hint || "";
+              if (typeof d2.age === "number") age.value = d2.age;
+              refreshedAt.value = 0;
+            } catch (e2) {
+              if (cur.value !== want) return;
+              error.value = e2.message || String(e2);
+              items.value = [];
+            }
           } finally {
             if (cur.value === want) loading.value = false;
           }
@@ -17257,8 +17316,15 @@ ${style}
           await whenAuthReady();
           const box = document.getElementById("ranksBox");
           if (box) box.classList.toggle("folded", !!folded.value);
+          let d = null;
+          for (let attempt = 0; attempt < 2 && !d; attempt++) {
+            try {
+              d = await api.get("/api/ranks/kinds");
+            } catch {
+              if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
+            }
+          }
           try {
-            const d = await api.get("/api/ranks/kinds");
             kinds.value = d && d.kinds || [];
             if (!kinds.value.length) {
               if (box) box.hidden = true;
@@ -17280,11 +17346,11 @@ ${style}
           off2 && off2();
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1, [
-            createBaseVNode("div", _hoisted_2, [
+          return openBlock(), createElementBlock("div", _hoisted_1$2, [
+            createBaseVNode("div", _hoisted_2$2, [
               _cache[2] || (_cache[2] = createBaseVNode("h2", { class: "rk-title" }, "热门榜单", -1)),
-              createBaseVNode("span", _hoisted_3, toDisplayString(freshness.value), 1),
-              createBaseVNode("div", _hoisted_4, [
+              createBaseVNode("span", _hoisted_3$2, toDisplayString(freshness.value), 1),
+              createBaseVNode("div", _hoisted_4$1, [
                 createVNode(unref(Button), {
                   id: "ranksRefresh",
                   size: "small",
@@ -17318,7 +17384,7 @@ ${style}
                 })
               ])
             ]),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5, [
+            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5$1, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(kinds.value, (k) => {
                 return openBlock(), createElementBlock("button", {
                   key: k.kind,
@@ -17328,12 +17394,12 @@ ${style}
                   "aria-selected": k.kind === cur.value,
                   type: "button",
                   onClick: ($event) => onKindChange(k.kind)
-                }, toDisplayString(k.label), 11, _hoisted_6);
+                }, toDisplayString(k.label), 11, _hoisted_6$1);
               }), 128))
             ])) : createCommentVNode("", true),
-            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8, [
-              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9, [
+            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$1, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
+            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8$1, [
+              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$1, [
                 (openBlock(), createElementBlock(Fragment, null, renderList(6, (i) => {
                   return createVNode(unref(Skeleton_default), {
                     key: i,
@@ -17368,13 +17434,13 @@ ${style}
                         createBaseVNode("b", null, toDisplayString(it.title), 1),
                         createBaseVNode("em", null, toDisplayString(metaOf(it) || " "), 1)
                       ], 4),
-                      createBaseVNode("span", _hoisted_11, toDisplayString(it.source_display || it.source || ""), 1),
-                      isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_12, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_13, "找这本 ›"))
-                    ], 10, _hoisted_10);
+                      createBaseVNode("span", _hoisted_11$1, toDisplayString(it.source_display || it.source || ""), 1),
+                      isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_12$1, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_13$1, "找这本 ›"))
+                    ], 10, _hoisted_10$1);
                   }), 128))
                 ]),
                 _: 1
-              })) : !loading.value ? (openBlock(), createElementBlock("div", _hoisted_14, [
+              })) : !loading.value ? (openBlock(), createElementBlock("div", _hoisted_14$1, [
                 createTextVNode(toDisplayString(emptyHint.value || "这个榜单暂时没有内容。") + " ", 1),
                 createVNode(unref(Button), {
                   size: "tiny",
@@ -17414,31 +17480,338 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-3d1be91a"]]);
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$3, [["__scopeId", "data-v-deaddbb1"]]);
+    const _hoisted_1$1 = ["src"];
+    const _hoisted_2$1 = { class: "t" };
+    const _hoisted_3$1 = { class: "a" };
+    const _sfc_main$2 = {
+      __name: "BookCover",
+      props: {
+        /** 真封面外链（可空 —— 空了就用渐变色块兜底） */
+        cover: { type: String, default: "" },
+        /** 兼容旧签名：直接传色相数字，强制走渐变 */
+        hue: { type: Number, default: null },
+        title: { type: String, default: "" },
+        author: { type: String, default: "" },
+        lg: { type: Boolean, default: false }
+      },
+      setup(__props) {
+        const props = __props;
+        const hasImg = /* @__PURE__ */ ref(false);
+        const proxySrc = computed(() => {
+          if (props.hue !== null) return "";
+          const u = (props.cover || "").trim();
+          if (!u) return "";
+          return `/api/cover?u=${encodeURIComponent(u)}`;
+        });
+        watch(proxySrc, (v) => {
+          hasImg.value = !!v;
+        }, { immediate: true });
+        const hue = computed(() => {
+          if (props.hue !== null) return (props.hue % 360 + 360) % 360;
+          return (props.title || "").length * 37 % 360;
+        });
+        const gradientStyle = computed(() => {
+          if (hasImg.value) return void 0;
+          const h2 = hue.value;
+          const c1 = `hsl(${h2} 58% 50%)`;
+          const c2 = `hsl(${(h2 + 38) % 360} 54% 34%)`;
+          return { background: `linear-gradient(150deg,${c1},${c2})` };
+        });
+        const shortTitle = computed(() => (props.title || "?").slice(0, 7));
+        const shortAuthor = computed(() => (props.author || "佚名").slice(0, 6));
+        return (_ctx, _cache) => {
+          return openBlock(), createElementBlock("div", {
+            class: normalizeClass(["cover", { lg: __props.lg, "has-img": hasImg.value }]),
+            style: normalizeStyle(gradientStyle.value)
+          }, [
+            proxySrc.value ? (openBlock(), createElementBlock("img", {
+              key: 0,
+              src: proxySrc.value,
+              alt: "",
+              loading: "lazy",
+              decoding: "async",
+              onError: _cache[0] || (_cache[0] = ($event) => hasImg.value = false)
+            }, null, 40, _hoisted_1$1)) : createCommentVNode("", true),
+            createBaseVNode("div", _hoisted_2$1, toDisplayString(shortTitle.value), 1),
+            createBaseVNode("div", _hoisted_3$1, toDisplayString(shortAuthor.value), 1)
+          ], 6);
+        };
+      }
+    };
+    const _hoisted_1 = { class: "wrap" };
+    const _hoisted_2 = { class: "filters" };
+    const _hoisted_3 = {
+      id: "shelfStat",
+      class: "shelf-stat"
+    };
+    const _hoisted_4 = {
+      key: 0,
+      class: "shelfgrid",
+      id: "shelfList"
+    };
+    const _hoisted_5 = {
+      key: 1,
+      class: "shelfgrid",
+      id: "shelfList"
+    };
+    const _hoisted_6 = ["data-id"];
+    const _hoisted_7 = { class: "info" };
+    const _hoisted_8 = { class: "by" };
+    const _hoisted_9 = { class: "prog" };
+    const _hoisted_10 = { class: "lb" };
+    const _hoisted_11 = { class: "bar" };
+    const _hoisted_12 = { class: "lb" };
+    const _hoisted_13 = { class: "bar" };
+    const _hoisted_14 = { class: "acts" };
+    const _sfc_main$1 = {
+      __name: "ShelfPanel",
+      setup(__props) {
+        const books = /* @__PURE__ */ ref([]);
+        const loading = /* @__PURE__ */ ref(true);
+        const statText = computed(() => books.value.length ? `共 ${books.value.length} 本` : "");
+        function readPct(b) {
+          const total = b.total || 0;
+          const pos = b.position || {};
+          if (!total) return 0;
+          return Math.min(100, ((pos.index || 1) - 1 + (pos.percent || 0)) / total * 100);
+        }
+        function cachePct(b) {
+          const total = b.total || 0;
+          if (!total) return 0;
+          return Math.min(100, (b.cached || 0) / total * 100);
+        }
+        let gotData = false;
+        async function reload() {
+          loading.value = true;
+          armSafety();
+          try {
+            await legacy("loadShelf")();
+          } catch (e) {
+            toast("读取书架失败：" + e.message, "err");
+            loading.value = false;
+          }
+        }
+        const onLoaded = (list) => {
+          gotData = true;
+          books.value = Array.isArray(list) ? list : [];
+          loading.value = false;
+          clearTimeout(safety);
+        };
+        let safety = null;
+        function armSafety() {
+          clearTimeout(safety);
+          safety = setTimeout(() => {
+            loading.value = false;
+          }, 15e3);
+        }
+        async function onAct(b, a) {
+          if (a === "read") bus.emit("shelf:read", b);
+          else if (a === "export") {
+            bus.emit("shelf:export", { library_id: b.id, title: b.title, author: b.author });
+          } else if (a === "cache") {
+            bus.emit("shelf:cache", { id: b.id, title: b.title });
+          } else if (a === "del") {
+            const yes = await confirmBox({
+              title: "移出书架",
+              message: `把《${b.title}》移出书架？已经缓存的正文章节会一起删掉，下次要重新去网上抓。`,
+              okText: "移出",
+              danger: true
+            });
+            if (!yes) return;
+            try {
+              await api.del("/api/library/" + b.id);
+              toast("已移出书架");
+              reload();
+            } catch (e) {
+              toast("移出失败：" + e.message, "err");
+            }
+          }
+        }
+        onMounted(async () => {
+          await whenAuthReady();
+          bus.on("shelf:loaded", onLoaded);
+          loading.value = true;
+          setTimeout(() => {
+            if (!gotData) reload();
+          }, 200);
+        });
+        onUnmounted(() => {
+          bus.off("shelf:loaded", onLoaded);
+          clearTimeout(safety);
+        });
+        return (_ctx, _cache) => {
+          return openBlock(), createElementBlock("div", _hoisted_1, [
+            createBaseVNode("div", _hoisted_2, [
+              _cache[1] || (_cache[1] = createBaseVNode("div", { class: "shelf-h" }, "我的书架", -1)),
+              createBaseVNode("span", _hoisted_3, toDisplayString(statText.value), 1),
+              _cache[2] || (_cache[2] = createBaseVNode("div", { class: "spacer" }, null, -1)),
+              createVNode(unref(Button), {
+                id: "btnShelfReload",
+                size: "small",
+                quaternary: "",
+                loading: loading.value,
+                onClick: reload
+              }, {
+                default: withCtx(() => [..._cache[0] || (_cache[0] = [
+                  createTextVNode(" 刷新 ", -1)
+                ])]),
+                _: 1
+              }, 8, ["loading"])
+            ]),
+            loading.value && !books.value.length ? (openBlock(), createElementBlock("div", _hoisted_4, [
+              (openBlock(), createElementBlock(Fragment, null, renderList(4, (i) => {
+                return createBaseVNode("div", {
+                  key: i,
+                  class: "shelf sk"
+                }, [..._cache[3] || (_cache[3] = [
+                  createStaticVNode('<div class="sk-cover" data-v-f5c78a01></div><div class="info" data-v-f5c78a01><div class="sk-line w60" data-v-f5c78a01></div><div class="sk-line w40" data-v-f5c78a01></div><div class="sk-line w80 tall" data-v-f5c78a01></div></div>', 2)
+                ])]);
+              }), 64))
+            ])) : (openBlock(), createElementBlock("div", _hoisted_5, [
+              (openBlock(true), createElementBlock(Fragment, null, renderList(books.value, (b, i) => {
+                return openBlock(), createElementBlock("div", {
+                  key: b.id,
+                  class: "shelf",
+                  "data-id": b.id,
+                  style: normalizeStyle({ "--mo-i": i })
+                }, [
+                  createVNode(_sfc_main$2, {
+                    cover: b.cover,
+                    title: b.title,
+                    author: b.author
+                  }, null, 8, ["cover", "title", "author"]),
+                  createBaseVNode("div", _hoisted_7, [
+                    createBaseVNode("h4", null, toDisplayString(b.title), 1),
+                    createBaseVNode("div", _hoisted_8, toDisplayString(b.author || "作者未知") + " · " + toDisplayString(b.source_display || b.source || ""), 1),
+                    createBaseVNode("div", _hoisted_9, [
+                      createBaseVNode("div", null, [
+                        createBaseVNode("div", _hoisted_10, [
+                          createBaseVNode("span", null, "读到 " + toDisplayString(b.position?.index || 1) + "/" + toDisplayString(b.total || "?") + " 章", 1),
+                          createBaseVNode("span", null, toDisplayString(readPct(b).toFixed(0)) + "%", 1)
+                        ]),
+                        createBaseVNode("div", _hoisted_11, [
+                          createBaseVNode("i", {
+                            style: normalizeStyle({ width: readPct(b) + "%" })
+                          }, null, 4)
+                        ])
+                      ]),
+                      createBaseVNode("div", null, [
+                        createBaseVNode("div", _hoisted_12, [
+                          createBaseVNode("span", null, "已缓存 " + toDisplayString(b.cached || 0) + " 章", 1),
+                          createBaseVNode("span", null, toDisplayString(cachePct(b).toFixed(0)) + "%", 1)
+                        ]),
+                        createBaseVNode("div", _hoisted_13, [
+                          createBaseVNode("i", {
+                            style: normalizeStyle({ width: cachePct(b) + "%", background: "var(--ok)" })
+                          }, null, 4)
+                        ])
+                      ])
+                    ]),
+                    createBaseVNode("div", _hoisted_14, [
+                      createVNode(unref(Button), {
+                        size: "small",
+                        type: "primary",
+                        "data-a": "read",
+                        onClick: ($event) => onAct(b, "read")
+                      }, {
+                        default: withCtx(() => [
+                          createTextVNode(toDisplayString(readPct(b) > 1 ? "继续阅读" : "开始阅读"), 1)
+                        ]),
+                        _: 2
+                      }, 1032, ["onClick"]),
+                      createVNode(unref(Button), {
+                        size: "small",
+                        "data-a": "cache",
+                        onClick: ($event) => onAct(b, "cache")
+                      }, {
+                        default: withCtx(() => [..._cache[4] || (_cache[4] = [
+                          createTextVNode("缓存全书", -1)
+                        ])]),
+                        _: 1
+                      }, 8, ["onClick"]),
+                      createVNode(unref(Button), {
+                        size: "small",
+                        "data-a": "export",
+                        onClick: ($event) => onAct(b, "export")
+                      }, {
+                        default: withCtx(() => [..._cache[5] || (_cache[5] = [
+                          createTextVNode("导出", -1)
+                        ])]),
+                        _: 1
+                      }, 8, ["onClick"]),
+                      createVNode(unref(Button), {
+                        size: "small",
+                        quaternary: "",
+                        "data-a": "del",
+                        onClick: ($event) => onAct(b, "del")
+                      }, {
+                        default: withCtx(() => [..._cache[6] || (_cache[6] = [
+                          createTextVNode("移除", -1)
+                        ])]),
+                        _: 1
+                      }, 8, ["onClick"])
+                    ])
+                  ])
+                ], 12, _hoisted_6);
+              }), 128))
+            ])),
+            createBaseVNode("div", {
+              id: "shelfEmpty",
+              class: normalizeClass(["empty", { hidden: books.value.length > 0 || loading.value }])
+            }, [..._cache[7] || (_cache[7] = [
+              createBaseVNode("div", {
+                class: "empty-art",
+                "aria-hidden": "true"
+              }, null, -1),
+              createBaseVNode("h3", null, "书架空空，噜噜睡得正香", -1),
+              createBaseVNode("p", null, "在「发现」里点「开始阅读」，书就会落到这里 —— 之后打开秒进，断网也能看。", -1)
+            ])], 2)
+          ]);
+        };
+      }
+    };
+    const ShelfPanel = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-f5c78a01"]]);
     const _sfc_main = {
       __name: "App",
+      props: {
+        /** 这个 app 实例负责渲染哪个组件（见 main.js 的 MOUNTS） */
+        only: { type: String, default: "" }
+      },
       setup(__props) {
-        const mountRanks = /* @__PURE__ */ ref(!!document.querySelector("[data-vue-ranks]"));
+        const props = __props;
+        const REGISTRY = { RanksPanel, ShelfPanel };
+        const comp = computed(() => REGISTRY[props.only] || RanksPanel);
         return (_ctx, _cache) => {
           return openBlock(), createBlock(unref(ConfigProvider_default), {
             theme: unref(themeState).theme,
             "theme-overrides": unref(themeState).overrides
           }, {
             default: withCtx(() => [
-              mountRanks.value ? (openBlock(), createBlock(RanksPanel, { key: 0 })) : createCommentVNode("", true)
+              (openBlock(), createBlock(resolveDynamicComponent(comp.value)))
             ]),
             _: 1
           }, 8, ["theme", "theme-overrides"]);
         };
       }
     };
-    const el = document.getElementById("vue-root");
-    if (el) {
-      const app = createApp(_sfc_main);
-      installLumeiTheme(app);
-      app.mount(el);
-    } else {
-      console.info("[lumei] 未找到 #vue-root，跳过 Vue 挂载（该页尚未迁移）");
+    const MOUNTS = [
+      { name: "RanksPanel", sel: "[data-vue-ranks]" },
+      { name: "ShelfPanel", sel: "[data-vue-shelf]" }
+    ];
+    let mounted = 0;
+    for (const m of MOUNTS) {
+      const hosts = document.querySelectorAll(m.sel);
+      hosts.forEach((host) => {
+        const target = host.firstElementChild || host;
+        const app = createApp(_sfc_main, { only: m.name });
+        installLumeiTheme(app);
+        app.mount(target);
+        mounted++;
+      });
+    }
+    if (!mounted) {
+      console.info("[lumei] 没有找到 Vue 挂载点，跳过（该页尚未迁移）");
     }
   }
 });

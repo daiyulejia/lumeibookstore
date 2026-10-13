@@ -1,26 +1,31 @@
 <!--
-  App.vue · Vue 应用的根组件
-  ==========================================================================
-  迁移期这个组件只负责一件事：把 Naive 的主题配置包在最外层，
-  然后把具体页面交给子组件。
+  Vue 应用根组件。
+  ============================================================================
+  迁移期的挂载策略：**一个容器一个 app 实例**（见 src/main.js 的注释）。
+  这里用 `only` prop 决定这个实例该渲染哪个页面组件 ——
+  因为 Vue 只能把整棵树渲进一个元素里，不能"一个 app 同时管两处
+  互不相邻的 DOM"（踩过：书架组件被渲进了榜单区内部）。
 
-  注意 NConfigProvider 必须在最外层 —— 里面任何 Naive 组件都靠它拿主题。
-  它不吃 DOM 尺寸（默认就是个透传包装），所以不会影响现有布局。
+  `only` 由 main.js 按容器上的 `data-vue-*` 标记传入。
 -->
 <template>
   <n-config-provider :theme="themeState.theme" :theme-overrides="themeState.overrides">
-    <RanksPanel v-if="mountRanks" />
+    <component :is="comp" />
   </n-config-provider>
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { computed } from "vue";
 import { NConfigProvider } from "naive-ui";
 import { themeState } from "./theme/naive.js";
 import RanksPanel from "./components/RanksPanel.vue";
+import ShelfPanel from "./components/ShelfPanel.vue";
 
-// 只有当页面上真的存在榜单容器、且它被标记为「交给 Vue」时才挂载组件。
-// 这样旧代码和 Vue 可以在同一页面共存而不打架：
-// 以后某页迁完了就在它的容器上加 data-vue-ranks，没迁的页不加。
-const mountRanks = ref(!!document.querySelector("[data-vue-ranks]"));
+const props = defineProps({
+  /** 这个 app 实例负责渲染哪个组件（见 main.js 的 MOUNTS） */
+  only: { type: String, default: "" },
+});
+
+const REGISTRY = { RanksPanel, ShelfPanel };
+const comp = computed(() => REGISTRY[props.only] || RanksPanel);
 </script>

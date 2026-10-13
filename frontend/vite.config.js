@@ -57,6 +57,22 @@ export default defineConfig({
     cssCodeSplit: false,
     rollupOptions: {
       input: fileURLToPath(new URL("./src/main.js", import.meta.url)),
+      /**
+       * ⚠ 不要在这里把 `/static/**` 配成 external —— 踩过，后果很重。
+       *
+       * 症状：源码里写 `<img src="/static/img/xxx.webp">` 时
+       *   @vitejs/plugin-vue 会把 src 当模块引用交给 rollup，
+       *   不处理就报 "failed to resolve import"，构建直接失败。
+       *   于是有人（我）顺手加了 external → 构建过了，但产物里留下
+       *   `import x from "/static/img/xxx.webp";` —— 浏览器把 webp
+       *   当 JS 模块去加载，**整份 vue-app.js 都执行不了**：
+       *   连没改过的榜单区也一起白屏，控制台还只有一句
+       *   "Failed to fetch dynamically imported module"，极难定位。
+       *
+       * 正确做法：**别在模板里引 /static 资源**。
+       *   改用 CSS background（路径原样进样式表，绕开模块解析），
+       *   见 ShelfPanel.vue 的 .empty-art。
+       */
       output: {
         // 固定文件名 —— 版本靠 index.html 的 ?v= 查询串控制，
         // 不走内容哈希，这样 index.html 里的引用是稳定的，不用每次改 HTML。

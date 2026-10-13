@@ -2,29 +2,29 @@
 /* 组件级样式：只作用于本组件（Vue 的 scoped 自动加属性选择器），
    不会污染全站 —— 这也是相对旧方式的一个实实在在的改进：
    旧代码所有样式都堆在 app.css，改一个类要担心是不是别处在用。 */
-.rk-vue[data-v-3d1be91a] { display: block;
+.rk-vue[data-v-deaddbb1] { display: block;
 }
-.rk-head[data-v-3d1be91a] { display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+.rk-head[data-v-deaddbb1] { display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
 }
-.rk-title[data-v-3d1be91a] { font: 700 15px/1.2 var(--font-ui, system-ui); color: var(--t-1); margin: 0;
+.rk-title[data-v-deaddbb1] { font: 700 15px/1.2 var(--font-ui, system-ui); color: var(--t-1); margin: 0;
 }
-.rk-age[data-v-3d1be91a] { font-size: 12px; color: var(--t-3);
+.rk-age[data-v-deaddbb1] { font-size: 12px; color: var(--t-3);
 }
-.rk-actions[data-v-3d1be91a] { margin-left: auto; display: flex; gap: 4px;
+.rk-actions[data-v-deaddbb1] { margin-left: auto; display: flex; gap: 4px;
 }
-.rk-tabs[data-v-3d1be91a] { margin-bottom: 8px;
+.rk-tabs[data-v-deaddbb1] { margin-bottom: 8px;
 }
-.rk-desc[data-v-3d1be91a] { font-size: 12px; color: var(--t-3); margin: 2px 0 10px; min-height: 16px;
+.rk-desc[data-v-deaddbb1] { font-size: 12px; color: var(--t-3); margin: 2px 0 10px; min-height: 16px;
 }
 
 /* 标签：与旧版视觉一致（旧版在 app.css 里，已随迁移删除）。
    选中态走噜噜橙 —— 品牌层 lumei.css 也有一条 `.rk-tab.on` 覆盖，
    两条不冲突：这里给基线，主题层给"噜妹味"。 */
-.rk-tabs[data-v-3d1be91a] { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 9px;
+.rk-tabs[data-v-deaddbb1] { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 9px;
 }
-.rk-tabs[data-v-3d1be91a]::-webkit-scrollbar { display: none;
+.rk-tabs[data-v-deaddbb1]::-webkit-scrollbar { display: none;
 }
-.rk-tab[data-v-3d1be91a] {
+.rk-tab[data-v-deaddbb1] {
   flex: none;
   border: 1px solid var(--s-line, #eee0c9);
   background: var(--s-card-2, #fcf6ea);
@@ -36,20 +36,20 @@
   white-space: nowrap;
   transition: background .18s, border-color .18s, color .18s;
 }
-.rk-tab[data-v-3d1be91a]:hover { border-color: var(--a-line, #f0d3a4); color: var(--t-1);
+.rk-tab[data-v-deaddbb1]:hover { border-color: var(--a-line, #f0d3a4); color: var(--t-1);
 }
-.rk-tab.on[data-v-3d1be91a] {
+.rk-tab.on[data-v-deaddbb1] {
   background: var(--a-1);
   border-color: var(--a-1);
   color: var(--a-ink, #fff);
 }
-.rk-skel[data-v-3d1be91a] { display: flex; flex-direction: column; gap: 6px;
+.rk-skel[data-v-deaddbb1] { display: flex; flex-direction: column; gap: 6px;
 }
-.rk-list[data-v-3d1be91a] { display: flex; flex-direction: column; gap: 6px;
+.rk-list[data-v-deaddbb1] { display: flex; flex-direction: column; gap: 6px;
 }
 
 /* 入场错峰：--mo-i 由 stagger() 写，样式只描述"怎么动" */
-.rk-item[data-v-3d1be91a] {
+.rk-item[data-v-deaddbb1] {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -62,27 +62,27 @@
   font: inherit;
   color: inherit;
   width: 100%;
-  animation: rk-in-3d1be91a .42s var(--ease-out, cubic-bezier(.16,1,.3,1)) both;
+  animation: rk-in-deaddbb1 .42s var(--ease-out, cubic-bezier(.16,1,.3,1)) both;
   animation-delay: calc(var(--mo-i, 0) * 34ms);
   transition: background .18s, border-color .18s;
 }
-.rk-item[data-v-3d1be91a]:hover { background: var(--s-card-2, #fcf6ea); border-color: var(--s-line, #eee0c9);
+.rk-item[data-v-deaddbb1]:hover { background: var(--s-card-2, #fcf6ea); border-color: var(--s-line, #eee0c9);
 }
-.rk-item.owned[data-v-3d1be91a] { background: color-mix(in srgb, var(--ok-bg, #eaf3ea) 46%, transparent);
+.rk-item.owned[data-v-deaddbb1] { background: color-mix(in srgb, var(--ok-bg, #eaf3ea) 46%, transparent);
 }
-@keyframes rk-in-3d1be91a {
+@keyframes rk-in-deaddbb1 {
 from { opacity: 0; transform: translateY(8px);
 }
 to { opacity: 1; transform: none;
 }
 }
-.rk-item-enter-active[data-v-3d1be91a], .rk-item-leave-active[data-v-3d1be91a] { transition: all .28s var(--ease-out, ease);
+.rk-item-enter-active[data-v-deaddbb1], .rk-item-leave-active[data-v-deaddbb1] { transition: all .28s var(--ease-out, ease);
 }
-.rk-item-enter-from[data-v-3d1be91a] { opacity: 0; transform: translateY(8px);
+.rk-item-enter-from[data-v-deaddbb1] { opacity: 0; transform: translateY(8px);
 }
-.rk-item-leave-to[data-v-3d1be91a] { opacity: 0; transform: translateX(-8px);
+.rk-item-leave-to[data-v-deaddbb1] { opacity: 0; transform: translateX(-8px);
 }
-.rk-no[data-v-3d1be91a] {
+.rk-no[data-v-deaddbb1] {
   width: 24px; height: 24px; flex: none;
   display: grid; place-items: center;
   border-radius: 8px;
@@ -90,42 +90,85 @@ to { opacity: 1; transform: none;
   background: var(--s-card-3, #f6ecda);
   color: var(--t-2);
 }
-.rk-no.m1[data-v-3d1be91a] { background: linear-gradient(140deg, #f6b95c, #e8912f); color: #fff;
+.rk-no.m1[data-v-deaddbb1] { background: linear-gradient(140deg, #f6b95c, #e8912f); color: #fff;
 }
-.rk-no.m2[data-v-3d1be91a] { background: linear-gradient(140deg, #c9d2dd, #a9b6c4); color: #fff;
+.rk-no.m2[data-v-deaddbb1] { background: linear-gradient(140deg, #c9d2dd, #a9b6c4); color: #fff;
 }
-.rk-no.m3[data-v-3d1be91a] { background: linear-gradient(140deg, #e3b98c, #c9915f); color: #fff;
+.rk-no.m3[data-v-deaddbb1] { background: linear-gradient(140deg, #e3b98c, #c9915f); color: #fff;
 }
-.rk-ttl[data-v-3d1be91a] { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px;
+.rk-ttl[data-v-deaddbb1] { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px;
 }
-.rk-ttl b[data-v-3d1be91a] {
+.rk-ttl b[data-v-deaddbb1] {
   font: 600 14px/1.3 var(--font-ui, system-ui);
   color: var(--t-1);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.rk-ttl em[data-v-3d1be91a] { font-style: normal; font-size: 12px; color: var(--t-3);
+.rk-ttl em[data-v-deaddbb1] { font-style: normal; font-size: 12px; color: var(--t-3);
 }
-.rk-src[data-v-3d1be91a] { font-size: 12px; color: var(--t-4, var(--t-3)); flex: none;
+.rk-src[data-v-deaddbb1] { font-size: 12px; color: var(--t-4, var(--t-3)); flex: none;
 }
-.rk-go[data-v-3d1be91a] { font-size: 12px; color: var(--a-1); opacity: 0; flex: none; transition: opacity .18s;
+.rk-go[data-v-deaddbb1] { font-size: 12px; color: var(--a-1); opacity: 0; flex: none; transition: opacity .18s;
 }
-.rk-item:hover .rk-go[data-v-3d1be91a] { opacity: 1;
+.rk-item:hover .rk-go[data-v-deaddbb1] { opacity: 1;
 }
-.rk-owned[data-v-3d1be91a] { font-size: 12px; color: var(--ok); flex: none;
+.rk-owned[data-v-deaddbb1] { font-size: 12px; color: var(--ok); flex: none;
 }
-.rk-err[data-v-3d1be91a] { font-size: 13px; color: var(--t-2); padding: 16px 4px; display: flex; align-items: center; gap: 8px;
+.rk-err[data-v-deaddbb1] { font-size: 13px; color: var(--t-2); padding: 16px 4px; display: flex; align-items: center; gap: 8px;
 }
 
 /* 底部说明 + 回书架入口 */
-.rk-foot[data-v-3d1be91a] {
+.rk-foot[data-v-deaddbb1] {
   margin-top: 12px; padding-top: 10px;
   border-top: 1px solid var(--s-line-2, #f7eedd);
   font-size: 12px; color: var(--t-3);
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
 }
-.rk-link[data-v-3d1be91a] {
+.rk-link[data-v-deaddbb1] {
   background: none; border: 0; padding: 0; cursor: pointer;
   font: inherit; color: var(--a-1);
 }
-.rk-link[data-v-3d1be91a]:hover { text-decoration: underline;
+.rk-link[data-v-deaddbb1]:hover { text-decoration: underline;
+}
+
+.shelf-h[data-v-f5c78a01] {
+  font-size: 19px;
+  font-weight: 800;
+}
+.shelf-stat[data-v-f5c78a01] {
+  font-size: 13px;
+  color: var(--t-3);
+}
+.sk .sk-cover[data-v-f5c78a01] {
+  width: 66px;
+  height: 92px;
+  border-radius: var(--r-s);
+  background: var(--s-line-2);
+  flex: 0 0 auto;
+}
+.sk-line[data-v-f5c78a01] {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--s-line-2);
+  margin-bottom: 9px;
+}
+.sk-line.w60[data-v-f5c78a01] { width: 60%;
+}
+.sk-line.w40[data-v-f5c78a01] { width: 40%;
+}
+.sk-line.w80[data-v-f5c78a01] { width: 80%;
+}
+.sk-line.tall[data-v-f5c78a01] { height: 22px;
+}
+
+/* 空书架插画。
+   ⚠ 用 background 而不是 <img>（原因见模板里的注释：<img src="/static/...">
+     会被 Vite 当模块解析，external 又会留下坏 import 把整份产物拖垮）。
+   .empty-art 的公共样式（宽度/圆角/阴影/主题降饱和）在 lumei.css 里，
+   这里只补 div 缺的那部分：因为是 div 没有内在尺寸，
+   要自己给 aspect-ratio 撑出原图的比例（480×360 = 4:3）。 */
+.empty-art[data-v-f5c78a01] {
+  aspect-ratio: 480 / 360;
+  background-image: url("/static/img/lumei/empty_sleep@480.webp");
+  background-size: cover;
+  background-position: center;
 }

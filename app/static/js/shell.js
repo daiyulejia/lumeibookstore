@@ -106,11 +106,25 @@ function showAuthGate() {
 /** 从链接里的 ?t=xxx 取令牌：分享出去的链接带令牌，进来一次就记住。 */
 export async function bootstrapAuth() {
   const u = new URL(location.href);
-  const t = u.searchParams.get("t");
+  let t = u.searchParams.get("t");
+  // ⚠ 兜底：`?t=` 可能被写在 `#` **后面**（`/` + `#shelf?t=x`）。
+  //   那种情况下它属于 fragment，searchParams 根本看不到 ——
+  //   于是令牌被静默丢掉、整站 401，而地址栏看着"明明带着令牌"。
+  //   真踩过：写测试时把 `#shelf` 写在前面，7 项断言全红，
+  //   排查很久才发现是"令牌放错位置"而不是功能坏了。
+  //   用户分享 `#shelf` 深链时同样会踩，所以这里兜住。
+  if (!t && u.hash.includes("t=")) {
+    const h = new URLSearchParams(u.hash.replace(/^#/, "").replace(/^[^?]*/, ""));
+    t = h.get("t");
+  }
   if (t) {
     TOKEN.set(t);
     // 从地址栏抹掉 —— 不然令牌会留在浏览器历史/别人看到的地址里
     u.searchParams.delete("t");
+    // hash 里那份也要抹（否则刷新一次又会被再读一遍，永远清不掉）
+    if (u.hash.includes("t=")) {
+      u.hash = u.hash.replace(/([?&])t=[^&]*&?/, "$1").replace(/[?&]$/, "");
+    }
     try { history.replaceState(null, "", u.pathname + u.search + u.hash); } catch {}
   }
   try {

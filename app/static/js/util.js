@@ -51,12 +51,42 @@ export const PRE = {
    例：shelf 需要知道「阅读器关了要刷新」，但它不该 import reader。 */
 const _subs = new Map();
 export const bus = {
+  /**
+   * 订阅。**返回一个退订函数**（调它等于 bus.off(ev, fn)）。
+   *
+   * ⚠ 为什么要有返回值：Vue 组件里最自然的写法是
+   *     `const off = bus.on("x", fn); ... onUnmounted(() => off())`。
+   *   如果 on 不返回东西，`off` 就是 undefined —— `onUnmounted` 里
+   *   `off && off()` 静默什么都不做，**监听泄漏且毫无报错**
+   *   （真踩过：RanksPanel 的 off1/off2 一直是 undefined）。
+   *   返回退订函数是这件事唯一不容易写错的接口。
+   */
   on(ev, fn) {
     if (!_subs.has(ev)) _subs.set(ev, []);
     _subs.get(ev).push(fn);
+    return () => bus.off(ev, fn);
+  },
+  /* 摘掉监听。
+     ⚠ 为什么必须补这个（原来只有 on/emit）：Vue 组件迁进来之后，
+       组件会**随页面切换反复挂载/卸载**。旧代码是一次性 mount、
+       永不卸载，所以没有 off 也一直没暴露问题；组件一旦卸载却留着
+       监听，切回来再挂一次就是**第二份**监听 ——
+       表现是"缓存跑完书架刷了两遍 / 阅读器关闭后刷了两次"，
+       而且每次来回切都多一份，越来越慢。 */
+  off(ev, fn) {
+    const arr = _subs.get(ev);
+    if (!arr) return;
+    if (!fn) { _subs.delete(ev); return; }
+    const i = arr.indexOf(fn);
+    if (i >= 0) arr.splice(i, 1);
+    if (!arr.length) _subs.delete(ev);
   },
   emit(ev, data) {
-    (_subs.get(ev) || []).forEach(fn => { try { fn(data); } catch (e) { console.error(e); } });
+    // 复制一份再遍历：回调里如果调了 off（很可能，比如"只响应一次"），
+    // 直接遍历原数组会因为 splice 而漏掉后面那几个监听者。
+    (_subs.get(ev) || []).slice().forEach(fn => {
+      try { fn(data); } catch (e) { console.error(e); }
+    });
   },
 };
 
@@ -243,4 +273,5 @@ export async function copyText(s) {
    ========================================================================== */
 window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, {
   $, $$, esc, fmtSize, fmtTime, PRE, bus, TOKEN, api, toast, confirmBox, copyText,
+  debounce,
 });
