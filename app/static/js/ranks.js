@@ -168,24 +168,36 @@ export async function loadRanks(kind) {
 
   list.innerHTML = skeleton();
   RK.loading = true;
+  // ⚠ 把「我这次要的是哪一类」记成快照。
+  //
+  // 原来的写法两处都直接用 RK.cur —— 可 `await` 期间用户可能已经切走了，
+  // `RK.cur` 早变了。后果是**旧榜单的数据被写进新标签的缓存键**：
+  //   用户点「总点击榜」→ 还没回来就点「推荐票榜」
+  //   → 总点击榜的响应回来，`RK.cache.set(RK.cur, items)` 用的是**推荐票榜**的 key
+  //   → 之后切回推荐票榜，命中缓存，看到的是总点击榜的内容（而且不会再去请求）。
+  // 用快照：请求谁、缓存写给谁，都认准发起时那一个。
+  const want = RK.cur;
   try {
-    const d = await api.get(`/api/ranks?kind=${encodeURIComponent(RK.cur)}`);
+    const d = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
     if (!d || !d.ok) throw new Error((d && d.error) || "拿不到榜单");
     const items = d.items || [];
-    RK.cache.set(RK.cur, items);
+    RK.cache.set(want, items);
     if (typeof d.age === "number") { RK.age = d.age; RK.refreshedAt = 0; }
     // 用户可能已经切走了，别把旧结果盖上去
-    if (RK.cur !== (d.kind || RK.cur)) return;
+    if (RK.cur !== want) return;
     list.innerHTML = items.length ? items.map(itemHTML).join("") : emptyHTML(d.empty_hint);
     bindItems();
     paintFreshness();
   } catch (e) {
+    if (RK.cur !== want) return;      // 已经切走了，别把错误盖到新标签上
     list.innerHTML = `<div class="rk-err">没拿到榜单：${esc(e.message || e)}
       <button class="btn ghost sm" id="rkRetry">重试</button></div>`;
     const rt = $("#rkRetry");
     if (rt) rt.onclick = () => loadRanks();
   } finally {
-    RK.loading = false;
+    // ⚠ 只有「我还是当前那次」才能清 loading —— 否则旧请求收尾会
+    //   把新请求的 loading 状态清掉（新请求还在跑，界面却以为完事了）。
+    if (RK.cur === want) RK.loading = false;
   }
 }
 

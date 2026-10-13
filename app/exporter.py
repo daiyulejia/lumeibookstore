@@ -100,9 +100,29 @@ def safe_dirname(name: str) -> str:
 
 
 def _unique(path: Path) -> Path:
+    """给一个不冲突的落盘路径。
+
+    ⚠ 以前是「不存在就直接用，否则加秒级时间戳」—— 有两个问题：
+      ① 只**检查一次**，加完时间戳也不回头确认那个名字是否已存在；
+      ② 时间戳是**秒级**的。
+    于是同一秒内导出两次同一本书（用户手快连点两下、或前端重试），
+    第二次算出的 `书名_作者_1758…txt` 恰好就是第一次那个名字，函数
+    照样返回它，`write_text` 把**第一份覆盖掉** —— 用户看到"导出了两次，
+    文件还是只有一个，而且第一次的内容没了"。
+    （实测：`_unique()` 两次调用返回同一路径。）
+
+    改成**循环计数**：从 `_1` 开始往后试，直到真的不存在为止。
+    比时间戳更语义化，也不依赖时钟精度。
+    """
     if not path.exists():
         return path
-    return path.with_name(f"{path.stem}_{int(time.time())}{path.suffix}")
+    stem, suffix = path.stem, path.suffix
+    for i in range(1, 1000):
+        cand = path.with_name(f"{stem}_{i}{suffix}")
+        if not cand.exists():
+            return cand
+    # 1000 个都没空位 —— 极不可能；退回时间戳（带毫秒，避免再撞）
+    return path.with_name(f"{stem}_{int(time.time() * 1000)}{suffix}")
 
 
 def _meta_lines(book: Book, valid: list[Chapter]) -> list[str]:

@@ -27,7 +27,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.exporter import safe_dirname, safe_filename  # noqa: E402
+from app.exporter import _unique, safe_dirname, safe_filename  # noqa: E402
 
 FAILS: list[str] = []
 
@@ -149,6 +149,61 @@ try:
 finally:
     import shutil  # noqa: E402
     shutil.rmtree(_tmp, ignore_errors=True)
+
+# ===========================================================================
+# [8] 导出重名不覆盖（_unique）
+# ===========================================================================
+# 真 bug：`_unique()` 以前是「不存在就用，否则加**秒级**时间戳」——
+#   ① 只检查一次，加完时间戳**不回头确认**那个名字是否已存在；
+#   ② 时间戳精度是秒。
+# 于是同一秒内导出两次同一本书（连点两下 / 前端重试），第二次算出的
+# `书名_作者_1758….txt` 恰好就是第一次那个名字 → `write_text` **覆盖**。
+# 用户表现：导出了两次，文件只有一个，且第一次的内容没了。
+print()
+print("── 8. 导出重名不覆盖（_unique） ─────────────────────────────────")
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+_dtmp = tempfile.mkdtemp(prefix="nd-uniq-")
+try:
+    base = Path(_dtmp) / "三体_刘慈欣.txt"
+
+    # 不存在时原样返回
+    check(str(_unique(base)), str(base), "目标不存在时原样返回（不瞎加后缀）")
+
+    # 存在一次 → 得到 _1
+    base.write_text("first", encoding="utf-8")
+    p1 = _unique(base)
+    check(p1.name, "三体_刘慈欣_1.txt", "重名时加 _1 后缀")
+
+    # ★ 核心：连续调用多次必须**每次都不同**（旧实现同秒内会返回同一个）
+    p1.write_text("second", encoding="utf-8")
+    p2 = _unique(base)
+    check(p2.name, "三体_刘慈欣_2.txt", "再重名时继续往后计数（不是重复 _1）")
+    check(p1 != p2, True, "两次调用给出的路径必须不同（旧实现会相同→覆盖）")
+
+    p2.write_text("third", encoding="utf-8")
+    p3 = _unique(base)
+    check(p3.name, "三体_刘慈欣_3.txt", "第三次是 _3")
+
+    # 真实落盘验证：三个文件**都还在**、内容各自独立
+    check(base.read_text(encoding="utf-8"), "first", "原始文件内容完好（没被覆盖）")
+    check(p1.read_text(encoding="utf-8"), "second", "_1 内容完好")
+    check(p2.read_text(encoding="utf-8"), "third", "_2 内容完好")
+
+    # 中间空位会被复用（_2 被删掉后，下一个该用 _2 而不是 _4）
+    p2.unlink()
+    p4 = _unique(base)
+    check(p4.name, "三体_刘慈欣_2.txt", "中间空位复用（比盲目递增更自然）")
+
+    # 无扩展名也不能崩
+    noext = Path(_dtmp) / "无后缀"
+    noext.write_text("x", encoding="utf-8")
+    p5 = _unique(noext)
+    check(p5.name, "无后缀_1", "无扩展名文件也能正常加计数（suffix 为空串）")
+finally:
+    import shutil  # noqa: E402
+    shutil.rmtree(_dtmp, ignore_errors=True)
 
 print()
 if FAILS:

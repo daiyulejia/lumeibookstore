@@ -61,6 +61,9 @@ STATIC_SUITES = [
     ("test_deobfuscate.py", "反混淆"),
     # 纯逻辑、不用服务。之前漏在外面，结果"改了安全策略却没人验"。
     ("test_security.py", "安全策略"),
+    # HTTP 客户端复用：verify 翻转时必须关旧连接池，否则 socket 累积、
+    # 最终表现为「跑一阵就全超时」—— 这类症状极难反推到根因。
+    ("test_http_client.py", "客户端复用"),
     # 联网兜底（本地全灭必须联网）。这类 bug 不报错、只表现为"搜不到"，
     # 人工回归必漏 —— 见 tools/test_discover_fallback.py 的注释。
     ("test_discover_fallback.py", "联网兜底"),

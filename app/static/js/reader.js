@@ -183,8 +183,10 @@ async function goChapter(n, opt = {}) {
   const bid = RD.bid;
 
   // 命中预取就直接用，省掉一次网络往返
+  // ⚠ 必须连 bid 一起比对：`_pre` 是全局单槽，换书后旧书预取的正文会残留在里面。
+  //   只比 index 的话，B 书第 6 章会渲染出 A 书第 6 章的正文。
   let d;
-  if (RD._pre && RD._pre.index === n) {
+  if (RD._pre && RD._pre.index === n && RD._pre.bid === bid) {
     d = RD._pre.data; RD._pre = null;
   } else {
     RD.loading = true;
@@ -656,10 +658,20 @@ const savePosition = debounce(() => {
    ========================================================================== */
 async function prefetch(n) {
   if (n > RD.total || !RD.bid) return;
-  if (RD._pre && RD._pre.index === n) return;
+  if (RD._pre && RD._pre.index === n && RD._pre.bid === RD.bid) return;
+  // ⚠ 进入时把「我是哪本书、哪一代」记下来。
+  //
+  // 实测踩到的坑：预取请求发出后用户**换了书**（或连点翻章），
+  // 慢请求回来时无条件把结果写进 RD._pre —— 可 RD._pre 是**全局单槽**，
+  // 于是 B 书翻到第 6 章时命中 A 书第 6 章的正文：
+  // 标题栏写着 B 书第 6 章，正文却是 A 书的。
+  // （goChapter 自己有 _chapSeq 守卫，但命中的是**别书的数据**，
+  //   守卫在消费侧校验 bid/seq 都能过 —— 拦不住。）
+  const seq = _chapSeq, bid = RD.bid;
   try {
-    const d = await api.get(`/api/library/${RD.bid}/chapter/${n}`);
-    RD._pre = { index: n, data: d };
+    const d = await api.get(`/api/library/${bid}/chapter/${n}`);
+    if (seq !== _chapSeq || bid !== RD.bid) return;   // 已经换书/换章，丢弃
+    RD._pre = { index: n, data: d, bid };
   } catch {}
 }
 

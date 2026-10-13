@@ -365,6 +365,89 @@ def main() -> int:
         check("切换后列表有内容", filled)
 
         print()
+        print("== 快速切标签：乱序响应不许串台 ==")
+        # 为什么必须用 stub：真实网络下两个榜单请求谁先回来是随机的，
+        # 测试会变成碰运气。这里自己接管 fetch —— 让「第一个标签」的响应
+        # **故意慢 3 秒**，第二个标签立刻回。这样"旧响应后到"必然发生。
+        #
+        # 被钉住的 bug：旧代码 `RK.cache.set(RK.cur, items)` 用的是**读取时**的
+        # RK.cur，而不是**发起时**的 —— 慢响应回来时 RK.cur 已经是新标签了，
+        # 于是旧榜单的数据被写进新标签的缓存键，之后切回去看到的是别人的内容。
+        stub = """
+        (() => {
+          const real = window.fetch.bind(window);
+          const kinds = %s;
+          window.__rkFast = null;   // 想让哪个 kind 立刻回
+          window.fetch = function (input, init) {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            const m = url.match(/\\/api\\/ranks\\?kind=([^&]+)/);
+            if (!m) return real(input, init);
+            const kind = decodeURIComponent(m[1]);
+            const payload = {ok: true, kind: kind, label: kind, desc: '',
+              count: 1, age: 0, items: [{title: 'STUB-' + kind, author: 'x',
+              url: 'http://stub/' + kind, kind: kind}]};
+            const body = JSON.stringify(payload);
+            const resp = () => new Response(body,
+              {status: 200, headers: {'Content-Type': 'application/json'}});
+            // 想要的（新标签）立刻回；其余拖 3 秒（模拟旧标签的慢响应）
+            if (window.__rkFast === kind) return Promise.resolve(resp());
+            return new Promise(r => setTimeout(() => r(resp()), 3000));
+          };
+        })();
+        """ % json.dumps(["allvisit", "allvote", "monthvisit", "weekvisit"])
+
+        t.call("Page.addScriptToEvaluateOnNewDocument", source=stub)
+        clean2 = a.base.split("#")[0]
+        t.js("try{localStorage.removeItem('nd_ranksFold');}catch(e){}")
+        t.call("Page.navigate", url=clean2)
+        # 等标签渲染出来
+        for _ in range(60):
+            time.sleep(0.4)
+            if (t.js("document.querySelectorAll('.rk-tab').length") or 0) >= 2:
+                break
+        tabs = t.js("Array.from(document.querySelectorAll('.rk-tab'))"
+                    ".map(x=>x.dataset.kind)") or []
+        if len(tabs) >= 2:
+            k0, k1 = tabs[0], tabs[1]
+            # 时序刻意安排成这样（这是复现的关键）：
+            #   1. 点 k0 → 请求 k0 发出（慢，3s）
+            #   2. 0.3s 后点 k1 → RK.cur 变成 k1，请求 k1 发出（快）
+            #   3. k1 先回 → 写入缓存
+            #   4. 3s 后 k0 才回 → **此时 RK.cur 已经是 k1**
+            # 旧代码第 4 步会执行 `RK.cache.set(RK.cur=k1, k0的数据)` ——
+            # 用 k1 的键存了 k0 的数据。所以**受害人是 k1**：
+            # 之后点回 k1 会命中被污染的缓存，看到 k0 的榜单。
+            t.js(f"window.__rkFast = {json.dumps(k1)}")
+            t.js(f"document.querySelector('.rk-tab[data-kind=\"{k0}\"]').click()")
+            time.sleep(0.3)
+            t.js(f"document.querySelector('.rk-tab[data-kind=\"{k1}\"]').click()")
+            # 等慢响应也回来（3s+），确保竞态窗口走完
+            time.sleep(4.5)
+            # 先看当下显示的是不是 k1（这条旧代码也能过，因为 k1 先回来渲染了）
+            shown = t.js("(document.querySelector('.rk-item')||{})"
+                         ".textContent || ''") or ""
+            check(f"慢响应后到没把当前列表盖掉（显示 {shown.strip()[:24]!r}）",
+                  f"STUB-{k1}" in shown,
+                  f"当前标签是 {k1}，但列表里是 {shown.strip()[:40]!r}")
+            # ★ 真正钉住缓存污染的判据：切走再切回 k1。
+            #   命中缓存会**立刻渲染且不再发请求**，所以这里看到什么就是缓存里存的什么。
+            t.js(f"window.__rkFast = {json.dumps(k0)}")
+            t.js(f"document.querySelector('.rk-tab[data-kind=\"{k0}\"]').click()")
+            time.sleep(0.5)
+            t.js(f"window.__rkFast = {json.dumps(k1)}")
+            t.js(f"document.querySelector('.rk-tab[data-kind=\"{k1}\"]').click()")
+            time.sleep(0.8)
+            s2 = t.js("(document.querySelector('.rk-item')||{})"
+                      ".textContent || ''") or ""
+            check(f"切回 {k1} 命中的缓存是它自己的数据（键没被慢响应串走）",
+                  f"STUB-{k1}" in s2,
+                  f"期望 STUB-{k1}，实际 {s2.strip()[:40]!r} —— "
+                  f"缓存键被旧响应污染了")
+        else:
+            check("榜单标签至少 2 个（乱序测试的前提）", False,
+                  f"实际 {len(tabs)} 个：{tabs}")
+
+        print()
         print("== 没有 JS 报错 ==")
         # 从 console 抓过的报错没法在这里重放，简单确认全局没坏
         check("核心全局还在", t.js("typeof window !== 'undefined'") is True)

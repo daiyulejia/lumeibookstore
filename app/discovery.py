@@ -272,13 +272,16 @@ def learn_sites(
                 sch = sitelearn.detect_scheme(host)
             except Exception:  # noqa: BLE001
                 sch = "https"
-            registry.note_search_tpl(
+            # 返回 False 表示"这个站已经有模板了，我这次学到的不作数"——
+            # 并发搜索时几个线程会同时爆破同一个站，这是正常情况不是错误。
+            fresh = registry.note_search_tpl(
                 host, got["search_tpl"], enc=got.get("search_enc", "utf-8"),
                 via=got.get("search_via", ""),
                 method=got.get("search_method", "get"),
                 body=got.get("search_body"))
             registry.note_site(host, ok=True, search_scheme=sch)
-            logger.info("学会站点搜索: %s → %s %s(%s)",
+            logger.info("学会站点搜索%s: %s → %s %s(%s)",
+                        "" if fresh else "（已有，未覆盖）",
                         host, got["search_tpl"], got.get("search_method", "get"),
                         got.get("search_enc"))
             return True

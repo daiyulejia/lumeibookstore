@@ -208,34 +208,52 @@ def _cert_error(exc: BaseException) -> bool:
     return False
 
 
+def _make_client(*, verify: bool, use_proxy: bool) -> httpx.Client:
+    """建一个 httpx.Client。两处（有/无代理）只差 trust_env 与 limits。"""
+    kw: dict = dict(
+        headers=DEFAULT_HEADERS,
+        timeout=httpx.Timeout(25.0, connect=12.0),
+        follow_redirects=True,
+        verify=verify,
+        event_hooks={"request": [_guard_redirect]},
+    )
+    if not use_proxy:
+        kw["trust_env"] = False          # 关键：忽略系统代理
+        kw["limits"] = httpx.Limits(max_keepalive_connections=5, max_connections=10)
+    return httpx.Client(**kw)
+
+
 def get_client(use_proxy: bool | None = None, *, verify: bool = True) -> httpx.Client:
+    """拿一个（复用的）HTTP 客户端。
+
+    ⚠ 切换 `verify` 时**必须先 close 旧的**。
+    踩过的坑：自签证书的小站会让 `fetch_text` 用 `verify=False` 重试，
+    而原来的写法是「verify 不一样就 new 一个、把旧的直接丢掉」——
+    旧 client 的**连接池没关**（底层 socket 没释放），只能等 GC。
+    在「多站轮询 + 频繁触发 TLS 降级」的场景下（自签小站正是本项目的
+    主要目标），会累积大量半开/TIME_WAIT 连接，最终表现成
+    「跑一段时间后所有请求都超时」——这种症状极难反推到"曾经丢过一个 client"。
+    （实测：这个项目里 verify 翻转确实会发生，见 fetch_text 的 relaxed 重试。）
+    """
     global _client, _client_no_proxy
     if use_proxy is None:
         use_proxy = USE_PROXY
-    if use_proxy:
-        if _client is None or _client.__dict__.get("_nb_verify") is not verify:
-            _client = httpx.Client(
-                headers=DEFAULT_HEADERS,
-                timeout=httpx.Timeout(25.0, connect=12.0),
-                follow_redirects=True,
-                verify=verify,
-                event_hooks={"request": [_guard_redirect]},
-            )
-            _client.__dict__["_nb_verify"] = verify
-        return _client
-    else:
-        if _client_no_proxy is None or _client_no_proxy.__dict__.get("_nb_verify") is not verify:
-            _client_no_proxy = httpx.Client(
-                headers=DEFAULT_HEADERS,
-                timeout=httpx.Timeout(25.0, connect=12.0),
-                follow_redirects=True,
-                verify=verify,
-                trust_env=False,  # 关键：忽略系统代理
-                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
-                event_hooks={"request": [_guard_redirect]},
-            )
-            _client_no_proxy.__dict__["_nb_verify"] = verify
-        return _client_no_proxy
+    cur = _client if use_proxy else _client_no_proxy
+    if cur is not None and cur.__dict__.get("_nb_verify") is not verify:
+        # 换 verify 等于换一整套连接池 —— 旧的得**主动关掉**，不能等 GC
+        try:
+            cur.close()
+        except Exception:  # noqa: BLE001
+            pass
+        cur = None
+    if cur is None:
+        cur = _make_client(verify=verify, use_proxy=use_proxy)
+        cur.__dict__["_nb_verify"] = verify
+        if use_proxy:
+            _client = cur
+        else:
+            _client_no_proxy = cur
+    return cur
 
 
 

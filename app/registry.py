@@ -388,11 +388,14 @@ def searchable_sites() -> dict:
 
 
 def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
-                    method: str = "get", body: Optional[dict] = None) -> None:
-    """把一个站学到的搜索模板记下来。
+                    method: str = "get", body: Optional[dict] = None) -> bool:
+    """把一个站学到的搜索模板记下来。返回**这次是否真的写进去了**。
 
     只记**新学到**的（已有就不覆盖）—— 搜索模板一旦验证可用就是稳定的，
     偶尔一次爆破失误不该把好模板冲掉。想强制换用 `note_site(..., search_tpl=...)`。
+
+    返回值刻意是 bool：并发场景下调用方需要知道「这次学到的是新的，还是
+    别人已经先学到了」—— 这比事后再读一遍库更准（读的时候可能又被别人改了）。
 
     `method="post"` 时 `body` 是请求体模板（值里带 `{kw}`），
     因为有些站的搜索只认 POST（实测 384g 就是）。
@@ -400,7 +403,7 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
     host = (host or "").strip().lower()
     tpl = (tpl or "").strip()
     if not host or not tpl:
-        return
+        return False
     notes = {"search_tpl": tpl, "search_enc": (enc or "utf-8")}
     if via:
         notes["search_via"] = via
@@ -408,10 +411,37 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
         notes["search_method"] = "post"
         notes["search_body"] = body or {"s": "{kw}"}
     with _lock:
-        cur = _load()["sites"].get(host) or {}
+        # 「判空」和「写入」在同一把锁里完成。
+        #
+        # 原来的写法是：锁内判空、`return`（**锁在这里就释放了**），
+        # 然后锁外调 `note_site` 写入。理论上并发学同一个站时，两个线程
+        # 可以同时通过判空，后写的把先写的好模板覆盖掉。
+        #
+        # ⚠ 诚实说明：我**没能构造出稳定复现**这个竞态。
+        #   因为 `_load()` 返回的是缓存引用（同一份 dict），判空与写入之间
+        #   只隔几条字典操作，GIL 的调度粒度下这个窗口极窄 ——
+        #   用 threading.Barrier 强行撑开窗口试了三种写法都没测出来。
+        #   但"检查与写入不在同一临界区"本身是明确的坏味道，
+        #   而改成锁内写入是**零成本、零行为变化**的（note_site 的其余语义
+        #   这里用不到：name 覆盖规则、fail 计数都不涉及），
+        #   所以按防御性加固保留。返回 bool 是为了让调用方能区分
+        #   「我学到的是新的」还是「别人已经先学到了」（并发下事后重读库不可靠）。
+        db = _load()
+        cur = db["sites"].setdefault(host, {})
         if (cur.get("search_tpl") or "").strip():
-            return          # 已经学过，不重复学
-    note_site(host, ok=True, **notes)
+            return False     # 已经学过，不重复学
+        for k, v in notes.items():
+            if v not in (None, ""):
+                cur[k] = v
+        cur["ok"] = int(cur.get("ok", 0)) + 1
+        cur["last_ok"] = _now()
+        if "first_seen" not in cur:
+            cur["first_seen"] = _now()
+        cur["updated"] = _now()
+        global _dirty
+        _dirty = True
+        _maybe_save()
+        return True
 
 
 def note_search_fail(host: str, *, reason: str = "") -> None:
