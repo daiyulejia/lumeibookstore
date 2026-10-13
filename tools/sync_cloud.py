@@ -45,6 +45,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -258,9 +259,27 @@ def step(n: str, msg: str) -> None:
     print(f"\n\033[1;36m[{n}] {msg}\033[0m")
 
 
-def run(cmd: list[str], **kw) -> int:
-    r = sh(cmd, **kw)
-    return r.returncode
+def run(cmd: list[str], *, tries: int = 1, what: str = "", **kw) -> int:
+    """跑一条外部命令，失败时按需重试。
+
+    ⚠ 为什么要重试：ssh/scp 会偶发失手（服务器侧 sshd 瞬时繁忙、
+    网络抖动、连接被中途掐断），**跟"代码有问题"完全无关**。
+    实测踩到过一次：ship 的 [3/3] 同步直接报「✗ 同步失败」，
+    但同一秒手动再跑一遍 sync_cloud 就全绿 —— 纯瞬时故障。
+    这种失败最坑的地方是它会让人怀疑自己刚改的代码，
+    所以对「幂等的网络动作」自动重试，把噪声挡掉；
+    真正的错误（密钥不对、路径不存在）重试几次照样失败，不会被掩盖。
+    """
+    for i in range(max(1, tries)):
+        rc = sh(cmd, **kw).returncode
+        if rc == 0:
+            return 0
+        if i + 1 < tries:
+            wait = 3 * (i + 1)
+            print(f"  ! {what or cmd[0]} 第 {i+1} 次失败（rc={rc}），"
+                  f"{wait}s 后重试…")
+            time.sleep(wait)
+    return rc
 
 
 def main() -> int:
@@ -302,7 +321,8 @@ def main() -> int:
     if a.dry_run:
         print(f"  [dry-run] scp {TARBALL} {USER}@{HOST}:{REMOTE_TMP}")
     else:
-        if run(scp_base() + [str(TARBALL), f"{USER}@{HOST}:{REMOTE_TMP}"]) != 0:
+        if run(scp_base() + [str(TARBALL), f"{USER}@{HOST}:{REMOTE_TMP}"],
+               tries=3, what="上传") != 0:
             print("✗ 上传失败（网络？密钥？）")
             return 1
         print("  上传完成")
@@ -321,7 +341,7 @@ def main() -> int:
             f"mkdir -p /home/{USER}/noveldock_new && "
             f"tar xzf {REMOTE_TMP} -C /home/{USER}/noveldock_new"
         )
-        if run(ssh_base() + [prep]) != 0:
+        if run(ssh_base() + [prep], tries=2, what="远端解压") != 0:
             print("✗ 解压失败")
             return 1
         r = sh(ssh_base() + ["bash -s"], input=script.encode("utf-8"))
@@ -330,6 +350,8 @@ def main() -> int:
             return 1
 
     # ---- 4. 验证 ----
+    # 资源没全到位要能让整条链以非零退出（见下面 bad 分支的注释）
+    verify_failed = False
     if a.skip_verify or a.dry_run:
         step("4/5", "跳过线上验证")
     else:
@@ -396,6 +418,12 @@ def main() -> int:
                 print(f"  ✗ 静态资源有 {len(bad)} 个没到位：")
                 for b in bad:
                     print(f"      {b}")
+                # ⚠ 以前这里**只打印、不返回非零** —— 于是"静态资源 404、
+                #   站点实际是坏的"依然以退出码 0 收场，ship 的 [3/3]
+                #   会打印「✓ 上线完成」。上面那大段注释说明白了
+                #   "同步成功 ≠ 资源上线"，可代码却没把这个判断兑现。
+                #   资源没到位 = 部署确实有问题，必须让整条链失败。
+                verify_failed = True
             else:
                 print(f"  ✓ 静态资源 {len(refs)} 个全部 200")
         except Exception as e:  # noqa: BLE001
@@ -403,6 +431,9 @@ def main() -> int:
 
     step("5/5", "完成")
     print(f"  访问：http://{HOST}:{PORT}/?t={TOKEN}")
+    if verify_failed:
+        print("\n✗ 部署完成了，但线上静态资源没全到位 —— 上面的清单就是原因。")
+        return 1
     return 0
 
 
