@@ -139,8 +139,58 @@ def _is_video_book(url: str) -> bool:
     return bool(_VIDEO_PATH_RE.search(p))
 
 
+# ---------------------------------------------------------------------------
+# 非小说站（教程/词典/博客/商城/文档站…）
+# ---------------------------------------------------------------------------
+# 为什么也要在来源库里判 —— 和影视站同一个道理，而且更隐蔽：
+#   这些站**不是坏站**，它们健康得很（菜鸟教程 ok=35、MDN ok=13），
+#   所以 `is_healthy` 永远放行；它们的页面也确实有"正文"，于是
+#   `analyze()` 会给它们学一个 `content_hint`，看起来完全正常。
+#   但用户搜的是小说，这些站永远不可能给出小说 —— 它们只会：
+#     · 占着搜索结果的位子（把真小说站挤下去）
+#     · 拖慢探测（每个候选都要真打一次）
+#   实测：178 个站里有 22 个是这类（12%），包括菜鸟教程、爱词霸、MDN、
+#   博客园、小红书、森海塞尔商城…全是「搜索引擎顺手给的通用结果」。
+#
+# 判据只用**站名里的强特征词**：宁可漏判也不能误杀 ——
+#   小说站起名很花（"XX书屋"、"XX阅读"、"XX阁"），任何"像不像小说站"
+#   的正面判据都会误杀；反过来，"教程/词典/商城"这类词几乎没有小说站会用。
+_OFFTOPIC_NAME_RE = re.compile(
+    r"教程|词典|辞典|翻译|文档|百科|问答|社区|论坛|博客|Blog|Docs|"
+    r"商城|购物|旗舰店|官方网站|招聘|课程|教育|培训|"
+    r"软件|源码|下载站|图库|素材|安全资讯|"
+    r"Wiki|GitHub|Stack|MDN",
+    re.I,
+)
+# 少数"通用大站"没有明显中文特征词，但显然不是小说站，单独列白名单拦掉。
+_OFFTOPIC_HOST_RE = re.compile(
+    r"^(?:github\.com|developer\.mozilla\.org|stackoverflow\.com|"
+    r"zhihu\.com|baidu\.com|youtube\.com|wikipedia\.org|"
+    r"bilibili\.com|csdn\.net|juejin\.cn|cnblogs\.com)$",
+    re.I,
+)
+# 主机名里就能看出用途的（工具站 / 文档站 / SaaS）。
+# 为什么用 host 而不是 name：这些站的 name 往往是空的（爬不到 og:site_name），
+# 只剩 host 可判 —— 实测 svgtool.cn / svgview.com / kancloud.cn 都是这样。
+_OFFTOPIC_HOST_SUB_RE = re.compile(
+    r"(?:^|\.)(?:svgtool|svgview|svg-gen|kancloud|motionsites|"
+    r"seowebchecker|scriptcat|runoob|iciba)\.|"
+    r"^cloud\.tencent\.com$|^docs\.|^wiki\.",
+    re.I,
+)
+
+
+def _is_offtopic_site(host: str, site: dict) -> bool:
+    """这个站点条目是不是「非小说站」（该被剔除）。"""
+    h = (host or "").strip().lower()
+    if _OFFTOPIC_HOST_RE.match(h) or _OFFTOPIC_HOST_SUB_RE.search(h):
+        return True
+    return bool(_OFFTOPIC_NAME_RE.search(str(site.get("name") or "")))
+
+
+
 def _scrub(db: dict) -> int:
-    """把库里识别为影视站的条目判死（自愈）。返回清理条数。
+    """把库里识别为影视站 / 非小说站的条目判死（自愈）。返回清理条数。
 
     **不移除条目**，只把 `ok` 归零、打上 `fail` 计数和原因 ——
     这样：
@@ -160,6 +210,19 @@ def _scrub(db: dict) -> int:
             site["fail"] = max(int(site.get("fail") or 0), UNHEALTHY_FAILS)
             site["video_blocked"] = 1
             site["blocked_why"] = "影视站（路径/站名特征）"
+            n += 1
+            continue
+        # 非小说站（教程/词典/博客/商城/文档站…）。
+        # 用独立的 `offtopic_blocked` 旗标而不是复用 video_blocked ——
+        # 两者原因不同，排查时要能分辨；`is_healthy()` 只看 ok/fail，
+        # 所以两种旗标都能达成效力，旗标只影响可读性。
+        if site.get("offtopic_blocked"):
+            continue
+        if _is_offtopic_site(host, site):
+            site["ok"] = 0
+            site["fail"] = max(int(site.get("fail") or 0), UNHEALTHY_FAILS)
+            site["offtopic_blocked"] = 1
+            site["blocked_why"] = "非小说站（教程/词典/博客/商城等特征）"
             n += 1
     for url, b in list((db.get("books") or {}).items()):
         if not isinstance(b, dict):
@@ -562,6 +625,61 @@ def forget_site(host: str) -> bool:
             _dirty = True
             _maybe_save()
         return hit
+
+
+def site_fault_breakdown() -> dict:
+    """按**失败原因**统计各站，给「定期排查坏源」用。**只读，不动任何数据。**
+
+    为什么需要它（而不是继续用 is_healthy）：
+      `is_healthy` 看的是混装的 `fail` 总数比 —— 分不清"站挂了"和
+      "我们这次抓法不对"。这里只看 `fail_down`（网络层失败），
+      那才是"站点可能真的坏了"的证据。
+
+    返回值：
+      {
+        "suspects": [ {host, down, ok, last_why, healthy}, ... ],  # down 多、ok 少
+        "victims":  [ {host, shape, empty, gated, ok}, ... ],     # 失败多但都是抓法问题
+        "no_data":  int,     # 一次都没记过 fail_* 的站（分类之前的老数据）
+      }
+
+    ⚠ 刻意**不自动清理**：这个函数只报告。删数据是 `prune` 的事，
+      而"哪些算坏源"的阈值需要先拿真实数据校准（见 fail_* 为什么不改判定）。
+    """
+    # ⚠ 变量名别叫 `sites` —— 会把下面的模块函数 `sites()` 遮蔽掉，
+    #    报 UnboundLocalError（本函数第一版就是这么挂的）。
+    all_sites = sites()
+    suspects, victims = [], []
+    no_data = 0
+    for host, s in all_sites.items():
+        down = int(s.get("fail_down") or 0)
+        ok = int(s.get("ok") or 0)
+        shape = int(s.get("fail_shape") or 0)
+        empty = int(s.get("fail_empty") or 0)
+        gated = int(s.get("fail_gated") or 0)
+        video = int(s.get("fail_video") or 0)
+        if not any((down, shape, empty, gated, video)):
+            # 分类之前的老记录：只有混装的 fail，没有 fail_*
+            if int(s.get("fail") or 0):
+                no_data += 1
+            continue
+        # 判据：网络层失败数 ≥ 2 且多于成功数 —— 说明它不是偶尔抽风
+        if down >= 2 and down > ok:
+            suspects.append({
+                "host": host, "name": s.get("name") or host,
+                "down": down, "ok": ok,
+                "last_why": s.get("fail_last_why") or "",
+                "healthy": is_healthy(s),
+            })
+        elif (shape + empty + gated) > down and ok > 0:
+            # 失败基本都是"抓法不对"（形态/搜不出/要登录），而站还能成功
+            # → 站是好的，是模板/启发式要修。这类**不该**被当坏源清掉。
+            victims.append({
+                "host": host, "name": s.get("name") or host,
+                "shape": shape, "empty": empty, "gated": gated, "ok": ok,
+            })
+    suspects.sort(key=lambda x: (-x["down"], x["host"]))
+    victims.sort(key=lambda x: -(x["shape"] + x["empty"] + x["gated"]))
+    return {"suspects": suspects, "victims": victims, "no_data": no_data}
 
 
 # ---------------------------------------------------------------------------

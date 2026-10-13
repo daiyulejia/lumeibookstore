@@ -1031,6 +1031,36 @@ async def registry_view():
     }
 
 
+@app.get("/api/registry/faults")
+async def registry_faults():
+    """来源库「失败原因」报表 —— 排查坏源用，**只读，不清理**。
+
+    为什么单独开一个口（而不是塞进 /api/registry）：
+      /api/registry 是"总览"（攒了多少站/书），返回体已经很大；
+      这里是**诊断视图**，只有真正要排查时才看，没必要每次总览都算一遍。
+
+    两个列表的差别（这是本报表的全部价值）：
+      · suspects（疑似坏源）：网络层失败多 → 站可能真的挂了，该清
+      · victims（被冤枉的站）：失败多是"形态/搜不出/要登录"，
+        而站本身还能成功 → 是**我们的模板/启发式**该修，别错怪站点
+    两者混在一起时看不出区别，这正是以前 fail 混装桶的问题。
+    """
+    from . import registry
+
+    rep = registry.site_fault_breakdown()
+    return {
+        "ok": True,
+        "suspects": rep["suspects"],   # 疑似真的挂了
+        "victims": rep["victims"],     # 被冤枉的（该修抓法，不该清站）
+        "no_data": rep["no_data"],     # 分类之前的老记录，还没有 fail_* 数据
+        "counts": {
+            "suspects": len(rep["suspects"]),
+            "victims": len(rep["victims"]),
+            "sites": len(registry.sites()),
+        },
+    }
+
+
 @app.get("/api/registry/check")
 async def registry_check(limit: int = 0):
     """给来源库做体检：把记下来的书重开一遍。
