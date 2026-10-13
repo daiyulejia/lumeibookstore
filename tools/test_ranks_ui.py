@@ -348,25 +348,35 @@ def main() -> int:
 
         # 切换后列表要有内容（或明确在加载）。
         #
-        # ⚠ 这条断言经过一次误报整改，判据必须是「切换没把列表搞空」，
-        #   **不是**「20 秒内必须联网抓完」。
+        # ⚠ 这条断言经过两次误报整改，判据必须是「切换没把列表搞空」，
+        #   **不是**「N 秒内必须联网抓完」。
         #   症状：ship 里全套并发跑（同时还有 9 个 Chrome 在抢 CPU），
-        #   榜单要真的出网抓数据，20s 窗口偶尔不够 → 偶发假红。
-        #   本地连跑 3 次 100% 通过，说明不是功能坏了。
-        #   修法两条：
-        #     ① 「正在加载」也算通过 —— 骨架/加载态在，说明切标签没把
-        #        列表清空，这正是这条断言要保的东西；
-        #     ② 窗口放宽到 40s，给联网抓数据留余量。
+        #   榜单要真的出网抓数据，窗口偶尔不够 → 偶发假红。
+        #
+        #   ★ 第二次整改（ship7 实测红了）：原先只认两种"有内容"：
+        #       `.rk-item[data-title]`（真条目）或 `#ranksList .rk-skel`。
+        #     但**旧实现 `ranks.js` 的骨架是 `.rk-item.sk`** —— 它是
+        #     `.rk-item` 却**没有** `data-title`，而 `.rk-skel` 只有 Vue 侧
+        #     (`RanksPanel.vue`) 才有。于是"切到第二个标签、正在出网抓"时会
+        #     出现一个**两种选择器都匹配不到**的窗口：
+        #       · `.rk-item[data-title]` → 0（骨架没有 data-title）
+        #       · `#ranksList .rk-skel`  → false（旧实现的骨架不叫这名）
+        #     切换后正好落在这个窗口里，就白等 40 秒然后判红。
+        #     （所以这条在冷缓存时偶发，热缓存时秒过 —— 典型的假红。）
+        #   修法：判据放宽成"列表里**有任何条目节点**"——
+        #     `.rk-item` 不论带不带 data-title 都算，这才是"切换没清空列表"
+        #     的真正含义。真条目数仍单独报出来，便于区分是骨架还是数据。
         filled = False
         for _ in range(80):
             time.sleep(0.5)
             n = t.js("document.querySelectorAll('.rk-item[data-title]').length") or 0
+            any_item = t.js("document.querySelectorAll('#ranksList .rk-item').length") or 0
             loading = t.js("!!document.querySelector('#ranksList .rk-skel')")
-            if n > 0 or loading:
+            if n > 0 or any_item > 0 or loading:
                 filled = True
                 if n == 0:
-                    print("     （列表还在加载态，视为通过 —— 本条只保"
-                          "「切换没把列表清空」）")
+                    print(f"     （列表有 {any_item} 个骨架/占位条目，视为通过 ——"
+                          " 本条只保「切换没把列表清空」）")
                 break
         check("切换后列表有内容", filled)
 
