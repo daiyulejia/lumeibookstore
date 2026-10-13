@@ -130,13 +130,32 @@ function skeleton(n = 6) {
       <span class="rk-ttl"><b></b><em></em></span></div>`).join("");
 }
 
+/**
+ * 唯一的「把 HTML 写进榜单列表」入口。
+ *
+ * 为什么必须收成一个函数：列表有四条写入路径 ——
+ * 骨架（首屏等待）、缓存命中、真数据回来了、出错。
+ * 之前错峰只在 bindItems 里挂，而 bindItems **只覆盖后三条**，
+ * 骨架那条是漏的：首屏会先硬生生弹出六条灰条（无错峰），
+ * 等数据回来再换成带错峰的真榜单 —— 两次生硬入场，观感很跳。
+ * 更要命的是测试按 `#ranksList .rk-item` 数错峰覆盖，
+ * 骨架期被拍到时就会判成"stagger 没覆盖全"。
+ * 收成一个入口，四条路径自动一致，以后加第五条也不会忘。
+ */
+function writeList(html) {
+  const list = $("#ranksList");
+  if (!list) return;
+  list.innerHTML = html;
+  stagger(list, ".rk-item");
+}
+
 /** 只重画已渲染的列表（不重新请求），用于书架变化后刷新标记。 */
 function repaintItems() {
   const list = $("#ranksList");
   const items = RK.cache.get(RK.cur);
   if (!list || !items || !items.length) return;
   if (list.querySelector(".rk-item.sk")) return;   // 还在骨架态，别插队
-  list.innerHTML = items.map(itemHTML).join("");
+  writeList(items.map(itemHTML).join(""));
   bindItems();
 }
 
@@ -160,13 +179,13 @@ export async function loadRanks(kind) {
   // 前端缓存命中 → 立刻渲染
   const hit = RK.cache.get(RK.cur);
   if (hit) {
-    list.innerHTML = hit.length ? hit.map(itemHTML).join("") : emptyHTML();
+    writeList(hit.length ? hit.map(itemHTML).join("") : emptyHTML());
     bindItems();
     paintFreshness();
     return;
   }
 
-  list.innerHTML = skeleton();
+  writeList(skeleton());
   RK.loading = true;
   // ⚠ 把「我这次要的是哪一类」记成快照。
   //
@@ -185,13 +204,13 @@ export async function loadRanks(kind) {
     if (typeof d.age === "number") { RK.age = d.age; RK.refreshedAt = 0; }
     // 用户可能已经切走了，别把旧结果盖上去
     if (RK.cur !== want) return;
-    list.innerHTML = items.length ? items.map(itemHTML).join("") : emptyHTML(d.empty_hint);
+    writeList(items.length ? items.map(itemHTML).join("") : emptyHTML(d.empty_hint));
     bindItems();
     paintFreshness();
   } catch (e) {
     if (RK.cur !== want) return;      // 已经切走了，别把错误盖到新标签上
-    list.innerHTML = `<div class="rk-err">没拿到榜单：${esc(e.message || e)}
-      <button class="btn ghost sm" id="rkRetry">重试</button></div>`;
+    writeList(`<div class="rk-err">没拿到榜单：${esc(e.message || e)}
+      <button class="btn ghost sm" id="rkRetry">重试</button></div>`);
     const rt = $("#rkRetry");
     if (rt) rt.onclick = () => loadRanks();
   } finally {
@@ -229,9 +248,7 @@ function emptyHTML(hint) {
 function bindItems() {
   const list = $("#ranksList");
   if (!list) return;
-  // bindItems 是"列表刚写完"的统一收尾（骨架→数据、切标签、书架变化重画都走它），
-  // 所以错峰挂在这里最省事，也不会漏掉某条渲染路径。
-  stagger(list, ".rk-item[data-title]");
+  // 错峰统一由 writeList() 负责（四条渲染路径都走它），这里只管绑事件。
   list.querySelectorAll(".rk-item[data-title]").forEach(el => {
     el.onclick = () => {
       const t = el.dataset.title;

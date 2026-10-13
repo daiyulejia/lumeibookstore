@@ -202,12 +202,41 @@ def main() -> int:
 
         # ---------------------------------------------------------------
         section("2. 错峰变量真的写进去了")
+        # ⚠ 这里必须**等列表稳定**再数，不能拿一个瞬时值当结论。
+        #
+        # 踩过的坑（ship 时 通过 23 · 失败 1，看着像 stagger 坏了）：
+        # 榜单是先画 6 条骨架（`.rk-item.sk`，没有 data-title）再去联网，
+        # 数据回来才换成真列表。原来只 sleep 0.6s 就取样 —— 机器一忙，
+        # 骨架还没换完就被拍到，于是 `withVar < tot`，
+        # 报「只有 4/10 个列表项带 --mo-i」，其实是**采样太早**。
+        # （顺带把骨架也纳入错峰，见 ranks.js 的 writeList()，
+        #   所以现在骨架期同样带 --mo-i，两条路都成立。）
+        #
+        # 等法：连续两轮 200ms 内 tot 与 withVar 都不变 → 认为渲染停了。
         n_i = b.js("""
-          const els = document.querySelectorAll('#results .book, #ranksList .rk-item, #shelfList .shelf');
-          let withVar = 0, tot = els.length;
-          els.forEach(e => { if (getComputedStyle(e).getPropertyValue('--mo-i').trim() !== '') withVar++; });
-          return JSON.stringify({tot, withVar});
-        """)
+          return new Promise(resolve => {
+            let last = '', stable = 0;
+            const t0 = Date.now();
+            const tick = () => {
+              const els = document.querySelectorAll(
+                '#results .book, #ranksList .rk-item, #shelfList .shelf');
+              let withVar = 0;
+              els.forEach(e => {
+                if (getComputedStyle(e).getPropertyValue('--mo-i').trim() !== '') withVar++;
+              });
+              const sig = els.length + ':' + withVar;
+              if (sig === last && els.length > 0) stable++;
+              else { stable = 0; last = sig; }
+              // 稳定两拍就算定了；最多等 8s 兜底，别把测试拖死
+              if (stable >= 2 || Date.now() - t0 > 8000) {
+                resolve(JSON.stringify({tot: els.length, withVar}));
+                return;
+              }
+              setTimeout(tick, 200);
+            };
+            tick();
+          });
+        """, await_promise=True)
         ni = json.loads(n_i)
         if ni["tot"] == 0:
             info("当前页面没有列表项 —— 跳过（不算失败）")

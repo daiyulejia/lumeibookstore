@@ -164,6 +164,36 @@ def t_stagger() -> None:
         else:
             bad(f"{f} 没用 stagger —— 列表入场会没有错峰")
 
+    # ⚠ 榜单：错峰必须挂在**唯一入口** writeList 上，而不是散在 bindItems 里。
+    #
+    # 为什么专门盯这一处：榜单有四条写入路径（骨架 / 缓存命中 / 真数据 / 出错），
+    # 原来错峰写在 bindItems —— 它只覆盖后三条，骨架那条漏掉，
+    # 首屏会先硬弹一屏灰条、再换成错峰的真列表（两次生硬入场），
+    # 真机测试还会因为拍到骨架期而误判"stagger 没覆盖全"。
+    # 收成 writeList 后，四条路径自动一致；这条断言防止有人日后又绕过它。
+    rk = read(JS / "ranks.js")
+    if re.search(r"function\s+writeList\s*\(", rk):
+        ok("ranks.js 有 writeList() 统一入口")
+    else:
+        bad("ranks.js 没有 writeList() —— 四条渲染路径又会各写各的")
+
+    if re.search(r"function\s+writeList[\s\S]{0,600}?stagger\(", rk):
+        ok("writeList() 内部调了 stagger（所有渲染路径统一错峰）")
+    else:
+        bad("writeList() 里没有 stagger —— 错峰又漏了")
+
+    # 除 writeList 自身外，不该再有别处直接写 ranksList 的 innerHTML
+    stray = []
+    for m in re.finditer(r'(\$\("#ranksList"\)|list)\.innerHTML\s*=', rk):
+        line_no = rk[:m.start()].count("\n") + 1
+        # writeList 内部那一处（list.innerHTML = html）是唯一合法写入
+        if "list.innerHTML = html" not in rk.splitlines()[line_no - 1]:
+            stray.append(f"ranks.js:{line_no}")
+    if stray:
+        bad(f"绕开 writeList 直接写榜单列表：{', '.join(stray)}")
+    else:
+        ok("榜单列表只有 writeList 一处写入（无绕开路径）")
+
 
 def t_a11y() -> None:
     section("4. 可访问性兜底")
