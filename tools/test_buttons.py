@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -94,29 +95,44 @@ class Tab:
         return v
 
 
-def pick_base(explicit: str) -> str:
+def pick_base(explicit: str, token: str = "") -> str:
     """挑一个「真的带榜单接口」的服务地址（= 新代码）。
-    8000 上跑的往往是**旧版本**进程（没重启过的），旧进程没有 /api/ranks。"""
+    8000 上跑的往往是**旧版本**进程（没重启过的），旧进程没有 /api/ranks。
+
+    ⚠ 显式传了地址就**不许回退**：线上要令牌，不带 `?t=` 探 `/api/ranks/kinds`
+    是 401 —— 旧实现会静默退回本地 8000，测试跑的是本地、输出却是绿的，
+    让人误以为"线上也过了"。那是假绿，比红更危险。
+    （同一个坑在 test_ranks_ui.py 里也修了一遍。）
+    """
     import http.client
     from urllib.parse import urlparse
 
-    cands = [explicit, "http://127.0.0.1:8000", "http://127.0.0.1:8303"]
-    seen: set[str] = set()
-    for b in cands:
-        if not b or b in seen:
-            continue
-        seen.add(b)
+    q = f"?t={token}" if token else ""
+
+    def probe(b: str) -> bool:
         u = urlparse(b)
         try:
-            c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=3)
-            c.request("GET", "/api/ranks/kinds")
+            c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=5)
+            c.request("GET", "/api/ranks/kinds" + q)
             r = c.getresponse()
             body = r.read()
             c.close()
-            if r.status == 200 and b'"kinds"' in body:
-                return b
+            return r.status == 200 and b'"kinds"' in body
         except Exception:
-            pass
+            return False
+
+    if explicit:
+        if probe(explicit):
+            return explicit
+        raise SystemExit(
+            f"指定的服务 {explicit} 探不通（/api/ranks/kinds 不是 200）。\n"
+            f"  · 线上地址需要令牌：加 --token <t>（见 cache/auth.json）；\n"
+            f"  · 本地地址确认服务已启动、且是**含榜单接口的新版本**。\n"
+            f"  ⚠ 不会自动改用其它地址 —— 悄悄换地址会让测试变成假绿。")
+
+    for b in ["http://127.0.0.1:8000", "http://127.0.0.1:8303"]:
+        if probe(b):
+            return b
     raise SystemExit(
         "找不到带榜单接口的服务。先启动一个（例：\n"
         "  python run.py --host 127.0.0.1 --port 8303 --no-check\n"
@@ -770,10 +786,14 @@ def main() -> int:
     ap.add_argument("--base", default="", help="留空则自动探测可用实例")
     ap.add_argument("--port", type=int, default=9344)
     ap.add_argument("--group", default="", help="只跑某一组：A/B/C/D/E/F")
+    ap.add_argument("--token", default="", help="线上实例的访问令牌（本地不需要）")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
 
-    a.base = pick_base(a.base)
+    a.base = pick_base(a.base, a.token)
+    # ⚠ 令牌拼在 `#` 之前（bootstrapAuth 用 searchParams 读它）。
+    if a.token and "t=" not in a.base:
+        a.base = a.base.rstrip("/") + "/?t=" + urllib.parse.quote(a.token)
     print(f"目标服务：{a.base}")
 
     chrome = find_chrome()
