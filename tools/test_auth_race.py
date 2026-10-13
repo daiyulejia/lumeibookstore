@@ -43,7 +43,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-from shot import Tab, find_chrome, free_port, wait_devtools  # noqa: E402
+from shot import Tab, find_chrome, free_port, launch_chrome, page_ws, wait_devtools  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -73,26 +73,20 @@ def section(t: str) -> None:
 
 class Browser:
     def __init__(self):
-        self.port = free_port()
-        self.profile = tempfile.mkdtemp(prefix="authrace-")
-        self.proc = subprocess.Popen(
-            [
-                find_chrome(),
-                "--headless=new", "--disable-gpu", "--hide-scrollbars",
-                "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-                f"--remote-debugging-port={self.port}",
-                "--remote-allow-origins=*",
-                f"--user-data-dir={self.profile}",
-                "--window-size=1280,900",
-                "about:blank",
-            ],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        wait_devtools(self.port)
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/json/new?about:blank", method="PUT")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            ws = json.load(r)["webSocketDebuggerUrl"]
+        # ⚠ 用 shot.launch_chrome（Chrome 自动分配端口 + DevToolsActivePort 里
+        #   的实例 UUID 校验），**不要**退回「free_port() + wait_devtools()」。
+        #   老写法只判断「这个端口能回话」，不判断回话的是不是自己刚起的实例 ——
+        #   上一个套件 terminate 掉的旧 Chrome 还没退干净时，这里会连上它，
+        #   等它一死就是 `ConnectionResetError: WinError 10054`。
+        #   实测症状：ship 里 14 套串行跑时随机红、单独重跑必绿、每次红的位置不同。
+        #   这个类被 5 个套件复用（auth_race / shelf_ui / reader_shell /
+        #   discover_ui / files_ui），所以修这里 = 一次修 5 处。
+        self.proc, self.port, self._browser_ws, self.profile = launch_chrome(
+            headless=True, window=(1280, 900),
+            extra_args=["--disable-extensions"])
+        # `Page.*` / `Runtime.*` 只挂在**页面 target** 上；launch_chrome 给的是
+        # browser 级 ws，直接拿它调 Page.enable 会报 -32601（踩过）。
+        ws = page_ws(self.port)
         self.t = Tab(ws)
         self.t.call("Page.enable")
         self.t.call("Runtime.enable")
@@ -145,6 +139,13 @@ class Browser:
                 self.proc.kill()
             except Exception:
                 pass
+        # profile 目录也要清（launch_chrome 每次建一个唯一的）；
+        # 不清的话临时目录会越攒越多。
+        try:
+            import shutil
+            shutil.rmtree(self.profile, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def local_token() -> str:

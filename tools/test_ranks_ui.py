@@ -32,6 +32,12 @@ sys.path.insert(0, str(ROOT))
 
 import websocket  # noqa: E402
 
+# Chrome 启动走 shot.launch_chrome（自动分配端口 + 实例 UUID 校验）。
+# ⚠ 别退回「固定 --port=9333 + 只等端口回话」：那样会在 ship 里随机假红
+#   （连到上一个还没退干净的旧实例，它一死就 ConnectionResetError）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shot import launch_chrome, page_ws  # noqa: E402
+
 
 def find_chrome() -> str:
     for p in [
@@ -140,22 +146,13 @@ def main() -> int:
         a.base = a.base.rstrip("/") + "/?t=" + urllib.parse.quote(a.token)
     print(f"目标服务：{a.base}")
 
-    chrome = find_chrome()
-    # ⚠ 每次用**全新的 profile 目录**。复用固定目录时，上一次跑留下的
-    # 会话状态（localStorage 里的令牌、hash、甚至 service worker 缓存）
-    # 会带进来，导致首屏行为和"干净用户"不一样 —— 实测表现为首次等待
-    # 超时、7 项断言连锁变红，但功能其实是好的。测试要的是可复现。
-    prof = os.path.join(tempfile.gettempdir(), f"nd-rankstest-{os.getpid()}")
-    proc = subprocess.Popen(
-        [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
-         f"--remote-debugging-port={a.port}", "--no-first-run", "--no-default-browser-check",
-         f"--user-data-dir={prof}", "--window-size=1280,900",
-         # 和 test_buttons 对齐：别让磁盘缓存喂一份过期的 JS/CSS 进来，
-         # 否则改了前端却测出旧行为（踩过：改了 JS 还报旧行为，查半天）。
-         "--disable-application-cache", "--disk-cache-size=1",
-         "--no-proxy-server", "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    # ⚠ 用 shot.launch_chrome：Chrome 自动分配端口 + 从 DevToolsActivePort 读回
+    #   实例 UUID 校验，杜绝「连到上一个还没退干净的旧 Chrome」。
+    #   老写法（固定 --port + 只判断端口能回话）在 ship 里随机假红。
+    #   （本身自带全新 profile + 禁缓存，见 launch_chrome 的实现。）
+    proc, _port, _bws, prof = launch_chrome(
+        headless=True, window=(1280, 900))
+    ws_url = page_ws(_port)
 
     fails: list[str] = []
 
@@ -167,37 +164,6 @@ def main() -> int:
             print(f"  ✗ {label} {extra}")
 
     try:
-        # 等 DevTools。
-        # ⚠ 这里必须**挑出 target 那个标签页**，不能拿 /json/list 的第一个 ——
-        # Chrome 会把扩展的 background page 也列进来（实测第一项是
-        # `chrome-extension://.../background.html`），连错标签页的后果是
-        # 所有断言都"失败"，看起来像功能坏了，其实是测错了对象。
-        import http.client
-        ws_url = None
-        for _ in range(60):
-            try:
-                c = http.client.HTTPConnection("127.0.0.1", a.port, timeout=5)
-                c.request("GET", "/json/list")
-                tabs = json.loads(c.getresponse().read())
-                # 优先精确匹配 about:blank（我们启动时开的那个），
-                # 退而求其次取任何 page 类型
-                for tb in tabs:
-                    if tb.get("type") == "page" and tb.get("url", "").startswith("about:"):
-                        ws_url = tb["webSocketDebuggerUrl"]
-                        break
-                if not ws_url:
-                    for tb in tabs:
-                        if tb.get("type") == "page":
-                            ws_url = tb["webSocketDebuggerUrl"]
-                            break
-                if ws_url:
-                    break
-            except Exception:
-                pass
-            time.sleep(0.3)
-        if not ws_url:
-            raise SystemExit("DevTools 端口没起来")
-
         t = Tab(ws_url)
         t.call("Page.enable")
         t.call("Runtime.enable")

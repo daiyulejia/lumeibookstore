@@ -37,7 +37,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
-from shot import find_chrome, free_port, wait_devtools, Tab   # noqa: E402
+from shot import Tab, launch_chrome, page_ws  # noqa: E402
 
 ok_n = 0
 bad_n = 0
@@ -63,27 +63,19 @@ class Browser:
     """一个临时的 headless Chrome，跑完就关。"""
 
     def __init__(self, w=1280, h=900, pre_js=""):
-        self.port = free_port()
-        self.profile = tempfile.mkdtemp(prefix="motionprof-")
-        self.proc = subprocess.Popen(
-            [
-                find_chrome(),
-                "--headless=new", "--disable-gpu", "--hide-scrollbars",
-                "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-                f"--remote-debugging-port={self.port}",
-                "--remote-allow-origins=*",
-                f"--user-data-dir={self.profile}",
-                f"--window-size={w},{h}",
-                "about:blank",
-            ],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        wait_devtools(self.port)
+        # ⚠ 用 shot.launch_chrome（Chrome 自动分配端口 + DevToolsActivePort 实例
+        #   UUID 校验），**不要**退回「free_port() + wait_devtools()」——后者只判断
+        #   「端口能回话」，不判断回话的是不是自己刚起的实例。上一个套件 terminate
+        #   掉的旧 Chrome 还没退干净时，这里会连上它，等它一死就是
+        #   `ConnectionResetError: WinError 10054`。
+        #   实测症状：ship 里 14 套串行跑随机假红、单独重跑必绿。
+        self.proc, self.port, _bws, self.profile = launch_chrome(
+            headless=True, window=(w, h),
+            extra_args=["--disable-extensions"])
 
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/json/new?about:blank", method="PUT")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            tab_ws = json.load(r)["webSocketDebuggerUrl"]
+        # Page.*/Runtime.* 只挂在**页面 target** 上，得用 page_ws 拿页面级 ws
+        # （拿 launch_chrome 的 browser 级 ws 调 Page.enable 会报 -32601）。
+        tab_ws = page_ws(self.port)
 
         self.t = Tab(tab_ws)
         self.t.call("Page.enable")
@@ -120,6 +112,12 @@ class Browser:
         except Exception:
             try: self.proc.kill()
             except Exception: pass
+        # profile 目录也清掉（launch_chrome 每次建一个唯一的）
+        try:
+            import shutil
+            shutil.rmtree(self.profile, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # ===========================================================================

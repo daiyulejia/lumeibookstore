@@ -32,7 +32,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from shot import Tab, find_chrome, free_port, wait_devtools  # noqa: E402
+from shot import Tab, launch_chrome, page_ws  # noqa: E402
 
 OK = 0
 BAD = 0
@@ -197,23 +197,17 @@ def main() -> int:
     ap.add_argument("--h", type=int, default=900)
     a = ap.parse_args()
 
-    chrome = find_chrome()
-    port = free_port()
-    profile = tempfile.mkdtemp(prefix="nd-xsstest-")
-    proc = subprocess.Popen(
-        [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
-         "--no-first-run", "--no-default-browser-check", "--disable-extensions",
-         "--disable-application-cache", "--disk-cache-size=1",
-         f"--remote-debugging-port={port}", "--remote-allow-origins=*",
-         f"--user-data-dir={profile}", f"--window-size={a.w},{a.h}", "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    # ⚠ 用 shot.launch_chrome（Chrome 自动分配端口 + DevToolsActivePort 实例 UUID
+    #   校验），不要退回「free_port() + wait_devtools()」——后者只判断「端口能回话」，
+    #   不判断回话的是不是自己刚起的实例。上一个套件 terminate 掉的旧 Chrome 还没退
+    #   干净时，这里会连上它，等它一死就是 ConnectionResetError/WinError 10054。
+    #   实测症状：ship 里 14 套串行跑随机红、单独重跑必绿、每次红的位置都不同。
+    proc, port, _bws, profile = launch_chrome(
+        headless=True, window=(a.w, a.h),
+        extra_args=["--disable-extensions"])
     try:
-        wait_devtools(port)
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/json/new?about:blank", method="PUT")
-        with urllib.request.urlopen(req, timeout=8) as r:
-            tab = Tab(json.load(r)["webSocketDebuggerUrl"])
+        # Page.*/Runtime.* 只挂在**页面 target** 上，要用 page_ws 拿页面级 ws。
+        tab = Tab(page_ws(port))
         tab.call("Page.enable")
         tab.call("Runtime.enable")
         tab.call("Emulation.setDeviceMetricsOverride",

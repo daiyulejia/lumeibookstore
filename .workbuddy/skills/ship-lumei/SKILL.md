@@ -53,6 +53,30 @@ description: 把噜妹书院（novel-downloader）的本地改动自检、同步
 差点以为埋点没生效 —— 实际是服务还跑着旧代码。
 "grep 不到日志"优先怀疑服务没重启，再怀疑代码。
 
+### C. 真机套件红了，先看症状是否"每次都不一样"——那多半是 Chrome 竞态，不是产品坏了
+**症状**：`ship` 里真机串行跑 14 套时随机报红，但**单独重跑那一个套件必绿**；
+且两次红的**位置和错误都不同**（一次是「DOM 里等不到榜单条目」，
+下次是 `ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接`）。
+
+**根因**：老的 Chrome 启动写法是「`free_port()` 挑端口 + `wait_devtools()`
+只判断端口能不能回话」。两个洞：
+1. `free_port()` 是「bind(0) → 读端口 → close()」——
+   **close 之后到 Chrome 真正 bind 之前，端口是没人占的**，窗口期可能被抢；
+2. 更要命的是**不校验身份** —— 上一个套件 terminate 掉的旧 Chrome 还没退干净时，
+   新 Chrome 可能连上那个**即将死掉的旧实例**，等它一退，WebSocket 立刻被 reset。
+
+**对策（已实现，新代码请直接用）**：
+- `tools/shot.py` 的 **`launch_chrome()`** —— 用官方 `--remote-debugging-port=0`
+  让 Chrome 自己挑端口，从 `--user-data-dir/DevToolsActivePort` 读回端口 + 实例 UUID；
+  **启动前先删掉那个文件**，所以「文件存在」== 「本次实例写出来的」。
+- `Page.*` / `Runtime.*` 命令**只挂在页面 target 上**，要用 **`page_ws(port)`**
+  拿页面级 ws；直接拿 `launch_chrome` 的 browser 级 ws 调 `Page.enable`
+  会报 `-32601 'Page.enable' wasn't found`（踩过）。
+- 反证方式见下（这三步是本轮实际做过的，能精确复现/验证）。
+
+**判断口诀**：随机红 + 单独跑必绿 + 每次症状不同 ⇒ **先怀疑浏览器/端口竞态**，
+别急着改产品代码。
+
 
 ## 第二步：推送 GitHub
 

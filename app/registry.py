@@ -238,6 +238,39 @@ def _scrub(db: dict) -> int:
     return n
 
 
+def _scrub_and_log(db: dict) -> None:
+    """跑自愈并**留一条日志**（原先是静默的）。
+
+    为什么要留痕：自愈会在**读库时**悄悄把条目判死（ok 归零）。
+    静默的话，用户看到"这个站怎么突然不出现了"，翻日志却什么都找不到 ——
+    正是需求里说的"方便线上拉日志定位问题"要解决的问题。
+    另外记录**分类数量**（影视站 vs 非小说站），
+    这样线上能一眼看出"库里垃圾是哪种更多"。
+
+    异常仍然吞掉（不能因为自愈失败就整个读库失败），但降级为 warning 留痕。
+    """
+    try:
+        n = _scrub(db)
+    except Exception as e:  # noqa: BLE001
+        try:
+            from .logging_setup import get_logger
+            get_logger("novel.registry").warning("来源库自愈失败（已忽略）：%s", e)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    if not n:
+        return
+    try:
+        from .logging_setup import get_logger, log_event
+        blocked = (db.get("sites") or {}).values()
+        video = sum(1 for s in blocked if isinstance(s, dict) and s.get("video_blocked"))
+        off = sum(1 for s in blocked if isinstance(s, dict) and s.get("offtopic_blocked"))
+        log_event(get_logger("novel.registry"), "registry.scrub",
+                  新判死=n, 影视站=video, 非小说站=off)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ---------------------------------------------------------------------------
 # 读 / 写
 # ---------------------------------------------------------------------------
@@ -261,11 +294,8 @@ def _load() -> dict:
         raw["sites"] = {}
     if not isinstance(raw["books"], dict):
         raw["books"] = {}
-    # 自愈：把影视站条目判死，见 _scrub 注释
-    try:
-        _scrub(raw)
-    except Exception:  # noqa: BLE001
-        pass
+    # 自愈：把影视站 / 非小说站条目判死，见 _scrub 注释
+    _scrub_and_log(raw)
     _cache = raw
     return _cache
 
@@ -284,11 +314,8 @@ def _read_disk() -> dict:
         raw["sites"] = {}
     if not isinstance(raw["books"], dict):
         raw["books"] = {}
-    # 自愈：把影视站条目判死，见 _scrub 注释
-    try:
-        _scrub(raw)
-    except Exception:  # noqa: BLE001
-        pass
+    # 自愈：把影视站 / 非小说站条目判死，见 _scrub 注释
+    _scrub_and_log(raw)
     return raw
 
 

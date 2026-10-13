@@ -55,13 +55,20 @@ def scan_fired() -> set[str]:
     """扫出后端**真正调用**的所有 log_event 事件名。
 
     注意三种写法都要覆盖（漏一种就会假红/假绿）：
-      · log_event(log, "name", ...)          —— 常规
-      · log_event(log, "name", lv, ...)      —— 带日志级别
-      · log_event(log, f"name.{x}", ...)     —— 变量拼名（本仓库暂无，
-                                                扫不到时靠人肉 grep 兜底）
-    所以这里统一用「逗号后紧跟字符串字面量」的模式，不数参数个数。
+      · log_event(log, "name", ...)               —— 常规
+      · log_event(log, "name", lv, ...)           —— 带日志级别
+      · log_event(get_logger("x"), "name", ...)   —— 第一个参数本身就是调用
+      · log_event(log, f"name.{x}", ...)          —— 变量拼名（本仓库暂无，
+                                                     扫不到时靠人肉 grep 兜底）
+    所以这里统一用「**最深一层逗号**后紧跟字符串字面量」的模式：
+    [^(),]*(?:[(][^()]*[)][^(),]*)* 允许第一个参数里出现**一层**括号。
+    ⚠ 踩过：最早写的是 [A-Za-z_][ word., space ]*? 这种「任何字符都收」的宽模式，
+    遇到 log_event(get_logger("novel.registry"), "registry.scrub", …)
+    就在第一个 ( 处停住 → 判成「登记了却没人发」的死条目，**假红**。
+    这正是注释里警告过的「漏一种写法」。
     """
-    pat = re.compile(r'log_event\(\s*[A-Za-z_][\w.,\s]*?,\s*"([a-z_.]+)"')
+    pat = re.compile(
+        r'log_event\(\s*[^(),]*(?:\([^()]*\)[^(),]*)*,\s*"([a-z_.]+)"')
     fired: set[str] = set()
     for p in APP.rglob("*.py"):
         if p.name == "logging_setup.py":

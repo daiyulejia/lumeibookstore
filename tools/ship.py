@@ -115,6 +115,13 @@ STATIC_SUITES = [
     # 本测试最看重的部分是「零误杀」：21 个真实小说站一个都不许命中。
     # 见 tools/test_offtopic.py 的注释。
     ("test_offtopic.py", "非小说站拦截"),
+    # Chrome 启动器纪律：真机套件不许硬编码调试端口、不许自己 Popen 起 Chrome。
+    # 为什么值得一条**静态**测试来管：真机随机假红极难查 ——
+    # 老写法（free_port + 只判断端口能回话）会连到上一个还没退干净的旧实例，
+    # 表现为「ship 里随机红、单独重跑必绿、每次红的位置都不同」。
+    # 谁下次随手写回 `--remote-debugging-port=9344`，这条就拦住他。
+    # 见 tools/test_browser_launch.py 的注释。
+    ("test_browser_launch.py", "Chrome 启动器纪律"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）

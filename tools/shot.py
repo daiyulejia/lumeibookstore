@@ -35,6 +35,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import uuid
 
 import websocket  # type: ignore
 
@@ -75,6 +76,212 @@ def wait_devtools(port: int, timeout: float = 20.0) -> str:
         except Exception:
             time.sleep(0.15)
     raise SystemExit("DevTools 端口没起来")
+
+
+# ---------------------------------------------------------------------------
+# Chrome 启动器（公共）—— 消灭「连到别人的 Chrome」这一类随机假红
+# ---------------------------------------------------------------------------
+# 为什么需要它（不是照抄 free_port 就行）：
+#
+#   · `free_port()` 的写法是「bind(0) → 拿端口 → close()」。**端口在 close
+#     之后到 Chrome 真正 bind 之前是没人占的**，这中间的窗口里可能被别的
+#     进程抢走；更常见的是**上一个测试残留的 Chrome 还在监听那个端口**。
+#   · 而 `wait_devtools()` 只判断「这个端口能回话」，**不判断回话的是不是
+#     我刚起的这个浏览器**。于是测试会连上那个**即将死掉的旧实例**，
+#     等它一退，CDP 的 WebSocket 立刻 `ConnectionResetError`
+#     （Windows 上就是 WinError 10054）。
+#
+#   实测表现：**单独跑必绿，在 ship 里 14 套串行跑时随机红，而且每次红
+#   的位置和症状都不一样**（这次是「DOM 里没有榜单条目」，下次是
+#   「远程主机强迫关闭了一个现有的连接」）—— 因为抢端口的时序每次不同。
+#   随机假红比慢贵得多：它让人怀疑产品，也让流水线失去可信度。
+#
+# 解法用 Chrome 官方的「自动分配端口」：
+#   `--remote-debugging-port=0` → Chrome 自己挑一个空闲端口，把**端口**
+#   和**浏览器 ws 路径（含唯一 UUID）**写进 `--user-data-dir/DevToolsActivePort`。
+#   · 端口由内核分配，不存在「先占后放」的窗口；
+#   · 那个 UUID 是**这个实例独有的**，拿它做身份校验就能 100% 确认
+#     「连上的就是我刚起的这个」，彻底断掉连错实例的可能。
+#
+# ⚠ 兼容性：`free_port()` / `wait_devtools()` **原样保留**（10 个旧工具在用），
+#   这里只做新增。新代码请用 `launch_chrome()`。
+
+
+def launch_chrome(
+    *,
+    headless: bool = True,
+    window: tuple[int, int] = (1360, 960),
+    profile_dir: str | None = None,
+    extra_args: list[str] | None = None,
+    ready_timeout: float = 30.0,
+) -> tuple[subprocess.Popen, int, str, str]:
+    """起一个**确定属于自己**的 Chrome，返回 `(proc, port, browser_ws, profile)`。
+
+    `port` 由 Chrome 自己分配（不会有抢端口竞态）；`browser_ws` 带本实例
+    唯一 UUID，调用方可以拿它核对「DevTools 回话的是不是这个实例」。
+
+    调用方负责在结束时 `proc.terminate()` + 删 `profile` 目录
+    （用 `try/finally`，别省）。
+
+    ⚠ profile 目录**必须每次全新**：复用会带上上次的 localStorage
+      会话，且浏览器磁盘缓存会让「改了 JS 却还跑旧代码」。
+    """
+    chrome = find_chrome()
+    if not profile_dir:
+        # ⚠ 必须**真的唯一**：曾经用 `time.time()*1000 % 100000` 拼名字，
+        #   紧挨着起两个就撞了（毫秒取模空间太小）—— 撞了之后 Chrome 认出
+        #   「这个 profile 已经有实例在跑」，于是**新进程直接 exit=0**，
+        #   调用方拿到一个已经死掉的 proc。用 uuid4 一劳永逸。
+        profile_dir = os.path.join(
+            tempfile.gettempdir(), f"nd-chrome-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    os.makedirs(profile_dir, exist_ok=True)
+
+    args = [chrome]
+    if headless:
+        args.append("--headless=new")
+    args += [
+        "--disable-gpu", "--hide-scrollbars",
+        # ← 关键：让 Chrome 自己挑端口，端口号之后从 DevToolsActivePort 读
+        "--remote-debugging-port=0",
+        "--remote-allow-origins=*",
+        "--no-first-run", "--no-default-browser-check",
+        f"--user-data-dir={profile_dir}",
+        f"--window-size={window[0]},{window[1]}",
+        "--no-proxy-server",
+        "--disable-application-cache", "--disk-cache-size=1",
+    ]
+    args += extra_args or []
+    args.append("about:blank")
+
+    # ⚠⚠ 启动前**先删掉** DevToolsActivePort（反证测出来的真缺口）。
+    #
+    #   原本只校验「端口回话的 UUID == 文件里的 UUID」。但反证发现：
+    #   如果 profile 目录里**已经有一份**指向另一个活实例的文件，
+    #   而新 Chrome 又因单例机制直接 exit=0，那么这份**旧文件**会被读到 ——
+    #   端口和 UUID 都恰好对得上那个旧实例，校验**放行**，测试连到别人家。
+    #
+    #   删掉它之后，「文件存在」本身就等于「**本次**实例写出来了」，
+    #   校验才真正成立。
+    port_file = os.path.join(profile_dir, "DevToolsActivePort")
+    try:
+        os.remove(port_file)
+    except FileNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
+
+    # 读 DevToolsActivePort：第一行端口、第二行 ws 路径。
+    # 文件是 Chrome **起完才写**的，所以要轮询（不能一次读不到就当失败）。
+    deadline = time.time() + ready_timeout
+    port = 0
+    ws_path = ""
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise SystemExit(f"Chrome 起来就退了（exit={proc.returncode}）")
+        try:
+            with open(port_file, "r", encoding="utf-8") as f:
+                lines = [ln.strip() for ln in f if ln.strip()]
+            if len(lines) >= 2:
+                port = int(lines[0])
+                ws_path = lines[1]
+                break
+        except Exception:
+            pass
+        time.sleep(0.15)
+    if not port:
+        raise SystemExit("Chrome 没写出 DevToolsActivePort（没起来）")
+
+    browser_ws = f"ws://127.0.0.1:{port}{ws_path}"
+
+    # 身份校验：确认这个端口回话的 ws 路径**就是**我们刚读到的那个。
+    # 端口是内核分的、UUID 是实例唯一的，两者对上 = 一定是自己这个。
+    # （这就是 free_port+wait_devtools 组合缺的那一环。）
+    probe_deadline = time.time() + ready_timeout
+    while time.time() < probe_deadline:
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/json/version", timeout=1) as r:
+                got = json.load(r).get("webSocketDebuggerUrl", "")
+            if got.rstrip("/") == browser_ws.rstrip("/"):
+                return proc, port, browser_ws, profile_dir
+        except Exception:
+            pass
+        time.sleep(0.15)
+    proc.terminate()
+    raise SystemExit("DevTools 回话的实例不是自己起的（端口被人抢了）")
+
+
+def page_ws(port: int, *, prefer: str = "about:", timeout: float = 20.0) -> str:
+    """从 DevTools 端口拿**页面 target** 的 WebSocket 地址。
+
+    ⚠ 为什么需要它（踩过）：`Page.*` / `Runtime.*` 这些域**只挂在页面 target 上**，
+      在 browser 级 WebSocket 上调用会报
+      `-32601 'Page.enable' wasn't found`。
+      `launch_chrome` 返回的 `browser_ws` 是 browser 级的（适合 Browser.getVersion
+      这类域）—— 要用 Page/Runtime 就必须走这个函数拿页面 target。
+
+    `prefer`：优先挑 url 以它开头的 target（默认我们启动时开的 `about:blank`）。
+      **不能直接拿第一个** —— 扩展的 background page 也会被列进 /json/list。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/json/list", timeout=1) as r:
+                tabs = json.load(r)
+            pages = [tb for tb in tabs if tb.get("type") == "page"]
+            for tb in pages:
+                if tb.get("url", "").startswith(prefer):
+                    return tb["webSocketDebuggerUrl"]
+            if pages:
+                return pages[0]["webSocketDebuggerUrl"]
+        except Exception:
+            pass
+        time.sleep(0.15)
+    raise SystemExit(f"拿不到页面 target 的 ws（端口 {port}）")
+
+
+def snapshot_png(ws_url: str, out_path: str, *, full: bool = False,
+                 timeout: float = 30.0) -> bool:
+    """用 CDP 抓一张整页/可视区截图。返回是否成功。
+
+    给「新代码」用；旧工具的自己那份截图逻辑保持不动。
+    """
+    import base64
+    try:
+        t = Tab(ws_url)
+    except Exception:
+        return False
+    try:
+        t.call("Page.enable")
+        params = {"format": "png"}
+        if full:
+            params["captureBeyondViewport"] = True
+            m = t.call("Page.getLayoutMetrics")
+            cs = m.get("cssContentSize") or m.get("contentSize") or {}
+            if cs.get("width"):
+                params["clip"] = {
+                    "x": 0, "y": 0,
+                    "width": cs["width"], "height": cs["height"],
+                    "scale": 1,
+                }
+        res = t.call("Page.captureScreenshot", **params)
+        data = res.get("data") or ""
+        if not data:
+            return False
+        with open(out_path, "wb") as f:
+            f.write(base64.b64decode(data))
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            t.ws.close()
+        except Exception:
+            pass
 
 
 class Tab:

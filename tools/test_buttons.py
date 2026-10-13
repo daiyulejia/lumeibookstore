@@ -46,6 +46,14 @@ sys.path.insert(0, str(ROOT))
 
 import websocket  # noqa: E402
 
+# `launch_chrome` 来自同目录的 shot.py（Chrome 自动分配端口 + 实例身份校验）。
+# 为什么要复用而不是在本文件里再抄一份「固定端口 + 只判断端口回话」：
+#   那份老写法在 ship 串行跑 14 套真机时**随机假红** —— 新 Chrome 会连上
+#   上一个还没退干净的旧实例，等旧实例一死就是 ConnectionResetError，
+#   或者 DOM 里怎么都等不到渲染结果。详见 shot.launch_chrome 的注释。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from shot import launch_chrome, page_ws  # noqa: E402
+
 
 def find_chrome() -> str:
     for p in [
@@ -428,8 +436,24 @@ def group_c(t: Tab, s: Suite):
                 sw = True
                 break
         s.check(f"C1 切标签生效（{first} → {on}）", sw is True)
-        filled = t.wait("document.querySelectorAll('.rk-item[data-title]').length", timeout=40)
-        s.check("C1 切换后列表有内容", (filled or 0) >= 1)
+        # ⚠ 超时给到 90s：这条曾在 ship 里**随机假红** —— ship 要并发跑 14 套
+        #   真机，排行榜切标签后要等 `/api/ranks` 现抓 20 条回来再渲染，
+        #   资源被抢时 40s 窗口会赶不上（但单独重跑必绿，接口实测也有数据）。
+        #   假红比慢更贵：它会让人怀疑产品，也会让流水线可信度下降。
+        filled = t.wait("document.querySelectorAll('.rk-item[data-title]').length",
+                        timeout=90)
+        # 失败时区分「接口没数据」和「渲染没赶上」——两者处置完全不同
+        if not (filled or 0) >= 1:
+            probe = t.js("(function(){try{var x=new XMLHttpRequest();"
+                         "x.open('GET','/api/ranks?kind='+((document"
+                         ".querySelector('.rk-tab.on')||{}).dataset||{}).kind,false);"
+                         "x.send();var j=JSON.parse(x.responseText);"
+                         "return 'api_count='+((j.items||[]).length);}"
+                         "catch(e){return 'probe_err='+e.message}})()")
+            s.check("C1 切换后列表有内容", False,
+                    f"（等 90s 仍无条目；{probe}）")
+        else:
+            s.check("C1 切换后列表有内容", True)
 
     # C4 去看我的书架（这条曾在真实产品里点不动：location.hash 没人监听）
     t.js("document.querySelector('#ranksToLib').click()")
@@ -831,45 +855,26 @@ def main() -> int:
         a.base = a.base.rstrip("/") + "/?t=" + urllib.parse.quote(a.token)
     print(f"目标服务：{a.base}")
 
-    chrome = find_chrome()
     # ⚠ 每次全新 profile + 禁缓存。复用固定目录会带上上次的 localStorage 会话状态；
     # 而浏览器磁盘缓存会让改了 JS 之后仍然跑到旧代码 —— 实测表现为"改了却还是旧报错"，
     # 白白浪费一轮排查。测试必须确保跑的是当前磁盘上的代码。
-    prof = os.path.join(tempfile.gettempdir(), f"nd-btntest-{os.getpid()}")
-    proc = subprocess.Popen(
-        [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
-         f"--remote-debugging-port={a.port}", "--no-first-run", "--no-default-browser-check",
-         f"--user-data-dir={prof}", "--window-size=1360,960",
-         "--no-proxy-server", "--disable-application-cache", "--disk-cache-size=1",
-         "about:blank"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    #
+    # ⚠⚠ 这里**必须**用 launch_chrome（Chrome 自动分配端口 + 实例身份校验），
+    #   不能再用「固定 --port=9344 + 只判断端口能回话」的老写法。
+    #   踩过的坑：ship 里 14 套真机串行跑，某套跑完 terminate 掉 Chrome 之后，
+    #   下一个套件起来的 Chrome 会**连上那个还没退干净的旧实例**（端口回话正常，
+    #   但回话的不是它自己），等旧实例一死就 `ConnectionResetError: WinError 10054`；
+    #   另一次表现是榜单切标签后 DOM 里怎么都等不到条目。
+    #   **两次红症状不同、单独重跑必绿** —— 这种随机假红比慢贵得多，
+    #   它会让人怀疑产品、也会让整条流水线失去可信度。
+    proc, _port, _browser_ws, _prof = launch_chrome(
+        headless=True, window=(1360, 960))
+    # ⚠ `Page.*` / `Runtime.*` 只挂在**页面 target** 上，`launch_chrome` 给的
+    #   browser 级 ws 调 Page.enable 会报 `-32601 wasn't found`（踩过）。
+    #   所以这里再取一次页面 target 的 ws。
+    ws_url = page_ws(_port)
 
     try:
-        import http.client
-        ws_url = None
-        for _ in range(60):
-            try:
-                c = http.client.HTTPConnection("127.0.0.1", a.port, timeout=5)
-                c.request("GET", "/json/list")
-                tabs = json.loads(c.getresponse().read())
-                # ⚠ 优先精确匹配 about:blank（我们启动时开的那个），
-                # 不能拿第一个 —— 扩展 background page 也会被列进来。
-                for tb in tabs:
-                    if tb.get("type") == "page" and tb.get("url", "").startswith("about:"):
-                        ws_url = tb["webSocketDebuggerUrl"]; break
-                if not ws_url:
-                    for tb in tabs:
-                        if tb.get("type") == "page":
-                            ws_url = tb["webSocketDebuggerUrl"]; break
-                if ws_url:
-                    break
-            except Exception:
-                pass
-            time.sleep(0.3)
-        if not ws_url:
-            raise SystemExit("DevTools 端口没起来")
-
         t = Tab(ws_url)
         t.call("Page.enable")
         t.call("Runtime.enable")
@@ -929,7 +934,7 @@ def main() -> int:
             pass
         try:
             import shutil
-            shutil.rmtree(prof, ignore_errors=True)
+            shutil.rmtree(_prof, ignore_errors=True)
         except Exception:
             pass
 
