@@ -643,6 +643,53 @@ html[data-theme="lumei-night"] .searchbox input::placeholder{
   color:color-mix(in srgb,var(--t-3) 82%,transparent);
 }
 
+/* ---- 6.14 Toast（全局提示）：出现频率最高的"一次性反馈" ----
+   实测数据（`getComputedStyle` 拿的真值，不是肉眼看图）：
+     · 主题色 toast 早已吃主题 —— `.toast.ok` 算出来是 rgb(95,147,104) = #5f9368，
+       正是 lumei token 里的鼠尾草绿；warn/err 同理（#c9902a / #c9614c）。
+       也就是说**语义色那三条本来就是暖的**，不需要动。
+     · 真正没适配的是**中性 toast**（不带 kind 的那条，如"正在把《X》收进书架…"）：
+       app.css 写的是 `background:var(--t-1)`，lumei 下 --t-1 = #2f2620 虽然是暖黑，
+       但在奶油底上仍是一块**冷硬的深色药丸** —— 正是 tokens.css 第 152 行
+       警告过的"纯黑在暖调里像挖了个洞"。而且它用的是全站共用的 --t-1，
+       本身没有品牌信息量。
+
+   为什么值得单独做：toast 是"每保存一次、每搜一次、每导出一次都跳一下"的元素，
+   曝光量仅次于顶栏；之前 `grep -c toast lumei.css` = 0，主题在这块是断的。
+   所以补三件事，且**不重写基础外观**（摘掉 lumei.css 依然完全可用）： */
+
+/* ① 中性 toast 换成"暖褐药丸"：保留深色对比（要压得住正文），
+   但色相跟着整个主题走 —— 用噜噜橙把暖黑往暖里推一点，
+   于是它是"这个牌子里的深色"，不是"随便一个深灰"。
+
+   ⚠ **必须用 `:not(.ok):not(.warn):not(.err)` 把语义态排除掉**。
+   踩过：这里一开始写成裸 `html[data-theme="lumei"] .toast{background:…}` ——
+   它比 app.css 的 `.toast.ok{background:var(--ok)}` **多一个 html[data-theme] 前缀、
+   特异性更高**，于是把成功/警告/失败三态全盖成同一个暖褐，
+   语义色彻底失效（ok/warn/err 全是同一个颜色，用户分不出成功还是失败）。
+   注意 shadow 那条（③）不排除语义态是**故意的**：描边会弄脏色块，
+   但贴身小暖影对四种都合适。 */
+html[data-theme="lumei"] .toast:not(.ok):not(.warn):not(.err),
+html[data-theme="lumei-night"] .toast:not(.ok):not(.warn):not(.err){
+  background:color-mix(in srgb,var(--t-1) 88%,var(--a-1));
+  color:var(--s-bg);
+}
+
+/* ② 给暖褐药丸 + 一条极淡的暖描边：它常常悬在图/卡片边缘上，
+   没有描边时边界会"融"进浅色底。带 kind 的三条不描边（自身就是色块，描边反而脏）。 */
+html[data-theme="lumei"] .toast:not(.ok):not(.warn):not(.err),
+html[data-theme="lumei-night"] .toast:not(.ok):not(.warn):not(.err){
+  border:1px solid color-mix(in srgb,var(--a-1) 26%,transparent);
+}
+
+/* ③ 阴影换成暖调：app.css 用的 --sh-l 在 lumei 下已经是暖 rgba，
+   但它是为"大面板"调的 60px 大扩散；toast 是小药丸，大扩散会糊。
+   换成贴身的小暖影，药丸才"浮"得干净。 */
+html[data-theme="lumei"] .toast,
+html[data-theme="lumei-night"] .toast{
+  box-shadow:0 2px 6px rgba(92,72,48,.10),0 12px 28px -8px rgba(92,72,48,.22);
+}
+
 /* ==========================================================================
    7. 移动端：小屏少放动效（电池 + 性能）
    ========================================================================== */

@@ -273,6 +273,13 @@ THEME_COVERAGE = [
     ("首页 Hero · 标题暖光晕", 'html[data-theme="lumei"] .hero h1'),
     ("首页搜索框 · 焦点橙色光晕", 'html[data-theme="lumei"] .searchbox:focus-within'),
     ("首页搜索框 · 主题色光标", 'html[data-theme="lumei"] .searchbox input'),
+    # Toast（全局提示）：曝光量仅次于顶栏 —— 每保存/搜索/导出一次就跳一下。
+    # 之前 `grep -c toast lumei.css` = 0，主题在这块是断的。
+    # ⚠ 注意区分：.toast.ok / .warn / .err 早就吃主题了（语义色在 lumei token
+    # 里本来就是暖的），真正没适配的是**中性 toast** —— 它用 --t-1 暖黑，
+    # 在奶油底上是"挖了个洞"。所以清单断言的是中性态那条选择器。
+    ("Toast · 中性态暖褐药丸", 'html[data-theme="lumei"] .toast:not(.ok)'),
+    ("Toast · 暖调贴身影", 'html[data-theme="lumei"] .toast'),
 ]
 
 
