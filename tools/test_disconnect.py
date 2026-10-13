@@ -24,6 +24,15 @@
 
 所以改成：发搜索 → 2s 掐断 → 看日志里有没有"客户端已断开"，
 并且那一轮的耗时明显小于完整一轮。
+
+⚠ 上面最后那句"看耗时"后来被**删掉**了 —— 它是个坏判据。
+  为什么：耗时受源站快慢支配，实测同一本书能在 2.3s ~ 25.6s 之间跳（5 倍）。
+  "完整一轮"经常碰巧比"掐断那轮"还短，于是**正确的实现被反复判红**
+  （本文件历史上红过三次，我调了三次阈值都没用 —— 问题不在阈值，
+  在于这个指标压根不随代码变化）。
+  现在的判据换成引擎自报的 `aborted`（附着在 `search.done` 日志上）：
+  它只取决于"该不该收手"，源站再快再慢都不影响，是**确定性信号**。
+  耗时仍然打印出来给人看趋势，但不参与 pass/fail。
 """
 from __future__ import annotations
 
@@ -115,6 +124,44 @@ def last_ms(txt: str) -> int | None:
     return int(ms[-1]) if ms else None
 
 
+_ABORTED_RE = re.compile(r"search\.done .*?aborted=(\w+)")
+
+
+def last_aborted(txt: str) -> bool | None:
+    """从日志里读「这一轮是不是被断开收手打断的」。
+
+    ⚠ 这是本测试**唯一可靠**的判据，别再回去比耗时。
+      为什么：日志里的 `aborted` 只取决于机制本身（该不该收手），
+      而耗时受源站快慢影响，实测同一本书能在 2.3s ~ 25.6s 之间跳（5 倍）。
+      用耗时当判据时，"完整一轮"经常**碰巧比掐断那轮还短** ——
+      于是正确的实现被反复判红（本文件历史上红过三次，每次都是这个原因）。
+      一个只随环境漂移、不随代码变化的指标，不配当判据。
+    """
+    vals = _ABORTED_RE.findall(txt)
+    if not vals:
+        return None
+    return vals[-1] == "True"
+
+
+def wait_done_ms(logfile: Path, start_size: int, timeout: float = 75.0,
+                 every: float = 0.25) -> int | None:
+    """等日志里出现「这一轮跑完」，返回它记的耗时；等不到就 None。
+
+    为什么不 sleep 一个拍脑袋的时长：源站响应在 3s ~ 18s 之间跳，
+    固定 sleep 要么白等（源快时），要么在源慢时**读到上一轮的 done** ——
+    那正是本次踩的坑：掐断轮拿到的其实是紧邻的完整轮的耗时，
+    两个数于是"一样长"，断言报"没省下时间"，可实际省没省根本没被量到。
+    改成轮询「出现新的 done」，就永远读的是自己那一轮的数。
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        m = last_ms(log_tail(logfile, start_size))
+        if m is not None:
+            return m
+        time.sleep(every)
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="")
@@ -146,94 +193,92 @@ def main() -> int:
             token = ""
         base = f"/api/search?kw={urllib.parse.quote(KW)}" + (f"&t={token}" if token else "")
 
-        print("\n[1] 先跑完整的，量出 baseline")
-        # ⚠ baseline 要取**多轮里最大的那个**，不能只跑一次。
+        # ---- [1] 量完整一轮的耗时：**与 [2] 的掐断轮同时段**，才可比 ----
         #
-        # 为什么：这个数用来判断"掐断有没有真的省下时间"，它的前提是
-        # 「完整一轮足够长，2s 掐断能切在探测中途」。但源站响应快慢波动很大
-        # —— 实测完整一轮在 3.1s ~ 17s 之间跳。跑一次恰好碰上源回得快
-        # （比如 3.1s），就会把一个**好实现**判成失败：
-        #     完整一轮只用了 3158ms，太短、测不出差别  ← 这是假红
-        # 取两轮的最大值，就与"这一轮源快不快"解耦了。
-        full_ms = 0
-        for bi in (1, 2):
-            size0 = logfile.stat().st_size if logfile.exists() else 0
-            t0 = time.time()
-            n_full = raw_get_disconnect(host, port, base, read_for=60.0)
-            wall_full = time.time() - t0
-            ms = last_ms(log_tail(logfile, size0)) or int(wall_full * 1000)
-            print(f"    第 {bi} 次完整一轮：{n_full} 字节 / 日志记 {ms}ms"
-                  f"（墙钟 {wall_full:.1f}s）")
-            full_ms = max(full_ms, ms)
-            # 已经够长了就不必再跑第二轮（省时间）
-            if full_ms > 4000:
-                break
-
-        # 前提条件：完整一轮要够长，否则"有没有省下时间"根本无从谈起。
-        # 这条**不作为失败**：短，只说明"这一时刻源站回得太快"，
-        # 是环境问题而不是代码问题。跳过后续的耗时比对（但仍会验证
-        # 「断开被识别到」——那条与耗时无关，任何时候都该成立）。
-        measurable = full_ms > 4000
-        if measurable:
-            check("完整一轮长到足以让「2s 掐断」切在探测中途", True,
-                  f"取多轮最大 {full_ms}ms")
-        else:
-            print(f"    ~ 完整一轮只有 {full_ms}ms（源站回得快）—— "
-                  f"跳过耗时比对，只验「断开被识别」")
-
-        print("\n[2] 2 秒掐断 —— 服务端应当识别到并收手")
-        # ⚠ 跑**两轮**取最好的一次判定，别只跑一轮。
-        #   为什么：真实网络的耗时抖动很大（实测完整一轮在 4.5s ~ 17s 之间跳），
-        #   单轮比对容易误判 —— 出现过 baseline 恰好落在 4460ms（那轮源回得快），
-        #   而掐断那轮 6088ms（那轮源回得慢），于是"没省下"的假警报。
-        #   判定只依赖那个**稳定的**信号：日志里有没有「客户端已断开」。
-        #   耗时比对只作为辅助，并且要求两轮里**至少一轮**明显更短。
-        saw_stop_any = False
+        # ⚠ 对照必须和实验"挨着跑"，不能先攒一个 baseline 再用很久。
+        #   踩坑现场：早先的写法是先跑完整轮拿到 full_ms、再跑 3 轮掐断，
+        #   两组之间隔着十几秒 —— 源站状态早变了，比出来的差异
+        #   是**时间差**不是**代码差**。实测出现过「首轮基线 3103ms、
+        #   掐断轮 6600ms」，判"没省下时间"，其实只是那会儿源站慢了。
+        #   所以改成：每轮掐断之后**立刻**补一轮完整轮当对照，
+        #   两边轮流跑，最终各取最好成绩。
+        print("\n[1]+[2] 交替跑：完整轮（对照）↔ 2s 掐断轮（实验）")
         cut_ms_list: list[int] = []
-        stopped_ms_list: list[int] = []   # 只装「真的识别到断开」那几轮的耗时
+        full_ms_list: list[int] = []
+        cut_aborted: list[bool | None] = []    # 掐断轮：引擎自报"是不是被打断的"
+        full_aborted: list[bool | None] = []   # 完整轮：应当都没被打断
+        saw_stop_any = False
         for round_i in (1, 2, 3):
+            # —— 实验：2s 掐断 ——
             size1 = logfile.stat().st_size if logfile.exists() else 0
             got = raw_get_disconnect(host, port, base, read_for=2.0)
-            print(f"    第 {round_i} 次掐断：收到 {got} 字节")
-            time.sleep(max(20, full_ms / 1000 + 6))
+            cut_ms = wait_done_ms(logfile, size1)
             tail = log_tail(logfile, size1)
             stopped = "客户端已断开" in tail
             if stopped:
                 saw_stop_any = True
-            cut_ms = last_ms(tail)
             if cut_ms is not None:
                 cut_ms_list.append(cut_ms)
-                if stopped:
-                    stopped_ms_list.append(cut_ms)
-            print(f"      收手={stopped}，该轮耗时={cut_ms}ms")
+            cut_aborted.append(last_aborted(tail))
+            print(f"    第 {round_i} 轮 · 掐断：收到 {got} 字节 / "
+                  f"该轮耗时 {cut_ms}ms / 日志收手={stopped} / "
+                  f"引擎自报 aborted={cut_aborted[-1]}")
 
-        # 核心断言：断开被识别到了（这条在两轮里都稳定成立）
+            # —— 对照：紧跟着跑一轮完整的 ——
+            size2 = logfile.stat().st_size if logfile.exists() else 0
+            raw_get_disconnect(host, port, base, read_for=60.0)
+            full_ms = wait_done_ms(logfile, size2)
+            if full_ms is not None:
+                full_ms_list.append(full_ms)
+            full_aborted.append(last_aborted(log_tail(logfile, size2)))
+            print(f"    第 {round_i} 轮 · 完整：该轮耗时 {full_ms}ms / "
+                  f"引擎自报 aborted={full_aborted[-1]}")
+
+        # 前提：完整轮要够长，2s 掐断才可能切在"还在干活"的中途。
+        # 全都不够长时说明这一时段源站回得飞快，机制照样对、只是没有
+        # "活可被打断" —— 这种情况**不作失败**，改成明说"本轮不判定"。
+        measurable = bool(full_ms_list) and max(full_ms_list) > 4000
+        if measurable:
+            check("完整一轮长到足以让「2s 掐断」切在探测中途", True,
+                  f"三轮完整轮最大 {max(full_ms_list)}ms")
+        else:
+            print(f"    ~ 完整轮最长只有 {max(full_ms_list or [0])}ms（源站回得快）"
+                  f"—— 没有余地可省，本轮不判定收手效果")
+
+        # 核心断言①：断开被识别到了（看日志，最直接的证据）
         check("服务端识别到客户端断开并收手", saw_stop_any,
               "日志里没有『客户端已断开』—— 断开检测根本没生效")
 
-        # 辅助断言：**识别到断开的那几轮**里，至少一轮明显短于基线。
+        # 核心断言②：**引擎自报的 aborted 为真**（确定性的机制信号）
         #
-        # ⚠ 只拿 stopped 的轮次来比 —— 这是关键。
-        #   没识别到断开的那轮，服务端本来就该跑完整轮，拿它比毫无意义。
-        #   （实测出现过：第 2 轮 收手=False 且耗时 6605ms > 基线 4817ms，
-        #     于是报"识别到了却没省下时间" —— 可那一轮压根没识别到，
-        #     属于"抽样抽错了对照组"的假红。）
-        #   基线太短时也不比 —— 那是环境问题（源站回得快），不是代码问题。
-        if stopped_ms_list and measurable:
-            best = min(stopped_ms_list)
-            check("识别到断开的那轮明显短于完整一轮",
-                  best < full_ms * 0.85,
-                  f"最好 {best}ms vs 完整 {full_ms}ms —— 识别到了却没真省下时间")
-            print(f"    （辅助判据：识别轮最短 {best}ms / 完整 {full_ms}ms；"
-                  f"网络抖动大时这条仅供参考）")
-        elif stopped_ms_list:
-            print(f"    ~ 基线 {full_ms}ms 太短，跳过耗时比对"
-                  f"（识别轮最短 {min(stopped_ms_list)}ms）")
+        # ⚠ 这一条是本测试的主判据，耗时那条已经删了。
+        #   为什么删：耗时受源站快慢支配，实测同一本书波动 2.3s ~ 25.6s（5 倍），
+        #   "完整一轮"经常碰巧比"掐断那轮"还短 —— 于是正确实现被反复判红
+        #   （本文件历史上红了三次，三次都是这个原因，我改了三次阈值都没用，
+        #    因为问题不在阈值，在于**这个指标本身就不随代码变化**）。
+        #   换成 aborted 之后：它只取决于"该不该收手"，源站再快再慢都不影响。
+        if measurable:
+            n_cut_aborted = sum(1 for x in cut_aborted if x is True)
+            check("引擎自报「这一轮被打断收手」（aborted=True）",
+                  n_cut_aborted >= 1,
+                  f"三轮掐断里没有一轮 aborted=True（实测 {cut_aborted}）"
+                  f"—— 断开信号没传进引擎")
+            # 反向：完整轮**不该**自报被打断。少了这条，一个恒返回 True 的
+            # 实现也能让上面那条通过（假绿）。
+            n_full_aborted = sum(1 for x in full_aborted if x is True)
+            check("完整一轮没有被误判为「被打断」（aborted=False）",
+                  n_full_aborted == 0,
+                  f"有 {n_full_aborted} 轮完整搜索自报被打断（实测 {full_aborted}）"
+                  f"—— aborted 恒为真，这个信号是坏的")
         else:
-            print("    ~ 没有一轮识别到断开，跳过耗时比对"
-                  f"（核心断言已单独判定；本轮耗时 {cut_ms_list}）")
-            if cut_ms_list:
-                check("截断那轮有 search.done（正常收尾）", True)
+            print(f"    ~ 源站回得太快（{max(full_ms_list or [0])}ms），"
+                  f"跳过 aborted 判定（掐断轮自报 {cut_aborted}）")
+
+        # 参考信息（**不判定**）：耗时对照仍然打出来给人看趋势，
+        # 但它不参与 pass/fail —— 理由同上，这个数会随环境漂移。
+        if cut_ms_list and full_ms_list:
+            print(f"    （参考·非判据：掐断轮耗时 {cut_ms_list} / "
+                  f"完整轮耗时 {full_ms_list}；受源站快慢影响，仅看趋势）")
 
         print("\n[3] 服务本身还活着（断开没把它搞崩）")
         alive = 0

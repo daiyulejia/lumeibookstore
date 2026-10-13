@@ -229,6 +229,14 @@ class Engine:
             # 一次调用里包一层，避免到处都是 `is not None and ...()`
             return bool(should_stop and should_stop())
 
+        # 「这一轮是不是被客户端断开打断的」——供 stats / 日志 / 真机测试读。
+        # ⚠ 必须在**分支之外**先初始化。踩过：一开始只在 `if sample and results:`
+        #   里 `aborted = self.verify_samples(...)` 赋值，结果 `sample=False`
+        #   的调用路径（联网兜底测试就是 `probe=False, sample=False`）走到
+        #   `stats.update({"aborted": bool(aborted)})` 时 UnboundLocalError。
+        #   ship 的静态自检当场把它拦下来了 —— 这正是"每次改完跑全量"的意义。
+        aborted = False
+
         # —— 多词关键词：「搜索用词」与「排序用词」要分开 ——
         # 用户搜「余华 活着」时，把整串丢给站点搜索多半 0 结果（站点的搜索框
         # 不是全文检索，空格常常被当成书名的一部分）。但排序又必须用**完整
@@ -565,8 +573,8 @@ class Engine:
                 results = self.refine(results, keyword)
 
         if sample and results:
-            self.verify_samples(results, on_verified=on_verified,
-                                should_stop=should_stop)
+            aborted = self.verify_samples(results, on_verified=on_verified,
+                                          should_stop=should_stop)
 
         if stats is not None:
             stats.update({
@@ -582,6 +590,12 @@ class Engine:
                 "search_ms": int((time.time() - t_search) * 1000),
                 "ms": int((time.time() - t_start) * 1000),
                 "discovered": sum(1 for r in results if r.source == DISCOVER_SOURCE),
+                # 断开收手是否真的触发了（供真机测试断言）。
+                # ⚠ 用它而不是"耗时是不是更短"来验证收手 —— 耗时受源站快慢
+                #   影响，波动能有 5 倍（实测 2.3s ~ 25.6s），
+                #   拿它当判据必然假红假绿；而这个布尔量只取决于机制本身。
+                #   断连止损测试就是踩了那个坑，改成看这个。
+                "aborted": bool(aborted),
             })
         return results
 
@@ -772,7 +786,7 @@ class Engine:
         on_verified: Optional[Callable[[BookResult], None]] = None,
         top: int = SAMPLE_TOP,
         should_stop: Optional[Callable[[], bool]] = None,
-    ) -> None:
+    ) -> bool:
         """对最靠前的「目录可达」候选，抽一章正文验证内容是真的。
 
         为什么必须做：不少站的目录页是静态的，谁都能打开；但正文要点开
@@ -792,7 +806,7 @@ class Engine:
                 logger.warning(
                     "抽样校验被跳过：%d 个候选的 available 全为空（多半是 probe=0 时调用）"
                     "—— 正文不会得到验证", len(results))
-            return
+            return False
 
         # 同一来源最多抽两本 —— 每抽一本都要跨页请求，抽样不能比探测还贵。
         # **但要按「来源 + 域名」计数，不能只按来源名**：联网发现（web）
@@ -814,9 +828,11 @@ class Engine:
         pool = ThreadPoolExecutor(max_workers=min(SAMPLE_WORKERS, len(targets)))
         futs = {pool.submit(self._sample_one, r): r for r in targets}
         ok = 0
+        aborted = False
         try:
             for fut in as_completed(futs, timeout=SAMPLE_BUDGET):
                 if should_stop and should_stop():
+                    aborted = True
                     logger.info("客户端已断开，停止正文抽样（已验 %d 本）", ok)
                     break
                 try:
@@ -836,6 +852,8 @@ class Engine:
             logger.info("抽样校验超预算，部分候选未做正文验证")
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
+
+        return aborted
 
     def _sample_one(self, r: BookResult) -> BookResult:
         src = self._find_source(r.source)

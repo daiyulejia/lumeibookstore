@@ -590,6 +590,59 @@ html[data-theme="lumei-night"] .netlive.done .nl-steps li:last-child .t{
   animation:none;
 }
 
+/* ---- 6.13 首页 Hero 与搜索框：整站**第一眼**，也是品牌承诺发生的地方 ----
+   设计规范 §4.1「必须适配主题的页面」里明确列了这两项，
+   但之前 lumei.css 里 `grep -c '.hero\|.searchbox'` 都是 0 ——
+   首页最上面的两块反而没吃主题，等于"品牌从第二屏才开始"。
+
+   注意：`.hero .eyebrow` / `.hero h1` / `.searchbox` 在 app.css 里用的是
+   `var(--a-soft)` / `var(--a-1)` / `var(--a-line)` / `var(--glow)` 这类**语义变量**，
+   噜妹主题下已经是暖色了 —— 所以这里**不重写基础外观**，
+   只补"语义变量给不出的那点品牌质感"。这样摘掉 lumei.css 依然完全可用。 */
+
+/* eyebrow（"陪伴式阅读"那枚小胶囊）：app.css 里已给软橙底 + 18% 暖描边，
+   这里把描边提到 30% —— 它是 hero 里唯一的"色块"，加一点边更立得住。 */
+html[data-theme="lumei"] .hero .eyebrow,
+html[data-theme="lumei-night"] .hero .eyebrow{
+  border-color:color-mix(in srgb,var(--a-1) 30%,transparent);
+  box-shadow:0 1px 0 color-mix(in srgb,#fff 46%,transparent) inset;
+}
+
+/* h1：app.css 已经做了「深色 → 主题色」的文字渐变。这里只补一件事：
+   给文字加一层极淡的暖光晕。它让标题在暖色背景图上不会"糊进去"，
+   也是 hero 与下面搜索框之间的视觉过渡。 */
+html[data-theme="lumei"] .hero h1,
+html[data-theme="lumei-night"] .hero h1{
+  filter:drop-shadow(0 2px 12px color-mix(in srgb,var(--a-1) 22%,transparent));
+}
+
+/* 搜索框：设计规范原话是「**圆形焦点光晕、橘子色强调**」——
+   而 app.css 的 `:focus-within` 只给了一条 1px 描边 + 通用 glow，
+   焦点落在搜索框上时看不出"这是噜妹家的搜索"。这里补两件事：
+     ① 描边换成主题橙并加粗到 1.5px；
+     ② 叠两层橙色光环（内圈贴边、外圈散开），形成"圆形光晕"。
+   为什么值得单独做：搜索框是首页唯一的输入入口，
+   用户点进去的那一刻正是"品牌在场感"最强的时机，而它原本是冷的。 */
+html[data-theme="lumei"] .searchbox:focus-within,
+html[data-theme="lumei-night"] .searchbox:focus-within{
+  border-color:color-mix(in srgb,var(--a-1) 58%,var(--s-line));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb,var(--a-1) 14%,transparent),
+    0 6px 22px -6px color-mix(in srgb,var(--a-1) 40%,transparent),
+    var(--sh-m);
+}
+/* 光标也走主题色（浏览器默认是系统蓝，会在暖框里突兀地跳出来） */
+html[data-theme="lumei"] .searchbox input,
+html[data-theme="lumei-night"] .searchbox input{
+  caret-color:var(--a-1);
+}
+/* 占位符：稍微调淡一点点，让"用户真正输入的内容"更突出 ——
+   这是输入框的常规做法，与主题无关，但既然这块归我们管就一并做掉。 */
+html[data-theme="lumei"] .searchbox input::placeholder,
+html[data-theme="lumei-night"] .searchbox input::placeholder{
+  color:color-mix(in srgb,var(--t-3) 82%,transparent);
+}
+
 /* ==========================================================================
    7. 移动端：小屏少放动效（电池 + 性能）
    ========================================================================== */

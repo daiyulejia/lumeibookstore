@@ -939,6 +939,11 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           成书=len(books),
                           可读=sum(1 for r in results if r.available),
                           联网发现=stats.get("discovered", 0),
+                          # 这一轮是不是被"客户端断开"打断收手的。
+                          # 打出来给断连止损测试当**确定性判据** ——
+                          # 它不像耗时那样随源站快慢漂移（实测漂 5 倍），
+                          # 只取决于机制本身该不该收手。
+                          aborted=bool(stats.get("aborted")),
                           耗时ms=int((time.perf_counter() - _t0) * 1000))
                 push({
                     "type": "done",
@@ -950,6 +955,11 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                     # 一条「确切命中」都没有 → 这批只是沾边，前端要如实说明。
                     "fuzzy": bool(books) and not any(b.get("tight") for b in books),
                     "stats": stats,
+                    # 断开收手是否真的触发（引擎填的）。与上面 stats 里的同名字段
+                    # 一份两处：这里提到顶层是为了让断连止损测试**不必去解析
+                    # stats 的完整结构**，一眼就能读到。它是一条确定性的信号
+                    # （只取决于"该不该收手"），不像耗时那样受源站快慢影响。
+                    "aborted": bool(stats.get("aborted")),
                     "books": books,
                 })
             except Exception as e:  # noqa: BLE001

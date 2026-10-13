@@ -263,6 +263,16 @@ THEME_COVERAGE = [
     ("联网发现 · 暖色顶边", 'html[data-theme="lumei"] .netlive'),
     ("联网发现 · 命中站点柔光", 'html[data-theme="lumei"] .nl-steps li.hit .d'),
     ("联网发现 · 进行中那步脉动", 'html[data-theme="lumei"] .nl-steps li:last-child .t'),
+    # 首页 Hero + 搜索框：这是**用户看到的第一屏**，也是设计规范 §4.1
+    # 「必须适配主题的页面」里白纸黑字列着的两项。
+    # 但之前这两项既不在清单里、lumei.css 里也一处覆盖都没有
+    # （`grep -c '.hero' lumei.css` = 0）—— 于是首页最上面两块是冷的，
+    # 品牌从第二屏才开始。这正好复现了上面第 248 行写下的教训：
+    # 「**清单本身也会漏**，漏掉的页面看起来'已通过检查'」。
+    ("首页 Hero · eyebrow 暖描边", 'html[data-theme="lumei"] .hero .eyebrow'),
+    ("首页 Hero · 标题暖光晕", 'html[data-theme="lumei"] .hero h1'),
+    ("首页搜索框 · 焦点橙色光晕", 'html[data-theme="lumei"] .searchbox:focus-within'),
+    ("首页搜索框 · 主题色光标", 'html[data-theme="lumei"] .searchbox input'),
 ]
 
 
