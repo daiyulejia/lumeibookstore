@@ -52,8 +52,24 @@ sys.path.insert(0, str(ROOT))
 
 OK = 0
 BAD = 0
-# 关键词用真实书名（要能出网抓、耗时够长，才切得进"中途"）。
-KW = "三体"
+# 候选关键词：用真实书名（要能出网抓、耗时够长，才切得进"中途"）。
+#
+# ⚠⚠ 为什么是**一列**而不是一个：源站会缓存（wyshu_index.json + 各源 HTTP 缓存），
+#   同一个词在本机搜过一遍之后，第二轮就 27ms 秒回了 —— 于是
+#   `measurable=False`，整套接近空转（ship 里踩过，见下方 else 分支的警告）。
+#   固定单个词时，该词只要被搜过一次就永久失效，**这个套件在 ship 里
+#   从此没有牙**。改成一列：逐个试，谁在那个时段还能耗时 > 4s 就用谁。
+#   仍是"尽力而为"（全都被缓存时照样不判定），但把命中概率从"几乎必然失效"
+#   拉回"多数时候至少有一个冷词"。
+KWS = [
+    "三体",
+    "斗破苍穹",
+    "诡秘之主",
+    "凡人修仙传",
+    "遮天",
+]
+# 兼容旧引用（其它地方 / 人工调试可能还读 KW）
+KW = KWS[0]
 
 
 def check(label, cond, detail=""):
@@ -112,9 +128,28 @@ def raw_get_disconnect(host: str, port: int, path: str, read_for: float) -> int:
 
 
 def log_tail(path: Path, start_size: int) -> str:
+    """读 `path` 里 start_size 之后的新增内容（按字节偏移）。
+
+    ⚠⚠ 这里必须防**日志轮转/截断**：`start_size` 是调用方在起请求**之前**
+    记下的文件大小。若这两者之间 app.log 被轮转（midnight）或被截断，
+    `start_size` 会**大于**新文件大小 —— 此时 `f.seek(start_size)` 会
+    停在文件末尾之后，`f.read()` 返回**空串** → 调用方看到"日志里啥也没有"
+    → 误判成"收手链路没生效"（假红）。
+
+    踩过：2026-10-13 ship 跑 disconnect 时 6 轮全部 `耗时 None /
+    aborted=None`，而手动复现同样的关键词却一切正常。差异在于当时
+    app.log 还处在「轮转失败 → 静默停写」的坏状态（见 logging_setup.py
+    的 _SafeTimedRotatingFileHandler），文件 mtime 冻结、字节数不增长，
+    于是"新增内容"恒为空。日志基建修好后此现象消失，但**判据本身
+    不该依赖"文件一定单调增长"** —— 轮转是正常运维事件。
+
+    修法：当 `start_size > 当前大小`（说明轮转/截断过），退化为**从头读**
+    （宁可多读一点，也要保证不把"有内容"误读成"没内容"）。
+    """
     try:
+        size = path.stat().st_size
         with path.open("rb") as f:
-            f.seek(start_size)
+            f.seek(min(start_size, size))
             return f.read().decode("utf-8", "ignore")
     except Exception:  # noqa: BLE001
         return ""
@@ -192,7 +227,6 @@ def main() -> int:
             token = json.loads((ROOT / "cache" / "auth.json").read_text("utf-8")).get("token", "")
         except Exception:  # noqa: BLE001
             token = ""
-        base = f"/api/search?kw={urllib.parse.quote(KW)}" + (f"&t={token}" if token else "")
 
         # ---- [1] 量完整一轮的耗时：**与 [2] 的掐断轮同时段**，才可比 ----
         #
@@ -203,37 +237,65 @@ def main() -> int:
         #   掐断轮 6600ms」，判"没省下时间"，其实只是那会儿源站慢了。
         #   所以改成：每轮掐断之后**立刻**补一轮完整轮当对照，
         #   两边轮流跑，最终各取最好成绩。
-        print("\n[1]+[2] 交替跑：完整轮（对照）↔ 2s 掐断轮（实验）")
-        cut_ms_list: list[int] = []
-        full_ms_list: list[int] = []
-        cut_aborted: list[bool | None] = []    # 掐断轮：引擎自报"是不是被打断的"
-        full_aborted: list[bool | None] = []   # 完整轮：应当都没被打断
-        saw_stop_any = False
-        for round_i in (1, 2, 3):
-            # —— 实验：2s 掐断 ——
-            size1 = logfile.stat().st_size if logfile.exists() else 0
-            got = raw_get_disconnect(host, port, base, read_for=2.0)
-            cut_ms = wait_done_ms(logfile, size1)
-            tail = log_tail(logfile, size1)
-            stopped = "客户端已断开" in tail
-            if stopped:
-                saw_stop_any = True
-            if cut_ms is not None:
-                cut_ms_list.append(cut_ms)
-            cut_aborted.append(last_aborted(tail))
-            print(f"    第 {round_i} 轮 · 掐断：收到 {got} 字节 / "
-                  f"该轮耗时 {cut_ms}ms / 日志收手={stopped} / "
-                  f"引擎自报 aborted={cut_aborted[-1]}")
+        #
+        # ⚠⚠ 为什么要**逐个试关键词**：见 KWS 的注释。同一个词被搜过一次
+        #   就秒回了（measurable=False → 整套空转）。这里对每个候选词先跑
+        #   一轮完整轮"探路"：只要它还能耗时 > 4s（说明有真网络工作在跑），
+        #   就把它作为本次的关键词，进入正式的三轮交替；一个都不够长时，
+        #   退化为"不判定"并在 else 分支显式警告空转。
+        def run_rounds(base: str) -> tuple[list[int], list[int], list[bool | None], list[bool | None], bool]:
+            """跑 3 轮「掐断 ↔ 完整」交替，返回各轮数据。"""
+            cut_ms_list: list[int] = []
+            full_ms_list: list[int] = []
+            cut_aborted: list[bool | None] = []
+            full_aborted: list[bool | None] = []
+            saw_stop = False
+            for round_i in (1, 2, 3):
+                # —— 实验：2s 掐断 ——
+                size1 = logfile.stat().st_size if logfile.exists() else 0
+                got = raw_get_disconnect(host, port, base, read_for=2.0)
+                cut_ms = wait_done_ms(logfile, size1)
+                tail = log_tail(logfile, size1)
+                stopped = "客户端已断开" in tail
+                if stopped:
+                    saw_stop = True
+                if cut_ms is not None:
+                    cut_ms_list.append(cut_ms)
+                cut_aborted.append(last_aborted(tail))
+                print(f"    第 {round_i} 轮 · 掐断：收到 {got} 字节 / "
+                      f"该轮耗时 {cut_ms}ms / 日志收手={stopped} / "
+                      f"引擎自报 aborted={cut_aborted[-1]}")
 
-            # —— 对照：紧跟着跑一轮完整的 ——
-            size2 = logfile.stat().st_size if logfile.exists() else 0
-            raw_get_disconnect(host, port, base, read_for=60.0)
-            full_ms = wait_done_ms(logfile, size2)
-            if full_ms is not None:
-                full_ms_list.append(full_ms)
-            full_aborted.append(last_aborted(log_tail(logfile, size2)))
-            print(f"    第 {round_i} 轮 · 完整：该轮耗时 {full_ms}ms / "
-                  f"引擎自报 aborted={full_aborted[-1]}")
+                # —— 对照：紧跟着跑一轮完整的 ——
+                size2 = logfile.stat().st_size if logfile.exists() else 0
+                raw_get_disconnect(host, port, base, read_for=60.0)
+                full_ms = wait_done_ms(logfile, size2)
+                if full_ms is not None:
+                    full_ms_list.append(full_ms)
+                full_aborted.append(last_aborted(log_tail(logfile, size2)))
+                print(f"    第 {round_i} 轮 · 完整：该轮耗时 {full_ms}ms / "
+                      f"引擎自报 aborted={full_aborted[-1]}")
+            return cut_ms_list, full_ms_list, cut_aborted, full_aborted, saw_stop
+
+        print("\n[0] 挑一个还热不起来的冷关键词（逐个探路：完整轮耗时 > 4s 才算有牙）")
+        chosen_kw = ""
+        for cand in KWS:
+            cbase = f"/api/search?kw={urllib.parse.quote(cand)}" + (f"&t={token}" if token else "")
+            s0 = logfile.stat().st_size if logfile.exists() else 0
+            raw_get_disconnect(host, port, cbase, read_for=60.0)
+            probe_ms = wait_done_ms(logfile, s0)
+            print(f"    · 「{cand}」完整一轮 {probe_ms}ms")
+            if probe_ms is not None and probe_ms > 4000:
+                chosen_kw = cand
+                break
+        if not chosen_kw:
+            chosen_kw = KW
+            print(f"    ~ 所有候选词都回得飞快（都进缓存了）；"
+                  f"退化为用「{chosen_kw}」，本轮大概率不判定")
+
+        base = f"/api/search?kw={urllib.parse.quote(chosen_kw)}" + (f"&t={token}" if token else "")
+        print(f"\n[1]+[2] 交替跑：完整轮（对照）↔ 2s 掐断轮（实验）· 关键词「{chosen_kw}」")
+        cut_ms_list, full_ms_list, cut_aborted, full_aborted, saw_stop_any = run_rounds(base)
 
         # 前提：完整轮要够长，2s 掐断才可能切在"还在干活"的中途。
         # 全都不够长时说明这一时段源站回得飞快，机制照样对、只是没有
@@ -245,6 +307,21 @@ def main() -> int:
         else:
             print(f"    ~ 完整轮最长只有 {max(full_ms_list or [0])}ms（源站回得快）"
                   f"—— 没有余地可省，本轮不判定收手效果")
+            # ⚠⚠ 关键鉴别：**一轮 search.done 都没读到** 时，不能默认
+            #   "源站回得快" —— 那也可能是**日志根本没在写**（曾经的
+            #   Windows 轮转静默死亡 bug 就是这个征兆：文件 mtime 冻结、
+            #   字节数不增长，于是这里 6 轮全是 None / aborted=None）。
+            #   两者症状一样（都是 measurable=False），但根因天差地别：
+            #   一个是环境正常、一个是**日志基建坏了**（会让所有排障失明）。
+            #   所以显式区分：整个 app.log 在这次运行期间**一点没长** → 报警。
+            if not cut_aborted and not full_aborted:
+                grew = (logfile.stat().st_size if logfile.exists() else 0) > 0
+                print("    ⚠ 本轮**一轮 search.done 都没读到**。两种可能：")
+                print("      (a) 源站极快，6 轮都在缓存里秒回（正常，忽略即可）；")
+                print("      (b) 日志没在写（app.log 冻结）—— 这才是要查的。")
+                print(f"      当前 logs/app.log 存在且非空：{grew}")
+                print("      排查：`tail -n 5 logs/app.log` 看 mtime 是不是停在过去；"
+                      "若是，见 app/logging_setup.py 的 _SafeTimedRotatingFileHandler。")
 
         # 核心断言①：断开被识别到了（看日志，最直接的证据）
         #
