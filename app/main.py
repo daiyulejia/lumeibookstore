@@ -865,9 +865,35 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
     async def gen():
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        # 客户端还在不在。用户关标签页 / 连点两次搜索把上一个请求顶掉时，
+        # 这个会变 False —— 此时引擎已经没有人在听了。
+        alive = threading.Event()
+        alive.set()
 
+        # ⚠ 为什么需要它：引擎跑在 `loop.run_in_executor` 的**线程池**里，
+        #   而线程池任务**不会**因为客户端断开就停（run_in_executor 返回的
+        #   future 我们没有 await，也就没人取消它）。于是用户一走了之之后，
+        #   引擎仍会把整轮搜索跑完 —— 每个源照抓、每个候选照探测，
+        #   白烧 CPU 和网络，还去撞来源站的限速配额。
+        #   这是个**只有真机才会暴露**的问题：单测直接调引擎，永远看不到
+        #   客户端断开这回事。
+        #
+        #   这里不做硬取消（引擎内部有自己的收手/超时逻辑，硬打断更危险），
+        #   只做**止损**：断开后不再往队列里塞事件（没人在读），
+        #   并且不再触发任何以 on_verified 为入口的回调。
         def push(obj):
-            loop.call_soon_threadsafe(queue.put_nowait, obj)
+            if not alive.is_set():
+                return                      # 没人在读了，别攒队列
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, obj)
+            except RuntimeError:
+                # 事件循环已经关了（请求早结束）—— 静默丢弃，别把线程炸掉
+                alive.clear()
+
+        def on_verified(r):
+            if not alive.is_set():
+                return
+            push({"type": "verified", "data": r.to_dict()})
 
         # ⚠ 引擎跑在 run_in_executor 的**线程池**里，而 request_id 存在
         # ContextVar 中 —— ContextVar 不跨线程传播，不手动接过去的话，
@@ -877,12 +903,25 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
 
         def run():
             set_request_id(_req)
+            # 客户端走了就别再探测了。
+            #
+            # ⚠ 这里踩过一个想当然的错误：我原以为「断开后 push() 丢了不就行」，
+            #   但日志打脸 —— 断开后 search.done 照样出现、耗时 8.9s 一秒不少。
+            #   因为 push() 只控制**事件发不发得出去**，而真正烧资源的是
+            #   engine.search 内部的探测线程池：它压根不关心有没有人在听，
+            #   非要抽到「已验过 3 本正文」才收手。
+            #
+            #   所以必须把"客户端还在不在"**传进去**，让它把收手条件换成
+            #   alive —— 一旦没人听了就立刻停，别再花 6 秒去打来源站。
+            def _dead() -> bool:
+                return not alive.is_set()
+
             try:
                 stats: dict = {}
                 results = engine.search(
                     kw,
                     on_result=lambda r: push({"type": "item", "data": r.to_dict()}),
-                    on_verified=lambda r: push({"type": "verified", "data": r.to_dict()}),
+                    on_verified=on_verified,
                     on_progress=lambda title, detail, ok: push(
                         {"type": "step", "title": title, "detail": detail, "ok": bool(ok)}),
                     only=only,
@@ -890,6 +929,8 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                     sample=bool(sample),
                     probe=bool(probe),
                     discover=bool(discover),
+                    # 客户端断开 → 引擎立刻收手（见上面 _dead 的注释）
+                    should_stop=_dead,
                 )
                 from .aggregate import group as group_books
 
@@ -918,12 +959,35 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                 logger.exception("搜索失败（详细堆栈）")
                 push({"type": "error", "msg": str(e)})
 
-        loop.run_in_executor(None, run)
-        while True:
-            item = await queue.get()
-            yield json.dumps(item, ensure_ascii=False) + "\n"
-            if item["type"] in ("done", "error"):
-                break
+        try:
+            loop.run_in_executor(None, run)
+            while True:
+                item = await queue.get()
+                yield json.dumps(item, ensure_ascii=False) + "\n"
+                if item["type"] in ("done", "error"):
+                    break
+        except (GeneratorExit, asyncio.CancelledError):
+            # 客户端断开时，生成器是被**关闭/取消**的。这里显式捕一下只是为了
+            # 说明"断开是预期路径、不是错误"，真正干活的是下面的 finally。
+            raise
+        finally:
+            # 无论是正常收尾还是客户端半路断开（GeneratorExit），
+            # 都要把 alive 落下来 —— 断开的场景正是这个开关存在的理由。
+            # 注意这里**不 join** 那个线程：它的收手逻辑靠自己的超时，
+            # 硬等会把响应拖住；我们要的只是"别再往里塞东西"。
+            #
+            # ⚠⚠ 踩过一次「断断续续才生效」，根因是一个**启动顺序竞态**：
+            #   原来 `run_in_executor(...)` 写在 `try:` **外面**。
+            #   生成器是惰性的 —— `gen()` 被创建时一行都不跑，要等
+            #   Starlette 第一次 `__anext__()` 才从头执行到第一个 yield。
+            #   如果客户端在**第一个 yield 之前**（响应头都还没吐出去）
+            #   就断了，生成器可能**从头到尾没被启动过** ——
+            #   于是 finally 不执行、alive 永远是 set 状态，
+            #   而 run() 已经在 executor 里跑起来了 → 照样把整轮跑完。
+            #   表现就是同一个测试跑两次、一次通过一次失败。
+            #   把 `run_in_executor` 挪进 try，保证「任务已提交」和
+            #   「有 finally 兜底」是同一个 try 里的原子动作。
+            alive.clear()
 
     return StreamingResponse(
         gen(),

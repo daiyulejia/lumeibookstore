@@ -205,6 +205,7 @@ class Engine:
         stats: Optional[dict] = None,
         discover: bool = True,
         on_progress: Optional[Callable[[str, str, bool], None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> list[BookResult]:
         """并行搜索所有源 → 打分去噪 → 并发探测 → 抽样校验。
 
@@ -215,10 +216,18 @@ class Engine:
         discover:    本地来源全军覆没时，要不要联网出去找
         on_progress: 步骤级进度回调 on_progress(标题, 详情, 是否成功)
                      （目前只有「联网发现」会推，界面用它显示「正在联网找…」）
+        should_stop: 返回 True 时**立刻收手**。用于「客户端已经断开」——
+                     没人看结果了，就没必要为了"完整"去把每个来源都打完、
+                     把每个候选都探测一遍；那是在白烧 CPU、网络和站点的
+                     限速配额。默认 None = 永不主动停。
         """
         keyword = keyword.strip()
         if not keyword:
             return []
+
+        def _stop() -> bool:
+            # 一次调用里包一层，避免到处都是 `is not None and ...()`
+            return bool(should_stop and should_stop())
 
         # —— 多词关键词：「搜索用词」与「排序用词」要分开 ——
         # 用户搜「余华 活着」时，把整串丢给站点搜索多半 0 结果（站点的搜索框
@@ -415,6 +424,12 @@ class Engine:
                     if "timeout" not in type(e).__name__.lower():
                         raise
                     batch = []
+                if _stop():
+                    # 客户端已经断开（关页 / 连点两次搜索把上一次顶掉）——
+                    # 没人看结果了，没必要再等这些慢源。立刻收手。
+                    logger.info("客户端已断开，扇出收手：已答 %d/%d 个源",
+                                done_count, total)
+                    break
                 if not batch:
                     # 没有任何源在这段窗口内返回 → 到头了
                     #
@@ -491,7 +506,8 @@ class Engine:
                   原始=len(raw), 去噪后=len(results))
 
         if probe and results:
-            self.probe_all(results, on_verified=on_verified, top=probe_top)
+            self.probe_all(results, on_verified=on_verified, top=probe_top,
+                           should_stop=should_stop)
             results = self.refine(results, keyword)
 
         # ---- 本地一条可读的都没有？出去找 ----
@@ -536,18 +552,21 @@ class Engine:
                                        search_kw=search_kws)
                 if extra:
                     if probe:
-                        self.probe_all(extra, on_verified=on_verified, top=len(extra))
+                        self.probe_all(extra, on_verified=on_verified, top=len(extra),
+                                       should_stop=should_stop)
                     results = rank(results + extra, keyword)
                     results = self.refine(results, keyword)
         elif discover and need_web and already_web:
             # 并行已发起、本地仍无结果 → 给 web_extra 探测 + 重排
             # （上面 raw 已 extend，这里 results=rank(raw) 已包含 web_extra）
             if results and probe:
-                self.probe_all(results, on_verified=on_verified, top=probe_top)
+                self.probe_all(results, on_verified=on_verified, top=probe_top,
+                               should_stop=should_stop)
                 results = self.refine(results, keyword)
 
         if sample and results:
-            self.verify_samples(results, on_verified=on_verified)
+            self.verify_samples(results, on_verified=on_verified,
+                                should_stop=should_stop)
 
         if stats is not None:
             stats.update({
@@ -631,6 +650,7 @@ class Engine:
         results: list[BookResult],
         on_verified: Optional[Callable[[BookResult], None]] = None,
         top: int = DEFAULT_PROBE_TOP,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> list[BookResult]:
         """并发探测候选，可用的排到前面。
 
@@ -659,6 +679,12 @@ class Engine:
         ok = 0
         try:
             for fut in as_completed(futs, timeout=PROBE_BUDGET):
+                if should_stop and should_stop():
+                    # 客户端断开 → 没必要再把剩下的候选一个个打开验证。
+                    # 探测是整轮搜索里最贵的一段（每个候选都要打一次详情页），
+                    # 没人看结果时继续跑纯粹是浪费。
+                    logger.info("客户端已断开，停止探测（已验证 %d 个）", ok)
+                    break
                 try:
                     r = fut.result()
                 except Exception as e:  # noqa: BLE001
@@ -745,6 +771,7 @@ class Engine:
         results: list[BookResult],
         on_verified: Optional[Callable[[BookResult], None]] = None,
         top: int = SAMPLE_TOP,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> None:
         """对最靠前的「目录可达」候选，抽一章正文验证内容是真的。
 
@@ -789,6 +816,9 @@ class Engine:
         ok = 0
         try:
             for fut in as_completed(futs, timeout=SAMPLE_BUDGET):
+                if should_stop and should_stop():
+                    logger.info("客户端已断开，停止正文抽样（已验 %d 本）", ok)
+                    break
                 try:
                     r = fut.result()
                 except Exception:  # noqa: BLE001

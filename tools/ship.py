@@ -109,6 +109,11 @@ LIVE_SUITES = [
     # 前端埋点：JS 错误 / Promise 拒绝 / 接口失败 必须落进 logs/app.log。
     # 这条直接读日志文件 —— 「用户报的 bug 能不能对上日志」只能这么验。
     ("test_telemetry.py", "前端埋点"),
+    # 客户端断开后引擎要**收手**。修之前：用户关掉页面/连点两次搜索，
+    # 服务端照样把整轮跑完（实测白烧 13.9s，vs 修复后 3.5s）。
+    # 靠读日志里的「客户端已断开」+ 比对耗时来判定 —— 没有这个测试，
+    # 这种「不报错、只是烧资源」的退化永远发现不了。
+    ("test_disconnect.py", "断连止损"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -124,6 +129,7 @@ LIVE_ARGS = {
     "test_xss.py": "--url",
     "test_concurrency.py": "--url",
     "test_telemetry.py": "--url",
+    "test_disconnect.py": "--url",
 }
 
 
