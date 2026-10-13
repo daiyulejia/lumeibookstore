@@ -45,3 +45,37 @@ export function toast(msg, kind) {
   return pick("toast")(msg, kind);
 }
 export const PRE = new Proxy({}, { get: (_t, k) => pick("PRE")[k] });
+
+/**
+ * 等到「旧代码完成了鉴权初始化」再继续。
+ *
+ * ⚠ 为什么必须有这个：页面用的是 `?t=<token>` 传令牌，
+ * 而读这个参数、写进 PRE 的动作发生在旧代码的 `bootstrapAuth()` 里
+ * （main.js 第 121 行，`await` 之前还有若干 mount）。
+ * Vue 的入口是**另一个** `<script type="module">`，
+ * 加载完就立刻 mount —— 于是组件的 onMounted 很可能跑在
+ * bootstrapAuth() 之前，此时 `api.get()` 拼出来的 URL **不带令牌**，
+ * 线上直接 401（本地因为 /api 不需要令牌，根本不复现）。
+ *
+ * 症状很隐蔽：本地一切正常、线上榜单区块整块不显示（组件拿到 401 就
+ * 收起了容器），控制台只有一条被埋在埋点里的 401。
+ *
+ * 做法：轮询 window.__lumeiLegacy.authReady（旧代码在 bootstrapAuth
+ * 完成后置位），最多等 8 秒兜底。
+ */
+export function whenAuthReady(timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const tick = () => {
+      const L = window.__lumeiLegacy || {};
+      // authReady 没被旧代码置位时（比如旧代码是老版本）也别死等 ——
+      // 超时就放行，让组件照常发请求、失败了自己兜底。
+      if (L.authReady || Date.now() - t0 > timeoutMs) {
+        resolve(!!L.authReady);
+        return;
+      }
+      setTimeout(tick, 60);
+    };
+    tick();
+  });
+}

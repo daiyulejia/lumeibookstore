@@ -118,6 +118,14 @@ export async function bootstrapAuth() {
     if (r.ok === false) showAuthGate();
   } catch (e) {
     if (e.status === 401) showAuthGate();
+  } finally {
+    // ⚠ 迁移桥：告诉 Vue 侧「令牌已就绪、可以发请求了」。
+    //   必须在这里（而不是更早）置位 —— 令牌是上面 TOKEN.set() 写的，
+    //   早于此置位就等于骗人：Vue 照样会发出不带 t= 的请求，线上 401。
+    //   见 frontend/src/legacy/util.js 的 whenAuthReady()。
+    window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, {
+      authReady: true,
+    });
   }
 }
 

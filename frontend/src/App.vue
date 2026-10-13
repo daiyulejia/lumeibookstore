@@ -9,22 +9,18 @@
 -->
 <template>
   <n-config-provider :theme="themeState.theme" :theme-overrides="themeState.overrides">
-    <n-message-provider>
-      <RanksPanel v-if="mountRanks" />
-    </n-message-provider>
+    <RanksPanel v-if="mountRanks" />
   </n-config-provider>
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
-import { NConfigProvider, NMessageProvider } from "naive-ui";
+import { ref } from "vue";
+import { NConfigProvider } from "naive-ui";
 import { themeState } from "./theme/naive.js";
 import RanksPanel from "./components/RanksPanel.vue";
 
 // 只有当页面上真的存在榜单容器、且它被标记为「交给 Vue」时才挂载组件。
-// 这样旧代码和 Vue 可以在同一页面共存而不打架。
+// 这样旧代码和 Vue 可以在同一页面共存而不打架：
+// 以后某页迁完了就在它的容器上加 data-vue-ranks，没迁的页不加。
 const mountRanks = ref(!!document.querySelector("[data-vue-ranks]"));
-
-// 暴露主题给模板
-const theme = computed(() => themeState);
 </script>

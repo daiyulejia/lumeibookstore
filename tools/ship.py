@@ -120,6 +120,11 @@ LIVE_SUITES = [
     # 靠读日志里的「客户端已断开」+ 比对耗时来判定 —— 没有这个测试，
     # 这种「不报错、只是烧资源」的退化永远发现不了。
     ("test_disconnect.py", "断连止损"),
+    # 鉴权时序：Vue 是**另一个** module script，加载完立刻 mount，
+    # 可能抢在读 ?t= 的 bootstrapAuth() 之前发请求 —— 线上 401、
+    # 榜单整块不显示，而**本地因 /api 免令牌永远不复现**。
+    # 这条不看结果看时序（请求发车时 authReady 了没），本地也有牙。
+    ("test_auth_race.py", "鉴权时序"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -136,6 +141,7 @@ LIVE_ARGS = {
     "test_concurrency.py": "--url",
     "test_telemetry.py": "--url",
     "test_disconnect.py": "--url",
+    "test_auth_race.py": "--url",
 }
 
 

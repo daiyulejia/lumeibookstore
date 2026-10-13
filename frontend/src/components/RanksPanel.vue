@@ -135,7 +135,7 @@
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { NButton, NIcon, NSkeleton } from "naive-ui";
-import { api, bus, PRE, toast } from "../legacy/util.js";
+import { api, bus, PRE, toast, whenAuthReady } from "../legacy/util.js";
 import { stagger } from "../legacy/motion.js";
 
 // 极简的刷新图标（内联 SVG，省一个图标库依赖）
@@ -319,11 +319,14 @@ watch(folded, (v) => {
 });
 
 onMounted(async () => {
-  // ⚠ 必须自己把容器显出来。
-  //   旧代码里这件事是 mountRanks() 干的（拿到榜单目录后才 `box.hidden=false`）。
-  //   榜单迁到 Vue 后旧函数不再执行，容器就一直是 index.html 里的初始
-  //   `hidden` 状态 —— 组件渲染得好好的，用户却什么都看不见（很容易误判成
-  //   "Vue 没挂上"，实际是外层被藏了）。所以由组件自己负责显隐。
+  // ⚠ 先等令牌就绪，再发第一个请求。
+  //   页面用 `?t=<token>` 传令牌，读它的是旧代码的 bootstrapAuth()；
+  //   而 Vue 是另一个 module，加载完立刻 mount —— onMounted 很可能跑在
+  //   bootstrapAuth 之前，此时请求不带 t=，**线上 401**。
+  //   本地 /api 不需要令牌，所以本地永远不复现，只在线上表现为
+  //   "榜单区块整块不显示"。见 legacy/util.js 的 whenAuthReady()。
+  await whenAuthReady();
+
   const box = document.getElementById("ranksBox");
   // 恢复上次的收起状态（类名也要同步，否则展开/收起的视觉状态对不上）
   if (box) box.classList.toggle("folded", !!folded.value);
