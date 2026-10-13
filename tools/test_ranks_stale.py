@@ -177,6 +177,28 @@ def main() -> int:
     check("后台线程跑完后会自己清理", len(after) == 0,
           f"还剩 {len(after)} 个没退出")
 
+    print("\n── 8. refresh() 不和后台自动刷新撞车 ──────────────────────────")
+    # 场景：首页请求触发了后台刷新，紧接着定时任务 / 用户点「刷新」也来刷。
+    # 不互斥的话同一类榜单会被抓两遍（第三方站有速率限制，没必要冒险）。
+    reset({"allvote": (_OLD, _ITEMS)})
+    fetch_calls: list[str] = []
+
+    def slow_fetch(k: str):
+        fetch_calls.append(k)
+        time.sleep(0.3)
+        return _NEW
+
+    ranks._fetch_one = slow_fetch
+    # 先踢起后台线程
+    ranks.get_rank("allvote")
+    # 趁后台还在跑，调 refresh（force=True，目标是全部 SUPPORTED kind）
+    rep = ranks.refresh(["allvote"], force=True)
+    check("refresh 把 allvote 判为跳过（后台正在刷）",
+          rep["skipped"] >= 1, f"skipped={rep['skipped']}")
+    check("refresh 没有为 allvote 再发起一次抓取",
+          fetch_calls.count("allvote") <= 1, f"实际抓了 {fetch_calls.count('allvote')} 次")
+    time.sleep(0.7)   # 等后台跑完
+
     print("\n── 5. 未知 kind → 空（且不抓取）───────────────────────────────")
     reset()
     calls = []

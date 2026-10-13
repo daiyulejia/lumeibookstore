@@ -474,6 +474,15 @@ def refresh(kinds_: Optional[list[str]] = None, force: bool = True) -> dict[str,
 
     ok, failed, skipped = 0, 0, len(want) - len(targets)
     for k in targets:
+        # ⚠ 别和后台自动刷新撞车：同一类榜单同时在抓两次，纯属浪费
+        #   （第三方站有速率限制，多抓一次就多一分被限流的风险）。
+        #   已经有后台线程在刷 → 跳过，等它写完缓存就是最新的了。
+        #   注意也要计入 skipped —— 循环开始时那个 skipped 只算了
+        #   "因 TTL 未过期而没进 targets 的"，这里是第二类跳过原因。
+        with _lock:
+            if k in _BG or k in _inflight:
+                skipped += 1
+                continue
         try:
             items = _fetch_one(k)
             if items:
