@@ -10983,11 +10983,11 @@ ${style}
  height: 1em;
  width: 1em;
  `)])])]);
-    const _hoisted_1$5 = ["viewBox"];
-    const _hoisted_2$5 = ["values", "dur"];
-    const _hoisted_3$5 = ["stroke-width", "cx", "cy", "r", "stroke-dasharray", "stroke-dashoffset"];
-    const _hoisted_4$4 = ["values", "dur"];
-    const _hoisted_5$4 = ["values", "dur"];
+    const _hoisted_1$8 = ["viewBox"];
+    const _hoisted_2$8 = ["values", "dur"];
+    const _hoisted_3$8 = ["stroke-width", "cx", "cy", "r", "stroke-dasharray", "stroke-dashoffset"];
+    const _hoisted_4$6 = ["values", "dur"];
+    const _hoisted_5$5 = ["values", "dur"];
     const duration = "1.6s";
     const exposedLoadingProps = {
       strokeWidth: {
@@ -11057,7 +11057,7 @@ ${style}
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_2$5), createBaseVNode("circle", {
+          }, null, 8, _hoisted_2$8), createBaseVNode("circle", {
             class: normalizeClass$1(`${clsPrefix}-base-loading__icon`),
             fill: "none",
             stroke: "currentColor",
@@ -11076,14 +11076,14 @@ ${style}
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_4$4), createBaseVNode("animate", {
+          }, null, 8, _hoisted_4$6), createBaseVNode("animate", {
             attributeName: "stroke-dashoffset",
             values: `${5.67 * radius};${1.42 * radius};${5.67 * radius}`,
             begin: "0s",
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_5$4)], 10, _hoisted_3$5)])], 14, _hoisted_1$5))], 2)], 2)) : (openBlock(), createElementBlock("div", {
+          }, null, 8, _hoisted_5$5)], 10, _hoisted_3$8)])], 14, _hoisted_1$8))], 2)], 2)) : (openBlock(), createElementBlock("div", {
             key: "placeholder",
             class: normalizeClass$1(`${clsPrefix}-base-loading__placeholder`)
           }, [normalizeVNode(() => this.$slots.default?.())], 2))
@@ -17237,6 +17237,41 @@ ${style}
         tick();
       });
     }
+    const _rdSubs = [];
+    let _rdRegistered = false;
+    const rdDebug = { snapshots: 0, last: null };
+    function attachReaderSnapshot(apply2) {
+      _rdSubs.push(apply2);
+      if (!_rdRegistered) {
+        const fn = window.__lumeiLegacy && window.__lumeiLegacy.attachReader;
+        if (typeof fn === "function") {
+          fn((st) => {
+            rdDebug.snapshots++;
+            rdDebug.last = st;
+            for (const f of _rdSubs.slice()) {
+              try {
+                f(st);
+              } catch {
+              }
+            }
+          });
+          _rdRegistered = true;
+        }
+        rdDebug.registered = _rdRegistered;
+      }
+      return () => {
+        const i = _rdSubs.indexOf(apply2);
+        if (i >= 0) _rdSubs.splice(i, 1);
+      };
+    }
+    function callLegacy(name, ...args) {
+      const fn = window.__lumeiLegacy && window.__lumeiLegacy[name];
+      if (typeof fn === "function") return fn(...args);
+      return void 0;
+    }
+    if (typeof window !== "undefined") {
+      window.__lumeiRdDebug = rdDebug;
+    }
     function pick(name) {
       const v = window.__lumeiLegacy && window.__lumeiLegacy[name];
       if (!v) throw new Error(`[lumei] 旧模块 ${name} 未挂到 window.__lumeiLegacy`);
@@ -17252,53 +17287,53 @@ ${style}
       }
       return target;
     };
-    const _hoisted_1$4 = { class: "rk-vue" };
-    const _hoisted_2$4 = { class: "rk-head" };
-    const _hoisted_3$4 = {
+    const _hoisted_1$7 = { class: "rk-vue" };
+    const _hoisted_2$7 = { class: "rk-head" };
+    const _hoisted_3$7 = {
       class: "rk-age",
       id: "ranksAge"
     };
-    const _hoisted_4$3 = { class: "rk-actions" };
-    const _hoisted_5$3 = {
+    const _hoisted_4$5 = { class: "rk-actions" };
+    const _hoisted_5$4 = {
       key: 0,
       id: "ranksTabs",
       class: "rk-tabs",
       role: "tablist"
     };
-    const _hoisted_6$3 = ["data-kind", "aria-selected", "onClick"];
-    const _hoisted_7$3 = {
+    const _hoisted_6$4 = ["data-kind", "aria-selected", "onClick"];
+    const _hoisted_7$4 = {
       key: 1,
       class: "rk-desc",
       id: "ranksDesc"
     };
-    const _hoisted_8$3 = {
+    const _hoisted_8$4 = {
       key: 2,
       class: "rk-body"
     };
-    const _hoisted_9$3 = {
+    const _hoisted_9$4 = {
       key: 0,
       class: "rk-skel"
     };
-    const _hoisted_10$3 = ["data-title", "data-kind", "onClick"];
-    const _hoisted_11$2 = { class: "rk-src" };
-    const _hoisted_12$2 = {
+    const _hoisted_10$4 = ["data-title", "data-kind", "onClick"];
+    const _hoisted_11$3 = { class: "rk-src" };
+    const _hoisted_12$3 = {
       key: 0,
       class: "rk-owned",
       title: "这本书已经在你书架里了"
     };
-    const _hoisted_13$2 = {
+    const _hoisted_13$3 = {
       key: 1,
       class: "rk-go"
     };
-    const _hoisted_14$2 = {
+    const _hoisted_14$3 = {
       key: 2,
       class: "rk-err"
     };
-    const _hoisted_15$1 = {
+    const _hoisted_15$2 = {
       key: 3,
       class: "rk-err"
     };
-    const _sfc_main$5 = {
+    const _sfc_main$8 = {
       __name: "RanksPanel",
       setup(__props) {
         const RefreshIcon = {
@@ -17495,11 +17530,11 @@ ${style}
           clearTimeout(recheckTimer);
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1$4, [
-            createBaseVNode("div", _hoisted_2$4, [
+          return openBlock(), createElementBlock("div", _hoisted_1$7, [
+            createBaseVNode("div", _hoisted_2$7, [
               _cache[2] || (_cache[2] = createBaseVNode("h2", { class: "rk-title" }, "热门榜单", -1)),
-              createBaseVNode("span", _hoisted_3$4, toDisplayString(freshness.value), 1),
-              createBaseVNode("div", _hoisted_4$3, [
+              createBaseVNode("span", _hoisted_3$7, toDisplayString(freshness.value), 1),
+              createBaseVNode("div", _hoisted_4$5, [
                 createVNode(unref(Button), {
                   id: "ranksRefresh",
                   size: "small",
@@ -17533,7 +17568,7 @@ ${style}
                 })
               ])
             ]),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5$3, [
+            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5$4, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(kinds.value, (k) => {
                 return openBlock(), createElementBlock("button", {
                   key: k.kind,
@@ -17543,12 +17578,12 @@ ${style}
                   "aria-selected": k.kind === cur.value,
                   type: "button",
                   onClick: ($event) => onKindChange(k.kind)
-                }, toDisplayString(k.label), 11, _hoisted_6$3);
+                }, toDisplayString(k.label), 11, _hoisted_6$4);
               }), 128))
             ])) : createCommentVNode("", true),
-            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$3, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8$3, [
-              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$3, [
+            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$4, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
+            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8$4, [
+              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$4, [
                 (openBlock(), createElementBlock(Fragment, null, renderList(6, (i) => {
                   return createVNode(unref(Skeleton_default), {
                     key: i,
@@ -17583,13 +17618,13 @@ ${style}
                         createBaseVNode("b", null, toDisplayString(it.title), 1),
                         createBaseVNode("em", null, toDisplayString(metaOf(it) || " "), 1)
                       ], 4),
-                      createBaseVNode("span", _hoisted_11$2, toDisplayString(it.source_display || it.source || ""), 1),
-                      isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_12$2, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_13$2, "找这本 ›"))
-                    ], 10, _hoisted_10$3);
+                      createBaseVNode("span", _hoisted_11$3, toDisplayString(it.source_display || it.source || ""), 1),
+                      isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_12$3, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_13$3, "找这本 ›"))
+                    ], 10, _hoisted_10$4);
                   }), 128))
                 ]),
                 _: 1
-              })) : !loading.value ? (openBlock(), createElementBlock("div", _hoisted_14$2, [
+              })) : !loading.value ? (openBlock(), createElementBlock("div", _hoisted_14$3, [
                 createTextVNode(toDisplayString(emptyHint.value || "这个榜单暂时没有内容。") + " ", 1),
                 createVNode(unref(Button), {
                   size: "tiny",
@@ -17602,7 +17637,7 @@ ${style}
                   _: 1
                 })
               ])) : createCommentVNode("", true),
-              error.value && items.value.length ? (openBlock(), createElementBlock("div", _hoisted_15$1, [
+              error.value && items.value.length ? (openBlock(), createElementBlock("div", _hoisted_15$2, [
                 createTextVNode(" 刷新失败：" + toDisplayString(error.value) + " ", 1),
                 createVNode(unref(Button), {
                   size: "tiny",
@@ -17629,11 +17664,11 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$5, [["__scopeId", "data-v-875a0654"]]);
-    const _hoisted_1$3 = ["src"];
-    const _hoisted_2$3 = { class: "t" };
-    const _hoisted_3$3 = { class: "a" };
-    const _sfc_main$4 = {
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-875a0654"]]);
+    const _hoisted_1$6 = ["src"];
+    const _hoisted_2$6 = { class: "t" };
+    const _hoisted_3$6 = { class: "a" };
+    const _sfc_main$7 = {
       __name: "BookCover",
       props: {
         /** 真封面外链（可空 —— 空了就用渐变色块兜底） */
@@ -17681,39 +17716,39 @@ ${style}
               loading: "lazy",
               decoding: "async",
               onError: _cache[0] || (_cache[0] = ($event) => hasImg.value = false)
-            }, null, 40, _hoisted_1$3)) : createCommentVNode("", true),
-            createBaseVNode("div", _hoisted_2$3, toDisplayString(shortTitle.value), 1),
-            createBaseVNode("div", _hoisted_3$3, toDisplayString(shortAuthor.value), 1)
+            }, null, 40, _hoisted_1$6)) : createCommentVNode("", true),
+            createBaseVNode("div", _hoisted_2$6, toDisplayString(shortTitle.value), 1),
+            createBaseVNode("div", _hoisted_3$6, toDisplayString(shortAuthor.value), 1)
           ], 6);
         };
       }
     };
-    const _hoisted_1$2 = { class: "wrap" };
-    const _hoisted_2$2 = { class: "filters" };
-    const _hoisted_3$2 = {
+    const _hoisted_1$5 = { class: "wrap" };
+    const _hoisted_2$5 = { class: "filters" };
+    const _hoisted_3$5 = {
       id: "shelfStat",
       class: "shelf-stat"
     };
-    const _hoisted_4$2 = {
+    const _hoisted_4$4 = {
       key: 0,
       class: "shelfgrid",
       id: "shelfList"
     };
-    const _hoisted_5$2 = {
+    const _hoisted_5$3 = {
       key: 1,
       class: "shelfgrid",
       id: "shelfList"
     };
-    const _hoisted_6$2 = ["data-id"];
-    const _hoisted_7$2 = { class: "info" };
-    const _hoisted_8$2 = { class: "by" };
-    const _hoisted_9$2 = { class: "prog" };
-    const _hoisted_10$2 = { class: "lb" };
-    const _hoisted_11$1 = { class: "bar" };
-    const _hoisted_12$1 = { class: "lb" };
-    const _hoisted_13$1 = { class: "bar" };
-    const _hoisted_14$1 = { class: "acts" };
-    const _sfc_main$3 = {
+    const _hoisted_6$3 = ["data-id"];
+    const _hoisted_7$3 = { class: "info" };
+    const _hoisted_8$3 = { class: "by" };
+    const _hoisted_9$3 = { class: "prog" };
+    const _hoisted_10$3 = { class: "lb" };
+    const _hoisted_11$2 = { class: "bar" };
+    const _hoisted_12$2 = { class: "lb" };
+    const _hoisted_13$2 = { class: "bar" };
+    const _hoisted_14$2 = { class: "acts" };
+    const _sfc_main$6 = {
       __name: "ShelfPanel",
       setup(__props) {
         const books = /* @__PURE__ */ ref([]);
@@ -17790,10 +17825,10 @@ ${style}
           clearTimeout(safety);
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1$2, [
-            createBaseVNode("div", _hoisted_2$2, [
+          return openBlock(), createElementBlock("div", _hoisted_1$5, [
+            createBaseVNode("div", _hoisted_2$5, [
               _cache[1] || (_cache[1] = createBaseVNode("div", { class: "shelf-h" }, "我的书架", -1)),
-              createBaseVNode("span", _hoisted_3$2, toDisplayString(statText.value), 1),
+              createBaseVNode("span", _hoisted_3$5, toDisplayString(statText.value), 1),
               _cache[2] || (_cache[2] = createBaseVNode("div", { class: "spacer" }, null, -1)),
               createVNode(unref(Button), {
                 id: "btnShelfReload",
@@ -17808,7 +17843,7 @@ ${style}
                 _: 1
               }, 8, ["loading"])
             ]),
-            loading.value && !books.value.length ? (openBlock(), createElementBlock("div", _hoisted_4$2, [
+            loading.value && !books.value.length ? (openBlock(), createElementBlock("div", _hoisted_4$4, [
               (openBlock(), createElementBlock(Fragment, null, renderList(4, (i) => {
                 return createBaseVNode("div", {
                   key: i,
@@ -17817,7 +17852,7 @@ ${style}
                   createStaticVNode('<div class="sk-cover" data-v-f5c78a01></div><div class="info" data-v-f5c78a01><div class="sk-line w60" data-v-f5c78a01></div><div class="sk-line w40" data-v-f5c78a01></div><div class="sk-line w80 tall" data-v-f5c78a01></div></div>', 2)
                 ])]);
               }), 64))
-            ])) : (openBlock(), createElementBlock("div", _hoisted_5$2, [
+            ])) : (openBlock(), createElementBlock("div", _hoisted_5$3, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(books.value, (b, i) => {
                 return openBlock(), createElementBlock("div", {
                   key: b.id,
@@ -17825,39 +17860,39 @@ ${style}
                   "data-id": b.id,
                   style: normalizeStyle({ "--mo-i": i })
                 }, [
-                  createVNode(_sfc_main$4, {
+                  createVNode(_sfc_main$7, {
                     cover: b.cover,
                     title: b.title,
                     author: b.author
                   }, null, 8, ["cover", "title", "author"]),
-                  createBaseVNode("div", _hoisted_7$2, [
+                  createBaseVNode("div", _hoisted_7$3, [
                     createBaseVNode("h4", null, toDisplayString(b.title), 1),
-                    createBaseVNode("div", _hoisted_8$2, toDisplayString(b.author || "作者未知") + " · " + toDisplayString(b.source_display || b.source || ""), 1),
-                    createBaseVNode("div", _hoisted_9$2, [
+                    createBaseVNode("div", _hoisted_8$3, toDisplayString(b.author || "作者未知") + " · " + toDisplayString(b.source_display || b.source || ""), 1),
+                    createBaseVNode("div", _hoisted_9$3, [
                       createBaseVNode("div", null, [
-                        createBaseVNode("div", _hoisted_10$2, [
+                        createBaseVNode("div", _hoisted_10$3, [
                           createBaseVNode("span", null, "读到 " + toDisplayString(b.position?.index || 1) + "/" + toDisplayString(b.total || "?") + " 章", 1),
                           createBaseVNode("span", null, toDisplayString(readPct(b).toFixed(0)) + "%", 1)
                         ]),
-                        createBaseVNode("div", _hoisted_11$1, [
+                        createBaseVNode("div", _hoisted_11$2, [
                           createBaseVNode("i", {
                             style: normalizeStyle({ width: readPct(b) + "%" })
                           }, null, 4)
                         ])
                       ]),
                       createBaseVNode("div", null, [
-                        createBaseVNode("div", _hoisted_12$1, [
+                        createBaseVNode("div", _hoisted_12$2, [
                           createBaseVNode("span", null, "已缓存 " + toDisplayString(b.cached || 0) + " 章", 1),
                           createBaseVNode("span", null, toDisplayString(cachePct(b).toFixed(0)) + "%", 1)
                         ]),
-                        createBaseVNode("div", _hoisted_13$1, [
+                        createBaseVNode("div", _hoisted_13$2, [
                           createBaseVNode("i", {
                             style: normalizeStyle({ width: cachePct(b) + "%", background: "var(--ok)" })
                           }, null, 4)
                         ])
                       ])
                     ]),
-                    createBaseVNode("div", _hoisted_14$1, [
+                    createBaseVNode("div", _hoisted_14$2, [
                       createVNode(unref(Button), {
                         size: "small",
                         type: "primary",
@@ -17902,7 +17937,7 @@ ${style}
                       }, 8, ["onClick"])
                     ])
                   ])
-                ], 12, _hoisted_6$2);
+                ], 12, _hoisted_6$3);
               }), 128))
             ])),
             createBaseVNode("div", {
@@ -17920,24 +17955,24 @@ ${style}
         };
       }
     };
-    const ShelfPanel = /* @__PURE__ */ _export_sfc(_sfc_main$3, [["__scopeId", "data-v-f5c78a01"]]);
-    const _hoisted_1$1 = { class: "wrap" };
-    const _hoisted_2$1 = { class: "filters" };
-    const _hoisted_3$1 = {
+    const ShelfPanel = /* @__PURE__ */ _export_sfc(_sfc_main$6, [["__scopeId", "data-v-f5c78a01"]]);
+    const _hoisted_1$4 = { class: "wrap" };
+    const _hoisted_2$4 = { class: "filters" };
+    const _hoisted_3$4 = {
       key: 0,
       id: "fileList"
     };
-    const _hoisted_4$1 = {
+    const _hoisted_4$3 = {
       key: 1,
       id: "fileList"
     };
-    const _hoisted_5$1 = ["data-ext"];
-    const _hoisted_6$1 = ["data-ext", "innerHTML"];
-    const _hoisted_7$1 = { class: "nm" };
-    const _hoisted_8$1 = ["title"];
-    const _hoisted_9$1 = { class: "acts" };
-    const _hoisted_10$1 = ["href"];
-    const _sfc_main$2 = {
+    const _hoisted_5$2 = ["data-ext"];
+    const _hoisted_6$2 = ["data-ext", "innerHTML"];
+    const _hoisted_7$2 = { class: "nm" };
+    const _hoisted_8$2 = ["title"];
+    const _hoisted_9$2 = { class: "acts" };
+    const _hoisted_10$2 = ["href"];
+    const _sfc_main$5 = {
       __name: "FilesPanel",
       setup(__props) {
         const ICONS = {
@@ -18021,8 +18056,8 @@ ${style}
           clearTimeout(safety);
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1$1, [
-            createBaseVNode("div", _hoisted_2$1, [
+          return openBlock(), createElementBlock("div", _hoisted_1$4, [
+            createBaseVNode("div", _hoisted_2$4, [
               _cache[4] || (_cache[4] = createBaseVNode("div", { class: "files-h" }, "导出文件", -1)),
               _cache[5] || (_cache[5] = createBaseVNode("div", { class: "spacer" }, null, -1)),
               _cache[6] || (_cache[6] = createBaseVNode("label", {
@@ -18054,7 +18089,7 @@ ${style}
                 _: 1
               }, 8, ["loading"])
             ]),
-            loading.value && !files.value.length ? (openBlock(), createElementBlock("div", _hoisted_3$1, [
+            loading.value && !files.value.length ? (openBlock(), createElementBlock("div", _hoisted_3$4, [
               (openBlock(), createElementBlock(Fragment, null, renderList(3, (i) => {
                 return createBaseVNode("div", {
                   key: i,
@@ -18063,7 +18098,7 @@ ${style}
                   createStaticVNode('<div class="sk-ic" data-v-3663db34></div><div class="sk-col" data-v-3663db34><div class="sk-line w60" data-v-3663db34></div><div class="sk-line w40" data-v-3663db34></div></div><div class="sk-acts" data-v-3663db34><div class="sk-btn" data-v-3663db34></div><div class="sk-btn" data-v-3663db34></div></div>', 3)
                 ])]);
               }), 64))
-            ])) : (openBlock(), createElementBlock("div", _hoisted_4$1, [
+            ])) : (openBlock(), createElementBlock("div", _hoisted_4$3, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(files.value, (f) => {
                 return openBlock(), createElementBlock("div", {
                   key: f.name,
@@ -18074,14 +18109,14 @@ ${style}
                     class: "ic",
                     "data-ext": f.ext,
                     innerHTML: fmtIcon(f.ext)
-                  }, null, 8, _hoisted_6$1),
-                  createBaseVNode("div", _hoisted_7$1, [
+                  }, null, 8, _hoisted_6$2),
+                  createBaseVNode("div", _hoisted_7$2, [
                     createBaseVNode("b", {
                       title: f.name
-                    }, toDisplayString(f.name), 9, _hoisted_8$1),
+                    }, toDisplayString(f.name), 9, _hoisted_8$2),
                     createBaseVNode("span", null, toDisplayString((f.ext || "").toUpperCase()) + " · " + toDisplayString(fmtSize(f.size)) + " · " + toDisplayString(fmtTime(f.mtime)), 1)
                   ]),
-                  createBaseVNode("div", _hoisted_9$1, [
+                  createBaseVNode("div", _hoisted_9$2, [
                     f.ext === "html" ? (openBlock(), createBlock(unref(Button), {
                       key: 0,
                       size: "small",
@@ -18097,7 +18132,7 @@ ${style}
                       class: "btn sm",
                       href: downloadUrl(f),
                       download: ""
-                    }, "下载", 8, _hoisted_10$1),
+                    }, "下载", 8, _hoisted_10$2),
                     createVNode(unref(Button), {
                       size: "small",
                       quaternary: "",
@@ -18110,7 +18145,7 @@ ${style}
                       _: 1
                     }, 8, ["data-del", "onClick"])
                   ])
-                ], 8, _hoisted_5$1);
+                ], 8, _hoisted_5$2);
               }), 128))
             ])),
             createBaseVNode("div", {
@@ -18128,45 +18163,45 @@ ${style}
         };
       }
     };
-    const FilesPanel = /* @__PURE__ */ _export_sfc(_sfc_main$2, [["__scopeId", "data-v-3663db34"]]);
-    const _hoisted_1 = { class: "lu-discover" };
-    const _hoisted_2 = ["innerHTML"];
-    const _hoisted_3 = { class: "nl-head" };
-    const _hoisted_4 = { id: "netLiveTitle" };
-    const _hoisted_5 = {
+    const FilesPanel = /* @__PURE__ */ _export_sfc(_sfc_main$5, [["__scopeId", "data-v-3663db34"]]);
+    const _hoisted_1$3 = { class: "lu-discover" };
+    const _hoisted_2$3 = ["innerHTML"];
+    const _hoisted_3$3 = { class: "nl-head" };
+    const _hoisted_4$2 = { id: "netLiveTitle" };
+    const _hoisted_5$1 = {
       class: "nl-sub",
       id: "netLiveSub"
     };
-    const _hoisted_6 = { class: "t" };
-    const _hoisted_7 = {
+    const _hoisted_6$1 = { class: "t" };
+    const _hoisted_7$1 = {
       key: 0,
       class: "x"
     };
-    const _hoisted_8 = { class: "switch" };
-    const _hoisted_9 = ["checked"];
-    const _hoisted_10 = {
+    const _hoisted_8$1 = { class: "switch" };
+    const _hoisted_9$1 = ["checked"];
+    const _hoisted_10$1 = {
       class: "srcchips",
       id: "srcChips"
     };
-    const _hoisted_11 = ["data-src", "onClick"];
-    const _hoisted_12 = {
+    const _hoisted_11$1 = ["data-src", "onClick"];
+    const _hoisted_12$1 = {
       class: "grid",
       id: "results"
     };
-    const _hoisted_13 = {
+    const _hoisted_13$1 = {
       key: 0,
       class: "fuzzy auth"
     };
-    const _hoisted_14 = { class: "ft" };
-    const _hoisted_15 = {
+    const _hoisted_14$1 = { class: "ft" };
+    const _hoisted_15$1 = {
       key: 1,
       class: "fuzzy"
     };
-    const _hoisted_16 = { class: "ft" };
-    const _hoisted_17 = ["data-gk"];
-    const _hoisted_18 = { class: "head" };
-    const _hoisted_19 = { class: "meta" };
-    const _hoisted_20 = { class: "by" };
+    const _hoisted_16$1 = { class: "ft" };
+    const _hoisted_17$1 = ["data-gk"];
+    const _hoisted_18$1 = { class: "head" };
+    const _hoisted_19$1 = { class: "meta" };
+    const _hoisted_20$1 = { class: "by" };
     const _hoisted_21 = { class: "desc" };
     const _hoisted_22 = {
       key: 1,
@@ -18180,7 +18215,7 @@ ${style}
     const _hoisted_28 = ["data-u", "onClick"];
     const _hoisted_29 = ["data-u", "onClick"];
     const _hoisted_30 = ["innerHTML"];
-    const _sfc_main$1 = {
+    const _sfc_main$4 = {
       __name: "DiscoverPanel",
       setup(__props) {
         const books = /* @__PURE__ */ ref([]);
@@ -18317,25 +18352,25 @@ ${style}
           legacy("detachDiscover")();
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1, [
+          return openBlock(), createElementBlock("div", _hoisted_1$3, [
             createBaseVNode("div", {
               class: "statbar",
               id: "statbar",
               innerHTML: statHTML.value
-            }, null, 8, _hoisted_2),
+            }, null, 8, _hoisted_2$3),
             createBaseVNode("div", {
               class: normalizeClass(["netlive", { hidden: !steps.value.length, done: netDone.value, folded: netFolded.value }]),
               id: "netLive",
               "aria-live": "polite"
             }, [
-              createBaseVNode("div", _hoisted_3, [
+              createBaseVNode("div", _hoisted_3$3, [
                 createBaseVNode("span", {
                   class: normalizeClass(["nl-spin", { on: !netDone.value }]),
                   ref_key: "spinEl",
                   ref: spinEl
                 }, null, 2),
-                createBaseVNode("b", _hoisted_4, toDisplayString(netTitle.value), 1),
-                createBaseVNode("span", _hoisted_5, toDisplayString(netSub.value), 1),
+                createBaseVNode("b", _hoisted_4$2, toDisplayString(netTitle.value), 1),
+                createBaseVNode("span", _hoisted_5$1, toDisplayString(netSub.value), 1),
                 _cache[1] || (_cache[1] = createBaseVNode("span", { class: "grow" }, null, -1)),
                 createVNode(unref(Button), {
                   id: "netLiveToggle",
@@ -18361,8 +18396,8 @@ ${style}
                     class: normalizeClass(stepCls(s))
                   }, [
                     _cache[2] || (_cache[2] = createBaseVNode("span", { class: "d" }, null, -1)),
-                    createBaseVNode("span", _hoisted_6, toDisplayString(s.title), 1),
-                    s.detail ? (openBlock(), createElementBlock("span", _hoisted_7, toDisplayString(s.detail), 1)) : createCommentVNode("", true)
+                    createBaseVNode("span", _hoisted_6$1, toDisplayString(s.title), 1),
+                    s.detail ? (openBlock(), createElementBlock("span", _hoisted_7$1, toDisplayString(s.detail), 1)) : createCommentVNode("", true)
                   ], 2);
                 }), 128))
               ], 512)
@@ -18371,18 +18406,18 @@ ${style}
               class: normalizeClass(["filters", { hidden: !showFilters.value }]),
               id: "filters"
             }, [
-              createBaseVNode("label", _hoisted_8, [
+              createBaseVNode("label", _hoisted_8$1, [
                 createBaseVNode("input", {
                   type: "checkbox",
                   id: "onlyOk",
                   checked: onlyOk.value,
                   onChange: onOnlyOk
-                }, null, 40, _hoisted_9),
+                }, null, 40, _hoisted_9$1),
                 _cache[3] || (_cache[3] = createBaseVNode("span", { class: "track" }, null, -1)),
                 _cache[4] || (_cache[4] = createTextVNode("只看能读的 ", -1))
               ]),
               _cache[6] || (_cache[6] = createBaseVNode("span", { class: "vline" }, null, -1)),
-              createBaseVNode("div", _hoisted_10, [
+              createBaseVNode("div", _hoisted_10$1, [
                 (openBlock(true), createElementBlock(Fragment, null, renderList(sources.value, (s) => {
                   return openBlock(), createElementBlock("button", {
                     key: s.name,
@@ -18390,7 +18425,7 @@ ${style}
                     "data-src": s.name,
                     type: "button",
                     onClick: ($event) => toggleSrc(s.name)
-                  }, toDisplayString(s.display), 11, _hoisted_11);
+                  }, toDisplayString(s.display), 11, _hoisted_11$1);
                 }), 128))
               ]),
               _cache[7] || (_cache[7] = createBaseVNode("div", { class: "spacer" }, null, -1)),
@@ -18406,7 +18441,7 @@ ${style}
                 _: 1
               })
             ], 2),
-            createBaseVNode("div", _hoisted_12, [
+            createBaseVNode("div", _hoisted_12$1, [
               searching.value && !list.value.length ? (openBlock(), createElementBlock(Fragment, { key: 0 }, renderList(6, (i) => {
                 return createBaseVNode("div", {
                   key: i,
@@ -18415,15 +18450,15 @@ ${style}
                   createStaticVNode('<div class="b cv" data-v-b2643a52></div><div class="col" data-v-b2643a52><div class="b ln" style="width:52%;" data-v-b2643a52></div><div class="b ln" style="width:32%;height:10px;" data-v-b2643a52></div><div class="b ln" style="width:92%;height:10px;" data-v-b2643a52></div><div class="b ln" style="width:70%;height:10px;" data-v-b2643a52></div></div>', 2)
                 ])]);
               }), 64)) : list.value.length ? (openBlock(), createElementBlock(Fragment, { key: 1 }, [
-                byAuthor.value ? (openBlock(), createElementBlock("div", _hoisted_13, [
+                byAuthor.value ? (openBlock(), createElementBlock("div", _hoisted_13$1, [
                   _cache[9] || (_cache[9] = createBaseVNode("span", { class: "fi" }, "✍️", -1)),
-                  createBaseVNode("div", _hoisted_14, [
+                  createBaseVNode("div", _hoisted_14$1, [
                     createBaseVNode("b", null, "按作者找到了 " + toDisplayString(books.value.length) + " 本", 1),
                     createBaseVNode("span", null, "「" + toDisplayString(confirmed.value) + "」是作者名，下面是 ta 的作品 —— 书名里当然不含作者名，这是对的。", 1)
                   ])
-                ])) : fuzzy.value ? (openBlock(), createElementBlock("div", _hoisted_15, [
+                ])) : fuzzy.value ? (openBlock(), createElementBlock("div", _hoisted_15$1, [
                   _cache[10] || (_cache[10] = createBaseVNode("span", { class: "fi" }, "🤔", -1)),
-                  createBaseVNode("div", _hoisted_16, [
+                  createBaseVNode("div", _hoisted_16$1, [
                     createBaseVNode("b", null, "没找到确切的《" + toDisplayString(confirmed.value) + "》", 1),
                     createBaseVNode("span", null, "下面这 " + toDisplayString(books.value.length) + " 本是「沾边」结果 —— 名字里带这几个字，但不一定是你要的那本。补上作者名一起搜会准很多。", 1)
                   ])
@@ -18435,16 +18470,16 @@ ${style}
                     "data-gk": groupKey(b),
                     style: normalizeStyle({ "--mo-i": i })
                   }, [
-                    createBaseVNode("div", _hoisted_18, [
-                      createVNode(_sfc_main$4, {
+                    createBaseVNode("div", _hoisted_18$1, [
+                      createVNode(_sfc_main$7, {
                         cover: b.cover,
                         hue: b.hue,
                         title: displayTitle(b),
                         author: b.author
                       }, null, 8, ["cover", "hue", "title", "author"]),
-                      createBaseVNode("div", _hoisted_19, [
+                      createBaseVNode("div", _hoisted_19$1, [
                         createBaseVNode("h3", null, toDisplayString(displayTitle(b)), 1),
-                        createBaseVNode("div", _hoisted_20, toDisplayString(b.author || "作者未知"), 1),
+                        createBaseVNode("div", _hoisted_20$1, toDisplayString(b.author || "作者未知"), 1),
                         createBaseVNode("div", _hoisted_21, [
                           b.intro ? (openBlock(), createElementBlock(Fragment, { key: 0 }, [
                             createTextVNode(toDisplayString(b.intro), 1)
@@ -18524,7 +18559,7 @@ ${style}
                         ]);
                       }), 128))
                     ])
-                  ], 14, _hoisted_17);
+                  ], 14, _hoisted_17$1);
                 }), 128))
               ], 64)) : createCommentVNode("", true)
             ]),
@@ -18547,7 +18582,348 @@ ${style}
         };
       }
     };
-    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-b2643a52"]]);
+    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-b2643a52"]]);
+    const _hoisted_1$2 = { class: "rd-top" };
+    const _hoisted_2$2 = { class: "ttl" };
+    const _hoisted_3$2 = { id: "rdTitle" };
+    const _hoisted_4$1 = { id: "rdSub" };
+    const _sfc_main$3 = {
+      __name: "ReaderTop",
+      setup(__props) {
+        const title = /* @__PURE__ */ ref("—");
+        const sub = /* @__PURE__ */ ref("—");
+        const progress = /* @__PURE__ */ ref(0);
+        function applyState(st) {
+          if (!st) return;
+          if (typeof st.title === "string") title.value = st.title || "—";
+          if (typeof st.sub === "string") sub.value = st.sub;
+          if (typeof st.progress === "number") progress.value = st.progress;
+        }
+        const call2 = callLegacy;
+        let off = null;
+        onMounted(() => {
+          nextTick(() => {
+            off = attachReaderSnapshot(applyState);
+          });
+        });
+        onUnmounted(() => {
+          if (off) off();
+        });
+        return (_ctx, _cache) => {
+          return openBlock(), createElementBlock(Fragment, null, [
+            createBaseVNode("div", {
+              class: "rd-prog",
+              id: "rdProg",
+              style: normalizeStyle({ width: progress.value * 100 + "%" })
+            }, null, 4),
+            createBaseVNode("div", _hoisted_1$2, [
+              createBaseVNode("button", {
+                class: "rd-btn",
+                id: "rdBack",
+                title: "退出 (Esc)",
+                "aria-label": "退出",
+                onClick: _cache[0] || (_cache[0] = ($event) => unref(call2)("rdBack"))
+              }, "←"),
+              _cache[5] || (_cache[5] = createBaseVNode("span", {
+                class: "rd-capy-mark",
+                "aria-hidden": "true"
+              }, null, -1)),
+              createBaseVNode("div", _hoisted_2$2, [
+                createBaseVNode("b", _hoisted_3$2, toDisplayString(title.value || "—"), 1),
+                createBaseVNode("small", _hoisted_4$1, toDisplayString(sub.value), 1)
+              ]),
+              createBaseVNode("button", {
+                class: "rd-btn",
+                id: "rdTocBtn",
+                title: "目录 (T)",
+                "aria-label": "目录",
+                onClick: _cache[1] || (_cache[1] = ($event) => unref(call2)("rdTogglePanel", "toc"))
+              }, "☰"),
+              createBaseVNode("button", {
+                class: "rd-btn",
+                id: "rdCacheBtn",
+                title: "缓存全书",
+                "aria-label": "缓存全书",
+                onClick: _cache[2] || (_cache[2] = ($event) => unref(call2)("rdCache"))
+              }, "⤓"),
+              createBaseVNode("button", {
+                class: "rd-btn",
+                id: "rdSetBtn",
+                title: "设置 (S)",
+                "aria-label": "设置",
+                onClick: _cache[3] || (_cache[3] = ($event) => unref(call2)("rdTogglePanel", "set"))
+              }, "Aa"),
+              createBaseVNode("button", {
+                class: "rd-btn",
+                id: "rdExportBtn",
+                title: "导出",
+                "aria-label": "导出",
+                onClick: _cache[4] || (_cache[4] = ($event) => unref(call2)("rdExport"))
+              }, "↧")
+            ])
+          ], 64);
+        };
+      }
+    };
+    const _hoisted_1$1 = { class: "rd-info" };
+    const _hoisted_2$1 = {
+      class: "ch",
+      id: "rdChap"
+    };
+    const _hoisted_3$1 = {
+      class: "pct",
+      id: "rdPct"
+    };
+    const _sfc_main$2 = {
+      __name: "ReaderBottom",
+      setup(__props) {
+        const chap = /* @__PURE__ */ ref("—");
+        const pct = /* @__PURE__ */ ref("0%");
+        function applyState(st) {
+          if (!st) return;
+          if (typeof st.chap === "string") chap.value = st.chap;
+          if (typeof st.pct === "string") pct.value = st.pct;
+        }
+        let off = null;
+        onMounted(() => {
+          nextTick(() => {
+            off = attachReaderSnapshot(applyState);
+          });
+        });
+        onUnmounted(() => {
+          if (off) off();
+        });
+        return (_ctx, _cache) => {
+          return openBlock(), createElementBlock("div", _hoisted_1$1, [
+            createBaseVNode("span", _hoisted_2$1, toDisplayString(chap.value), 1),
+            _cache[0] || (_cache[0] = createBaseVNode("span", { class: "sep" }, " · ", -1)),
+            createBaseVNode("span", _hoisted_3$1, toDisplayString(pct.value), 1)
+          ]);
+        };
+      }
+    };
+    const _hoisted_1 = { class: "rd-panel-search" };
+    const _hoisted_2 = ["innerHTML"];
+    const _hoisted_3 = { class: "list" };
+    const _hoisted_4 = { class: "rd-set-row" };
+    const _hoisted_5 = ["innerHTML"];
+    const _hoisted_6 = { class: "rd-set-row" };
+    const _hoisted_7 = {
+      class: "rd-stepper",
+      id: "rdFsRow"
+    };
+    const _hoisted_8 = {
+      class: "v",
+      id: "rdFsV"
+    };
+    const _hoisted_9 = { class: "rd-set-row" };
+    const _hoisted_10 = {
+      class: "rd-seg",
+      id: "rdLhRow"
+    };
+    const _hoisted_11 = ["data-lh", "onClick"];
+    const _hoisted_12 = { class: "rd-set-row" };
+    const _hoisted_13 = {
+      class: "rd-seg",
+      id: "rdFfRow"
+    };
+    const _hoisted_14 = ["data-ff", "onClick"];
+    const _hoisted_15 = { class: "rd-set-row" };
+    const _hoisted_16 = {
+      class: "rd-seg",
+      id: "rdWRow"
+    };
+    const _hoisted_17 = ["data-w", "onClick"];
+    const _hoisted_18 = { class: "rd-set-row" };
+    const _hoisted_19 = {
+      class: "rd-seg",
+      id: "rdModeRow"
+    };
+    const _hoisted_20 = ["data-mode", "onClick"];
+    const _sfc_main$1 = {
+      __name: "ReaderPanels",
+      setup(__props) {
+        const call2 = callLegacy;
+        const LH = [{ v: 1.6, label: "紧凑" }, { v: 1.85, label: "标准" }, { v: 2.2, label: "宽松" }];
+        const FF = [{ v: "serif", label: "宋体" }, { v: "sans", label: "黑体" }, { v: "kai", label: "楷体" }];
+        const W = [{ v: 32, label: "窄" }, { v: 40, label: "中" }, { v: 50, label: "宽" }];
+        const MODE = [
+          { v: "slide", label: "左右平移" },
+          { v: "flip", label: "仿真翻页" },
+          { v: "scroll", label: "上下滚动" }
+        ];
+        const tocOpen = /* @__PURE__ */ ref(false);
+        const setOpen = /* @__PURE__ */ ref(false);
+        const tocHTML = /* @__PURE__ */ ref("");
+        const themesHTML = /* @__PURE__ */ ref("");
+        const fs = /* @__PURE__ */ ref(19);
+        const lh = /* @__PURE__ */ ref(1.85);
+        const ff = /* @__PURE__ */ ref("serif");
+        const w = /* @__PURE__ */ ref(40);
+        const mode = /* @__PURE__ */ ref("slide");
+        function applyState(st) {
+          if (!st) return;
+          if (typeof st.tocOpen === "boolean") tocOpen.value = st.tocOpen;
+          if (typeof st.setOpen === "boolean") setOpen.value = st.setOpen;
+          if (typeof st.tocHTML === "string") tocHTML.value = st.tocHTML;
+          if (typeof st.themesHTML === "string") themesHTML.value = st.themesHTML;
+          if (typeof st.fs === "number") fs.value = st.fs;
+          if (st.lh != null) lh.value = st.lh;
+          if (typeof st.ff === "string") ff.value = st.ff;
+          if (st.w != null) w.value = st.w;
+          if (st.modes && typeof st.modes.mode === "string") mode.value = st.modes.mode;
+        }
+        function onTocQuery(e) {
+          call2("rdFilterToc", e.target.value);
+        }
+        function onTocClick(e) {
+          const a = e.target.closest("a");
+          if (!a) return;
+          e.preventDefault();
+          call2("rdGoChapter", a.dataset.i);
+        }
+        function onThemeClick(e) {
+          const b = e.target.closest("button[data-th]");
+          if (b) call2("rdSetTheme", b.dataset.th);
+        }
+        let off = null;
+        onMounted(() => {
+          nextTick(() => {
+            off = attachReaderSnapshot(applyState);
+          });
+        });
+        onUnmounted(() => {
+          if (off) off();
+        });
+        return (_ctx, _cache) => {
+          return openBlock(), createElementBlock(Fragment, null, [
+            createBaseVNode("aside", {
+              class: normalizeClass(["rd-panel", { on: tocOpen.value }]),
+              id: "rdToc"
+            }, [
+              createBaseVNode("header", null, [
+                _cache[4] || (_cache[4] = createBaseVNode("h4", null, "目录", -1)),
+                createBaseVNode("button", {
+                  class: "rd-btn",
+                  id: "rdTocClose",
+                  "aria-label": "关闭目录",
+                  onClick: _cache[0] || (_cache[0] = ($event) => unref(call2)("rdClosePanels"))
+                }, "✕")
+              ]),
+              createBaseVNode("div", _hoisted_1, [
+                createBaseVNode("input", {
+                  type: "search",
+                  id: "rdTocQ",
+                  placeholder: "搜索章节名…",
+                  onInput: onTocQuery
+                }, null, 32)
+              ]),
+              createBaseVNode("div", {
+                class: "list",
+                id: "rdTocList",
+                innerHTML: tocHTML.value,
+                onClick: onTocClick
+              }, null, 8, _hoisted_2)
+            ], 2),
+            createBaseVNode("aside", {
+              class: normalizeClass(["rd-panel right", { on: setOpen.value }]),
+              id: "rdSet"
+            }, [
+              createBaseVNode("header", null, [
+                _cache[5] || (_cache[5] = createBaseVNode("h4", null, "阅读设置", -1)),
+                createBaseVNode("button", {
+                  class: "rd-btn",
+                  id: "rdSetClose",
+                  "aria-label": "关闭设置",
+                  onClick: _cache[1] || (_cache[1] = ($event) => unref(call2)("rdClosePanels"))
+                }, "✕")
+              ]),
+              createBaseVNode("div", _hoisted_3, [
+                createBaseVNode("div", _hoisted_4, [
+                  _cache[6] || (_cache[6] = createBaseVNode("div", { class: "gl" }, "配色", -1)),
+                  createBaseVNode("div", {
+                    class: "rd-thermos",
+                    id: "rdThemes",
+                    innerHTML: themesHTML.value,
+                    onClick: onThemeClick
+                  }, null, 8, _hoisted_5)
+                ]),
+                createBaseVNode("div", _hoisted_6, [
+                  _cache[7] || (_cache[7] = createBaseVNode("div", { class: "gl" }, "字号", -1)),
+                  createBaseVNode("div", _hoisted_7, [
+                    createBaseVNode("button", {
+                      "data-fs": "-1",
+                      "aria-label": "减小字号",
+                      onClick: _cache[2] || (_cache[2] = ($event) => unref(call2)("rdSetOpt", "fs", -1))
+                    }, "A－"),
+                    createBaseVNode("span", _hoisted_8, toDisplayString(fs.value) + "px", 1),
+                    createBaseVNode("button", {
+                      "data-fs": "1",
+                      "aria-label": "增大字号",
+                      onClick: _cache[3] || (_cache[3] = ($event) => unref(call2)("rdSetOpt", "fs", 1))
+                    }, "A＋")
+                  ])
+                ]),
+                createBaseVNode("div", _hoisted_9, [
+                  _cache[8] || (_cache[8] = createBaseVNode("div", { class: "gl" }, "行距", -1)),
+                  createBaseVNode("div", _hoisted_10, [
+                    (openBlock(), createElementBlock(Fragment, null, renderList(LH, (o) => {
+                      return createBaseVNode("button", {
+                        key: o.v,
+                        "data-lh": o.v,
+                        class: normalizeClass({ on: +lh.value === +o.v }),
+                        onClick: ($event) => unref(call2)("rdSetOpt", "lh", o.v)
+                      }, toDisplayString(o.label), 11, _hoisted_11);
+                    }), 64))
+                  ])
+                ]),
+                createBaseVNode("div", _hoisted_12, [
+                  _cache[9] || (_cache[9] = createBaseVNode("div", { class: "gl" }, "字体", -1)),
+                  createBaseVNode("div", _hoisted_13, [
+                    (openBlock(), createElementBlock(Fragment, null, renderList(FF, (o) => {
+                      return createBaseVNode("button", {
+                        key: o.v,
+                        "data-ff": o.v,
+                        class: normalizeClass({ on: ff.value === o.v }),
+                        onClick: ($event) => unref(call2)("rdSetOpt", "ff", o.v)
+                      }, toDisplayString(o.label), 11, _hoisted_14);
+                    }), 64))
+                  ])
+                ]),
+                createBaseVNode("div", _hoisted_15, [
+                  _cache[10] || (_cache[10] = createBaseVNode("div", { class: "gl" }, "每行宽度", -1)),
+                  createBaseVNode("div", _hoisted_16, [
+                    (openBlock(), createElementBlock(Fragment, null, renderList(W, (o) => {
+                      return createBaseVNode("button", {
+                        key: o.v,
+                        "data-w": o.v,
+                        class: normalizeClass({ on: +w.value === +o.v }),
+                        onClick: ($event) => unref(call2)("rdSetOpt", "w", o.v)
+                      }, toDisplayString(o.label), 11, _hoisted_17);
+                    }), 64))
+                  ])
+                ]),
+                createBaseVNode("div", _hoisted_18, [
+                  _cache[11] || (_cache[11] = createBaseVNode("div", { class: "gl" }, "翻页方式", -1)),
+                  createBaseVNode("div", _hoisted_19, [
+                    (openBlock(), createElementBlock(Fragment, null, renderList(MODE, (o) => {
+                      return createBaseVNode("button", {
+                        key: o.v,
+                        "data-mode": o.v,
+                        class: normalizeClass({ on: mode.value === o.v }),
+                        onClick: ($event) => unref(call2)("rdSetOpt", "mode", o.v)
+                      }, toDisplayString(o.label), 11, _hoisted_20);
+                    }), 64))
+                  ])
+                ]),
+                _cache[12] || (_cache[12] = createStaticVNode('<div class="rd-set-row" data-v-562433e7><div class="gl" data-v-562433e7>快捷键</div><div class="rd-kbd" data-v-562433e7><kbd data-v-562433e7>←</kbd><kbd data-v-562433e7>→</kbd> 翻页 · <kbd data-v-562433e7>空格</kbd> 下翻 · <kbd data-v-562433e7>[</kbd><kbd data-v-562433e7>]</kbd> 上下章<br data-v-562433e7><kbd data-v-562433e7>T</kbd> 目录 · <kbd data-v-562433e7>S</kbd> 设置 · <kbd data-v-562433e7>F</kbd> 沉浸 · <kbd data-v-562433e7>Esc</kbd> 退出<br data-v-562433e7> 手机上：点屏幕<b data-v-562433e7>左右两侧</b>翻页，点<b data-v-562433e7>中间</b>唤出工具栏；也可以左右滑动。 </div></div>', 1))
+              ])
+            ], 2)
+          ], 64);
+        };
+      }
+    };
+    const ReaderPanels = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-562433e7"]]);
     const _sfc_main = {
       __name: "App",
       props: {
@@ -18556,7 +18932,15 @@ ${style}
       },
       setup(__props) {
         const props = __props;
-        const REGISTRY = { RanksPanel, ShelfPanel, FilesPanel, DiscoverPanel };
+        const REGISTRY = {
+          RanksPanel,
+          ShelfPanel,
+          FilesPanel,
+          DiscoverPanel,
+          ReaderTop: _sfc_main$3,
+          ReaderBottom: _sfc_main$2,
+          ReaderPanels
+        };
         const comp = computed(() => REGISTRY[props.only] || RanksPanel);
         return (_ctx, _cache) => {
           return openBlock(), createBlock(unref(ConfigProvider_default), {
@@ -18575,7 +18959,14 @@ ${style}
       { name: "RanksPanel", sel: "[data-vue-ranks]" },
       { name: "ShelfPanel", sel: "[data-vue-shelf]" },
       { name: "FilesPanel", sel: "[data-vue-files]" },
-      { name: "DiscoverPanel", sel: "[data-vue-discover]" }
+      { name: "DiscoverPanel", sel: "[data-vue-discover]" },
+      // 阅读器外壳拆成三个容器 —— 这不是设计过度，是布局契约逼出来的：
+      // `#reader` 是纵向 flex，`.rd-prog/.rd-top` 在 `.rd-stage` **之前**、
+      // `.rd-bottom` 在**之后**，而 Vue 没法把节点插到"容器之后、下一个兄弟之前"。
+      // 两个面板是 `.rd-stage` 内绝对定位的子元素，另起一个容器。
+      { name: "ReaderTop", sel: "[data-vue-rdtop]" },
+      { name: "ReaderPanels", sel: "[data-vue-rdpanels]" },
+      { name: "ReaderBottom", sel: "[data-vue-rdbottom]" }
     ];
     let mounted = 0;
     for (const m of MOUNTS) {

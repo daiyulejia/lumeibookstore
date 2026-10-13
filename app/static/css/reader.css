@@ -240,6 +240,19 @@
 .rd-panel .list{flex:1;overflow-y:auto;padding:6px 0 60px;overscroll-behavior:contain}
 .rd-panel .lbl{padding:10px 16px 6px;font-size:11px;letter-spacing:.1em;color:var(--rd-dim);text-transform:uppercase;font-weight:700}
 
+/* 目录面板顶部那条搜索栏。
+   ⚠ 它原来是**行内 style**（`style="padding:11px;border-bottom:1px solid var(--rd-line)"`），
+     被 test_motion.py 的"组件样式不许写行内 style"盯着 —— 行内 style 优先级
+     高于任何类选择器，主题层够不到它。这里提到 CSS 里统一管。
+   ⚠ 为什么在 reader.css 而不是 ReaderPanels.vue 的 scoped 块：
+     `--rd-line` 定义在 `#reader[data-rd-theme="…"]` 上（本文件第 20 行起），
+     **不在 tokens.css**。前端产物自检（verify-dist.mjs 第 5 节）只认
+     tokens.css 的定义，scoped 里裸用 `var(--rd-line)` 会被它拦下
+     （构建直接失败 —— 这次真被拦了）。写 fallback 又不对：兜底值会盖掉
+     六套主题各自的线色。所以它就该待在"和 --rd-line 同一层"的地方。 */
+.rd-panel-search{padding:11px;border-bottom:1px solid var(--rd-line)}
+.rd-panel-search input{font-size:13.5px}
+
 .rd-panel .list a{
   display:flex;align-items:center;gap:9px;padding:10px 16px;font-size:13.5px;line-height:1.45;
   border-left:3px solid transparent;transition:background var(--dur-s) var(--ease),color var(--dur-s) var(--ease);

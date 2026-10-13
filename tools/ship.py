@@ -141,6 +141,13 @@ LIVE_SUITES = [
     # 被顺手搬进 Vue 破坏跨模块契约、空态与结果列表同时显示。
     # 全部断言都做了回退验证（断桥 / 搬 #q / 空态恒显示，三处都能报红）。
     ("test_discover_ui.py", "发现界面"),
+    # 阅读器外壳（Vue 迁移后）。test_reader_ui 验的是"点一下会不会翻页"，
+    # 抓不到迁移本身的回归 —— 那类问题全都发生在"渲染权与布局契约"这层：
+    # 三个挂载容器挂错位置（#reader 纵向 flex 顺序乱掉）、
+    # 舞台区/进度条被 Vue 抢走（StPageFlip 旧引用失效、拖拽丢手势，
+    # **偶发且极难查**）、旧代码依赖的 id 丢失（$() 拿 null 直接抛错，
+    # 整条链路静默中断）。这条把它们钉成"永久红"。
+    ("test_reader_shell.py", "阅读器外壳"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -161,6 +168,7 @@ LIVE_ARGS = {
     "test_shelf_ui.py": "--url",
     "test_files_ui.py": "--url",
     "test_discover_ui.py": "--url",
+    "test_reader_shell.py": "--url",
 }
 
 

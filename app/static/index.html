@@ -205,19 +205,20 @@
 
 <!-- ==================== 阅读器 ==================== -->
 <div id="reader" data-rd-theme="day" data-rd-mode="slide">
-  <div class="rd-prog" id="rdProg"></div>
+  <!-- ⚠ 阅读器外壳已迁 Vue，但**拆成三个容器** —— 这是布局契约逼出来的，
+       不是设计过度：`#reader` 是 `display:flex; flex-direction:column`，
+       子元素顺序即布局（`.rd-prog` 是 absolute 不影响流）。
 
-  <div class="rd-top">
-    <button class="rd-btn" id="rdBack" title="退出 (Esc)" aria-label="退出">←</button>
-    <!-- 阅读页的品牌标记：只在噜妹阅读配色下出现（见 lumei.css §5）。
-         看书时 UI 应该尽量消失，所以它极小、极淡、只是"认得出来"而已。 -->
-    <span class="rd-capy-mark" aria-hidden="true"></span>
-    <div class="ttl"><b id="rdTitle">—</b><small id="rdSub"></small></div>
-    <button class="rd-btn" id="rdTocBtn" title="目录 (T)" aria-label="目录">☰</button>
-    <button class="rd-btn" id="rdCacheBtn" title="缓存全书" aria-label="缓存全书">⤓</button>
-    <button class="rd-btn" id="rdSetBtn" title="设置 (S)" aria-label="设置">Aa</button>
-    <button class="rd-btn" id="rdExportBtn" title="导出" aria-label="导出">↧</button>
-  </div>
+         Vue 只能把一棵树渲进一个容器，**没法把节点插到"容器之后、下一个
+         兄弟之前"** —— 所以"stage 之前（.rd-prog + .rd-top）"和
+         "stage 之后（.rd-bottom）"必须是两个容器、两个 app 实例。
+
+       ⚠⚠ 舞台区（.rd-stage）**绝不归 Vue 管**：`paginate()` 要量它的
+          clientWidth/clientHeight、`buildFlip()` 要往 `#rdFlipBook` 建
+          StPageFlip 实例。Vue 一旦接管就会 patch 重建节点，StPageFlip
+          持有的旧引用失效 → 翻页动画偶发失效、分页错乱（偶发、极难查）。
+          进度条 `#rdSeek` 同理（绑了 pointerdown/move/up 做跟手拖拽）。 -->
+  <div data-vue-rdtop></div>
 
   <div class="rd-stage">
     <!-- 滚动模式 -->
@@ -244,91 +245,40 @@
 
     <div class="rd-flash" id="rdFlash"></div>
 
-    <!-- 目录 -->
-    <aside class="rd-panel" id="rdToc">
-      <header>
-        <h4>目录</h4>
-        <button class="rd-btn" id="rdTocClose" data-rdtoc-close aria-label="关闭目录">✕</button>
-      </header>
-      <div style="padding:11px;border-bottom:1px solid var(--rd-line)">
-        <input id="rdTocQ" type="search" placeholder="搜索章节名…" style="font-size:13.5px"/>
-      </div>
-      <div class="list" id="rdTocList"></div>
-    </aside>
-
-    <!-- 设置 -->
-    <aside class="rd-panel right" id="rdSet">
-      <header>
-        <h4>阅读设置</h4>
-        <button class="rd-btn" id="rdSetClose" aria-label="关闭设置">✕</button>
-      </header>
-      <div class="list">
-        <div class="rd-set-row">
-          <div class="gl">配色</div>
-          <div class="rd-thermos" id="rdThemes"></div>
-        </div>
-        <div class="rd-set-row">
-          <div class="gl">字号</div>
-          <div class="rd-stepper" id="rdFsRow">
-            <button data-fs="-1" aria-label="减小字号">A－</button>
-            <span class="v" id="rdFsV">19px</span>
-            <button data-fs="1" aria-label="增大字号">A＋</button>
-          </div>
-        </div>
-        <div class="rd-set-row">
-          <div class="gl">行距</div>
-          <div class="rd-seg" id="rdLhRow">
-            <button data-lh="1.6">紧凑</button>
-            <button data-lh="1.85">标准</button>
-            <button data-lh="2.2">宽松</button>
-          </div>
-        </div>
-        <div class="rd-set-row">
-          <div class="gl">字体</div>
-          <div class="rd-seg" id="rdFfRow">
-            <button data-ff="serif">宋体</button>
-            <button data-ff="sans">黑体</button>
-            <button data-ff="kai">楷体</button>
-          </div>
-        </div>
-        <div class="rd-set-row">
-          <div class="gl">每行宽度</div>
-          <div class="rd-seg" id="rdWRow">
-            <button data-w="32">窄</button>
-            <button data-w="40">中</button>
-            <button data-w="50">宽</button>
-          </div>
-        </div>
-        <div class="rd-set-row">
-          <div class="gl">翻页方式</div>
-          <div class="rd-seg" id="rdModeRow">
-            <button data-mode="slide">左右平移</button>
-            <button data-mode="flip">仿真翻页</button>
-            <button data-mode="scroll">上下滚动</button>
-          </div>
-        </div>
-        <div class="rd-set-row">
-          <div class="gl">快捷键</div>
-          <div class="rd-kbd">
-            <kbd>←</kbd><kbd>→</kbd> 翻页 · <kbd>空格</kbd> 下翻 · <kbd>[</kbd><kbd>]</kbd> 上下章<br>
-            <kbd>T</kbd> 目录 · <kbd>S</kbd> 设置 · <kbd>F</kbd> 沉浸 · <kbd>Esc</kbd> 退出<br>
-            手机上：点屏幕<b>左右两侧</b>翻页，点<b>中间</b>唤出工具栏；也可以左右滑动。
-          </div>
-        </div>
-      </div>
-    </aside>
+    <!-- 目录 + 设置两个面板（已迁 Vue）。
+         ⚠ 两个 `.rd-panel` 都是 `position:absolute` 相对 `.rd-stage` 定位，
+           所以外面包一层容器**不影响布局** —— 但容器必须是 `.rd-stage`
+           的直接子元素，否则 absolute 的包含块就变了（会跑到 #reader 上去，
+           表现为面板盖住顶栏/底栏）。
+         ⚠ 目录列表（#rdTocList）的内容仍由旧代码生成（有增量加载 + 一段很细
+           的防重复逻辑），用 v-html 喂进 Vue —— Vue 只管这扇门的开合与外壳。 -->
+    <div data-vue-rdpanels></div>
   </div>
 
   <div class="rd-bottom">
     <div class="rd-btns">
       <button class="rd-btn wide" id="rdPrevCh">⟵ 上一章</button>
     </div>
+
+    <!-- ⚠ `#rdSeek`（拖拽跳章那条）**故意留在静态 HTML**，不迁 Vue：
+         它绑了 pointerdown/pointermove/pointerup 做跟手拖拽，`seekAt()`
+         还要读它自己的 getBoundingClientRect 换算章节号。这类"跟手势
+         强耦合"的交互必须让旧代码**持续持有同一个节点** ——
+         Vue 的 patch 会重建节点，拖拽中途换掉 = 手势丢失、进度条跳回原位。
+         同一个理由也适用于整个 `.rd-stage`（见上面的注释）。
+         ⚠ 另外 `.rd-bottom` 的 CSS 用了 `> .rd-btns:first-child { order:2 }`
+         这类**直接子选择器**做窄屏重排，所以它的子节点结构不能随便包层。 -->
     <div class="rd-seekbar" id="rdSeek">
       <div class="t"><div class="f" id="rdSeekF"></div></div>
       <div class="h" id="rdSeekH"></div>
       <div class="rd-tip" id="rdTip">第 1 章</div>
     </div>
-    <div class="rd-info"><span class="ch" id="rdChap">—</span><span class="sep"> · </span><span class="pct" id="rdPct">0%</span></div>
+
+    <!-- 章节信息（已迁 Vue）：内容变化最频繁，声明式之后不用每次拼字符串。
+         ⚠ 它恰好也是旧代码 `.rd-info` 那个 flex 子项 —— 容器自己会顶上去，
+           多包一层 div 不影响（`.rd-info` 的样式作用在**内层**那个 div 上）。 -->
+    <div data-vue-rdbottom></div>
+
     <div class="rd-btns">
       <button class="rd-btn wide" id="rdNextCh">下一章 ⟶</button>
     </div>

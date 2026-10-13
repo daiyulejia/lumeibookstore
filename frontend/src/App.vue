@@ -22,12 +22,18 @@ import RanksPanel from "./components/RanksPanel.vue";
 import ShelfPanel from "./components/ShelfPanel.vue";
 import FilesPanel from "./components/FilesPanel.vue";
 import DiscoverPanel from "./components/DiscoverPanel.vue";
+import ReaderTop from "./components/ReaderTop.vue";
+import ReaderBottom from "./components/ReaderBottom.vue";
+import ReaderPanels from "./components/ReaderPanels.vue";
 
 const props = defineProps({
   /** 这个 app 实例负责渲染哪个组件（见 main.js 的 MOUNTS） */
   only: { type: String, default: "" },
 });
 
-const REGISTRY = { RanksPanel, ShelfPanel, FilesPanel, DiscoverPanel };
+const REGISTRY = {
+  RanksPanel, ShelfPanel, FilesPanel, DiscoverPanel,
+  ReaderTop, ReaderBottom, ReaderPanels,
+};
 const comp = computed(() => REGISTRY[props.only] || RanksPanel);
 </script>

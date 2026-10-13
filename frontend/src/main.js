@@ -35,6 +35,13 @@ const MOUNTS = [
   { name: "ShelfPanel", sel: "[data-vue-shelf]" },
   { name: "FilesPanel", sel: "[data-vue-files]" },
   { name: "DiscoverPanel", sel: "[data-vue-discover]" },
+  // 阅读器外壳拆成三个容器 —— 这不是设计过度，是布局契约逼出来的：
+  // `#reader` 是纵向 flex，`.rd-prog/.rd-top` 在 `.rd-stage` **之前**、
+  // `.rd-bottom` 在**之后**，而 Vue 没法把节点插到"容器之后、下一个兄弟之前"。
+  // 两个面板是 `.rd-stage` 内绝对定位的子元素，另起一个容器。
+  { name: "ReaderTop", sel: "[data-vue-rdtop]" },
+  { name: "ReaderPanels", sel: "[data-vue-rdpanels]" },
+  { name: "ReaderBottom", sel: "[data-vue-rdbottom]" },
 ];
 
 let mounted = 0;

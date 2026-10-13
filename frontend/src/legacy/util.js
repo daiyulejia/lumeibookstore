@@ -90,3 +90,70 @@ export function whenAuthReady(timeoutMs = 8000) {
     tick();
   });
 }
+
+/**
+ * 订阅"旧代码推过来的状态快照"，并**支持多个订阅者**。
+ *
+ * ⚠ 为什么需要这层转发，而不是让每个组件各自调 `attachReader(apply)`：
+ *   阅读器外壳被拆成**两个 Vue app 实例**（上半在 `.rd-stage` 之前、
+ *   下半在之后 —— 因为 `#reader` 是纵向 flex，顺序即布局，而 Vue
+ *   没法把节点插到"容器之后、下一个兄弟之前"）。
+ *   旧代码的 `attachReader` 只保留**一个**回调；两个组件都调它的话，
+ *   后一个会把前一个覆盖掉 —— 于是两个面板里只有一个能收到状态更新，
+ *   而且是"后挂载的那个能收到"，表现是"上一章/下一章按钮永远灰着"这类
+ *   看似无关的症状。
+ *
+ *   所以：**第一个**订阅者负责向旧代码注册，快照进来后广播给全部订阅者。
+ *   这样上层（reader.js）保持"单一回调"的简单契约，组件侧可以随便拆。
+ *
+ * 返回退订函数（组件 onUnmounted 时调，避免热重载/来回切换时越积越多）。
+ */
+const _rdSubs = [];
+let _rdRegistered = false;
+
+/* 迁移期诊断计数：真机测试靠它区分"旧代码没推"和"Vue 没收到"。
+   踩过：目录为空时完全看不出是哪一段断的 —— 旧代码可能压根没渲染，
+   也可能渲染了但广播没到。加两个计数，一眼定位。 */
+export const rdDebug = { snapshots: 0, last: null };
+
+export function attachReaderSnapshot(apply) {
+  _rdSubs.push(apply);
+  if (!_rdRegistered) {
+    const fn = window.__lumeiLegacy && window.__lumeiLegacy.attachReader;
+    if (typeof fn === "function") {
+      fn((st) => {
+        rdDebug.snapshots++;
+        rdDebug.last = st;
+        for (const f of _rdSubs.slice()) { try { f(st); } catch { /* 单个订阅者出错不影响其它 */ } }
+      });
+      _rdRegistered = true;
+    }
+    // ⚠ 注册失败也要暴露出来：如果旧代码的桥还没挂（两个 module 并行加载），
+    //   这里会静默拿不到 —— 表现就是"Vue 永远收不到状态"。
+    rdDebug.registered = _rdRegistered;
+  }
+  return () => {
+    const i = _rdSubs.indexOf(apply);
+    if (i >= 0) _rdSubs.splice(i, 1);
+  };
+}
+
+/**
+ * 调旧代码暴露的函数；不存在就静默跳过。
+ *
+ * ⚠ 迁移期必须"静默"：页面里两个 `<script type="module">` **并行**加载，
+ *   Vue 组件可能比旧代码的桥先就绪。此刻用户点了按钮，应该什么都不做，
+ *   而不是抛一个 `undefined is not a function` 把控制台刷红。
+ */
+export function callLegacy(name, ...args) {
+  const fn = window.__lumeiLegacy && window.__lumeiLegacy[name];
+  if (typeof fn === "function") return fn(...args);
+  return undefined;
+}
+
+// 迁移期诊断：把阅读器桥的状态挂到 window，真机测试可以直接读，
+// 不必为了看一个计数而临时改代码。（只读，不影响任何行为。）
+if (typeof window !== "undefined") {
+  window.__lumeiRdDebug = rdDebug;
+}
+

@@ -264,3 +264,25 @@ to { opacity: 1; transform: none;
   background-size: cover;
   background-position: center;
 }
+
+/* 目录搜索框那一栏：旧代码里是行内 style（padding + 一条底边框线）。
+   ⚠ test_motion.py 有一条断言"组件样式不许写行内 style"—— 行内 style
+   优先级高于任何类选择器，主题层够不到它。迁过来正好把它修掉。
+
+   ⚠⚠ 那条**底边框线故意不写在这里**，而是进了 `app/static/css/reader.css`。
+     为什么：那条线用的主题变量定义在 `#reader[data-rd-theme="…"]` 上
+     （reader.css），**不在** `tokens.css`。而 `verify-dist.mjs` 第 5 节的
+     规则是"组件产物里用到的变量必须在 tokens.css 里有定义，否则要有
+     fallback"—— 裸用会被它拦下（构建直接失败，这次真被拦了）。
+     写 fallback 也不对：兜底值会盖掉六套主题各自的线色。
+     正确的归属就是"跟着主题变量走"→ 放回 reader.css，与那个变量同层。
+     组件这边只留纯几何（padding / 字号）。
+
+   ⚠ 还有一条更阴的：**注释里也不能写出那个变量的完整字面量**。
+     自检是拿正则扫整个产物 CSS 的，不区分注释 ——
+     第一版就是把变量名写在注释里当例子，结果注释本身被当成"引用"报红。 */
+.rd-panel-search[data-v-562433e7] {
+  padding: 11px;
+}
+.rd-panel-search input[data-v-562433e7] { font-size: 13.5px;
+}

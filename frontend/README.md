@@ -33,6 +33,9 @@ frontend/
         ├── ShelfPanel.vue    # 书架页
         ├── FilesPanel.vue    # 文件页
         ├── DiscoverPanel.vue # 发现页结果区（半迁移：hero 仍是静态 HTML）
+        ├── ReaderTop.vue     # 阅读器外壳·上半（.rd-prog + .rd-top）
+        ├── ReaderPanels.vue  # 阅读器外壳·两个侧边面板（目录 + 设置）
+        ├── ReaderBottom.vue  # 阅读器外壳·下半（.rd-info）
         └── BookCover.vue     # 复用的书封（榜单/书架/发现共用）
 ```
 
@@ -115,6 +118,16 @@ Vue 重写渲染方式时，**要把这些钩子保留下来**，而不是去改
 `#ranksBox #ranksAge #ranksRefresh #ranksFold #ranksTabs #ranksDesc
 #ranksList #ranksToLib`、`.rk-item[data-title]`、`.rk-tab[data-kind]`。
 
+⚠ 阅读器那一票 id 更要小心：**旧代码并没有停止读写它们**。
+`renderToc()` 会 `$("#rdTocList").innerHTML=""`、`.scrollTop=0`、
+`appendToc()` 会 `insertAdjacentHTML` —— 它们不是"为了测试保留的钩子"，
+是**运行时真的在用**。丢了就是 `$()` 返回 null → 抛错 → 链路静默死。
+（这也是 `test_reader_shell.py` 存在的原因：专门钉这一层。）
+
+⚠ `v-html` 喂进去的内容（`#rdTocList` / `#rdThemes` 里的 HTML）**不参与
+Vue 的 patch** —— 里面的 class 状态（`.on`）必须**由生成方拼进去**，
+不能指望 Vue 去 toggle。
+
 （这也是这里 **没有** 用 Naive 的 `n-tabs` 的原因：它内部渲染 `data-name`，
 对不上 `.rk-tab[data-kind]`。十几个标签不值得为它改测试。）
 
@@ -139,7 +152,71 @@ Vue 重写渲染方式时，**要把这些钩子保留下来**，而不是去改
 - [x] 书架页（`ShelfPanel.vue` + 复用的 `BookCover.vue`）
 - [x] 文件页（`FilesPanel.vue`）
 - [x] 发现页结果区（`DiscoverPanel.vue`）—— **半迁移**，见下
-- [ ] 阅读器（最大，995 行，最后迁）
+- [x] 阅读器外壳（`ReaderTop.vue` / `ReaderPanels.vue` / `ReaderBottom.vue`）
+      —— **外壳迁移，不是整个阅读器**，见下
+
+### 阅读器为什么拆成三个组件 / 三个容器
+
+这是整个迁移里**唯一被布局契约逼出来的**设计，改之前务必先看这段。
+
+`#reader` 是 `display:flex; flex-direction:column`，**子元素的流式顺序就是布局**：
+
+```
+#reader
+ ├─ .rd-prog        ← position:absolute，不在流里
+ ├─ .rd-top         ← flex:0 0 auto（顶栏）
+ ├─ .rd-stage       ← flex:1（正文舞台，**绝不归 Vue**）
+ └─ .rd-bottom      ← flex:0 0 auto（底栏）
+```
+
+Vue **只能把一棵树渲进一个容器**，没法把节点插到"容器之后、下一个兄弟
+之前"。所以"stage 之前的（`.rd-prog` + `.rd-top`）"和"stage 之后的
+（`.rd-bottom`）"必然是**两个容器、两个 app 实例**，中间再夹一个
+面板容器（在 `.rd-stage` 内）：
+
+| 容器 | 组件 | 管什么 |
+|---|---|---|
+| `[data-vue-rdtop]` | `ReaderTop.vue` | `.rd-prog` + `.rd-top`（书名/作者/进度/四个按钮） |
+| `[data-vue-rdpanels]` | `ReaderPanels.vue` | 目录 + 设置两个 `.rd-panel`（放在 `.rd-stage` 内） |
+| `[data-vue-rdbottom]` | `ReaderBottom.vue` | `.rd-info`（章节 / 百分比） |
+
+**绝不能交给 Vue 的两块**（也写在 `index.html` 的注释里）：
+
+- **`.rd-stage`** —— `paginate()` 要量它的 `clientWidth/clientHeight`；
+  `buildFlip()` 要往 `#rdFlipBook` 建 StPageFlip 实例。
+  Vue 一旦接管就会 patch 重建节点 → StPageFlip 持有的旧引用失效 →
+  **翻页动画偶发失效、分页错乱**（偶发、极难查，所以宁可保守）。
+- **`#rdSeek`**（进度条）—— 绑了 `pointerdown/move/up` 做跟手拖拽，
+  `seekAt()` 还要读它自己的 `getBoundingClientRect`。这类"跟手势强耦合"
+  的交互必须让旧代码**持续持有同一个节点**，patch 中途换掉 = 手势丢失。
+
+### 迁移期状态桥：一份快照，多个订阅者
+
+三个组件是三个 app 实例，而旧代码的 `attachReader(apply)` **只保留一个
+回调** —— 三个都调它，后一个会覆盖前一个（表现："只有一个组件能收到
+状态更新"，而且是"后挂载的那个能收到"）。
+
+所以走 `legacy/util.js` 的 `attachReaderSnapshot(apply)`：**第一个**订阅者
+向旧代码注册，快照进来后广播给全部订阅者。返回退订函数（`onUnmounted` 时调）。
+
+调试用：`window.__lumeiRdDebug` 暴露了 `{ snapshots, last, registered }` ——
+"旧代码没推"还是"Vue 没收到"，一眼分清。
+
+### 目录列表为什么用"内存镜像"
+
+`renderToc()` / `appendToc()` / `markToc()` 里有**增量加载**（滚到底
+append 240 条）和一段很细的"以 DOM 真实条目数为准"的防重复逻辑。
+
+Vue 接管后 `#rdTocList` 是 Vue 渲染的、内容靠 `v-html` ——
+直接写它会：① 与 `v-html` 打架（下一帧被覆盖），② 读到上一帧的节点。
+所以 `reader.js` 里加了一层 `tocBox()`：Vue 在时返回一个**游离的 `<div>`
+镜像**，旧逻辑一字不改地跑在镜像上，跑完把 `mirror.innerHTML` 整段
+`setTocHTML()` 推给 Vue。
+
+- 好处：增量/去重/高亮逻辑**只维护一份**，零重写、零分叉风险。
+- 注意：**滚动监听要绑可见节点**（镜像不在文档里，`clientHeight` 恒 0，
+  `onscroll` 永不触发 → 目录只有前 240 条）。同样，`markToc` 的
+  "滚到当前章"也要作用在可见节点上（镜像里元素的 `offsetTop` 恒 0）。
 
 ### 发现页为什么是"半迁移"
 
@@ -186,6 +263,8 @@ discover.js（同一条被验证过的路径）
 | `#shelfList` `#shelfEmpty` `#shelfStat` `#shelfN` | `shelf.js` / 真机测试 | 书架刷新失效 |
 | `#fileList` `#fileEmpty` | `files.js` / 真机测试 | 文件列表不更新 |
 | `#ranksBox` 等 | `ranks.js` / `test_ranks_ui.py` | 榜单不刷新 |
+| 阅读器一大票 id：`#rdToc` `#rdSet` `#rdTocList` `#rdThemes` `#rdTocQ` `#rdTocClose` `#rdSetClose` `#rdTocBtn` `#rdSetBtn` `#rdBack` `#rdCacheBtn` `#rdExportBtn` `#rdProg` `#rdChap` `#rdSub` `#rdPct` `#rdTitle` `#rdFsRow`/`#rdLhRow`/`#rdFfRow`/`#rdWRow`/`#rdModeRow` + `[data-lh]`/`[data-fs]`/… | `reader.js`（`renderToc` 会 `$("#rdTocList").innerHTML=""`、`scrollTop`、`insertAdjacentHTML`；`setReaderField` 会写 `#rdChap` 等）、`test_reader_ui.py` / `test_buttons.py` D 组 | **静默死**。踩过两次：① `#rdTitle` 丢了 → `openReader()` 在 `renderToc()` 之前抛 TypeError → 目录永远空、正文不加载（阅读器"打开了"但全是空壳）；② `#rdTocClose` 丢了 → 测试里"先关面板"那步静默无效 → 下一步"点 ☰"反而关掉 → 看着像"☰ 坏了"。`test_reader_shell.py` 第 4 节逐个断言 |
+| **面板内容靠 `v-html` 喂**（`#rdTocList` / `#rdThemes` 里的 HTML） | `reader.js` 生成 | v-html 的内容**不参与 Vue patch** —— 里面的 `.on` 必须**由生成方拼好**。踩过：切主题后色卡高亮不动（当时以为"theme 传过去 Vue 会 toggle"，实际没人用它） |
 
 ⚠ 判断"该不该用 Vue 实现"，看旧模块里有没有 `vueOwnsXxx()`
 （`shelf.js` / `files.js` 各有一份）。它的语义是：
@@ -206,3 +285,13 @@ discover.js（同一条被验证过的路径）
 榜单区内部，`#view-shelf` 里的容器永远是空的 —— 页面看着"没生效"，
 控制台一点错都没有（真踩过）。
 `tools/test_shelf_ui.py` 第 1 节专门断言"书架在它该在的地方、没串到榜单区"。
+
+⚠ 挂载点取哪个元素：`main.js` 用的是 `host.firstElementChild || host`
+（容器里若嵌了一个专门的内层挂载点就用它，否则用容器自己）。
+所以 `<section id="ranksBox" data-vue-ranks><div id="vue-root"></div></section>`
+渲进内层 div，而 `<div data-vue-rdtop></div>` 这种空容器就渲进它自己。
+
+⚠ 阅读器是**三个容器**（同一个页面上三处互不相邻的挂载区）——
+它们各挂一个 app 实例，理由见上面的「阅读器为什么拆成三个组件」。
+`test_reader_shell.py` 第 1 节断言三者的**顺序**（rdtop → stage → rdbottom），
+因为 `#reader` 的纵向 flex 让"顺序"直接等于"布局"。
