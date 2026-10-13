@@ -939,17 +939,20 @@ details.rawfold pre{
 }
 
 
-/* ==========================================================================
-   热门榜单（发现页）
-   --------------------------------------------------------------------------
-   设计意图：
-   · 它是个"备选入口"——用户是来搜书的，榜单不该抢搜索框的视觉重量。
-     所以用一层浅卡片包住，标题压到 15px，颜色都走 --s-*/--t-* 变量，
-     跟着主题（latte/绿/粉/深色）一起变，不写死颜色。
-   · 每条是一整行可点区域（<button>），手机上点起来比小链接舒服得多。
-   · 前三名的序号做成实心角标 —— 榜单的"前几名"本身有信息量。
-   ========================================================================== */
 
+
+/* ==========================================================================
+   热门榜单（发现页）—— 已迁移到 Vue
+   --------------------------------------------------------------------------
+   榜单的**内部**渲染（头部/标签/列表/条目）现在由
+   frontend/src/components/RanksPanel.vue 负责，样式是组件 scoped 的，
+   不再需要在这里写一份 —— 那份残留会和组件样式打架
+   （实测：app.css 的 `.rk-no.m1` 特异性高于组件的 `.rk-no`，
+    前三名的实心角标显示不出来）。
+
+   这里只保留**外层卡片** .ranks —— 它在 index.html 里，
+   属于"页面骨架"而不是"榜单组件"，由页面样式管。
+   ========================================================================== */
 .ranks{
   margin:26px auto 0; max-width:920px;
   background:var(--s-card); border:1px solid var(--s-line);
@@ -957,141 +960,7 @@ details.rawfold pre{
   padding:16px 18px 12px;
 }
 .ranks[hidden]{display:none}
-
-.rk-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.rk-head h2{margin:0;font-size:15px;font-weight:800;color:var(--t-1);letter-spacing:.2px}
-.rk-head .rk-sub{font-size:12px;color:var(--t-3)}
-.rk-head .grow{flex:1}
-/* 「x 分钟前更新」：比假装实时诚实，也顺带证明后台确实在定时刷 */
-.rk-head .rk-age{font-size:11.5px;color:var(--t-4);white-space:nowrap}
-/* 刷新按钮转起来 —— 否则点下去 3 秒没反应，用户会以为按钮坏了 */
-#ranksRefresh.spin{position:relative;color:var(--t-4);pointer-events:none}
-#ranksRefresh.spin::after{
-  content:"";position:absolute;right:-4px;top:50%;width:9px;height:9px;margin-top:-5px;
-  border:1.5px solid var(--t-4);border-top-color:transparent;border-radius:50%;
-  animation:rkspin .7s linear infinite;
-}
-@keyframes rkspin{to{transform:rotate(360deg)}}
-
-/* ---------- 标签 ---------- */
-.rk-tabs{display:flex;gap:7px;overflow-x:auto;padding-bottom:9px;
-  scrollbar-width:none;-ms-overflow-style:none}
-.rk-tabs::-webkit-scrollbar{display:none}
-.rk-tab{
-  flex:0 0 auto; border:1px solid var(--s-line); background:var(--s-sunk);
-  color:var(--t-2); font-size:12.5px; font-weight:600; cursor:pointer;
-  padding:6px 13px; border-radius:var(--r-full);
-  transition:background .15s,color .15s,border-color .15s;
-  -webkit-tap-highlight-color:transparent;
-}
-.rk-tab:hover{border-color:var(--t-4)}
-.rk-tab.on{
-  background:var(--t-1); color:var(--s-card); border-color:var(--t-1);
-}
-.rk-desc{font-size:12px;color:var(--t-3);margin:2px 0 10px;min-height:16px}
-
-/* ---------- 列表 ---------- */
-.rk-list{display:flex;flex-direction:column}
+/* 收起：隐藏组件的内容区（组件内部用 .rk-body 包住列表） */
+.ranks.folded .rk-body,
 .ranks.folded .rk-tabs,
-.ranks.folded .rk-desc,
-.ranks.folded .rk-list{display:none}
-
-.rk-item{
-  display:flex;align-items:center;gap:12px;width:100%;text-align:left;
-  background:none;border:0;border-top:1px solid var(--s-line-2);
-  padding:10px 6px;cursor:pointer;color:inherit;font:inherit;
-  transition:background .13s;
-  -webkit-tap-highlight-color:transparent;
-}
-.rk-item:first-child{border-top:0}
-.rk-item:hover{background:var(--s-sunk);border-radius:var(--r-s)}
-.rk-item:active{background:var(--s-sunk)}
-
-.rk-no{
-  flex:0 0 26px;height:26px;border-radius:8px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:12.5px;font-weight:800;font-variant-numeric:tabular-nums;
-  background:var(--s-sunk);color:var(--t-3);
-}
-/* 前三名：实心 + 用主题前景色，深浅主题都不会糊 */
-.rk-no.m1{background:var(--t-1);color:var(--s-card)}
-.rk-no.m2{background:var(--t-2);color:var(--s-card)}
-.rk-no.m3{background:var(--t-3);color:var(--s-card)}
-
-.rk-ttl{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
-.rk-ttl b{
-  font-size:14px;font-weight:700;color:var(--t-1);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-}
-.rk-ttl em{
-  font-style:normal;font-size:11.5px;color:var(--t-3);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-}
-.rk-src{
-  flex:0 0 auto;font-size:11px;color:var(--t-4);
-  padding:3px 8px;border-radius:var(--r-full);background:var(--s-sunk);
-  white-space:nowrap;
-}
-.rk-go{
-  flex:0 0 auto;font-size:12px;font-weight:600;color:var(--t-2);
-  opacity:0;transition:opacity .13s;white-space:nowrap;
-}
-.rk-item:hover .rk-go,.rk-item:focus-visible .rk-go{opacity:1}
-
-/* 「已在书架」标记。这是个**常显**状态而不是 hover 提示 ——
-   它回答的是"这本我是不是已经存过了"，用户扫一眼就该看见答案。 */
-.rk-owned{
-  flex:0 0 auto;font-size:11.5px;font-weight:600;color:var(--ok);
-  background:color-mix(in srgb, var(--ok) 12%, transparent);
-  padding:3px 9px;border-radius:var(--r-full);white-space:nowrap;
-}
-/* 已拥有的条目整体压暗一点，让"还没读过的"在视觉上更跳出来 */
-.rk-item.owned .rk-ttl b{color:var(--t-3)}
-.rk-item.owned .rk-no{opacity:.6}
-
-/* 底部一行：说明数据来源 + 回书架的入口 */
-.rk-foot{
-  margin-top:10px;padding-top:10px;border-top:1px solid var(--s-line-2);
-  font-size:11.5px;color:var(--t-4);display:flex;align-items:center;
-  gap:8px;flex-wrap:wrap;
-}
-.ranks.folded .rk-foot{display:none}
-.rk-link{
-  background:none;border:0;padding:0;color:var(--t-2);font:inherit;
-  font-weight:600;cursor:pointer;text-decoration:underline;
-  text-underline-offset:3px;-webkit-tap-highlight-color:transparent;
-}
-.rk-link:hover{color:var(--t-1)}
-
-/* ---------- 骨架 / 错误 ---------- */
-.rk-item.sk{cursor:default;pointer-events:none}
-.rk-item.sk .rk-no{background:var(--s-sunk)}
-.rk-item.sk .rk-ttl b,.rk-item.sk .rk-ttl em{
-  display:block;height:11px;border-radius:5px;background:var(--s-sunk);
-  animation:rkpulse 1.3s ease-in-out infinite;
-}
-.rk-item.sk .rk-ttl em{width:38%;height:9px;margin-top:5px}
-@keyframes rkpulse{0%,100%{opacity:.55}50%{opacity:1}}
-@media (prefers-reduced-motion:reduce){
-  .rk-item.sk .rk-ttl b,.rk-item.sk .rk-ttl em{animation:none}
-}
-
-.rk-err{
-  font-size:13px;color:var(--t-3);padding:14px 6px;
-  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-}
-
-/* ---------- 手机 ---------- */
-@media (max-width:820px){
-  .ranks{margin-top:18px;padding:14px 14px 10px;border-radius:var(--r-m)}
-  .rk-head h2{font-size:14px}
-  .rk-head .rk-sub{display:none}      /* 手机上省一行空间 */
-  .rk-head .rk-age{font-size:11px}
-  .rk-ttl b{font-size:13.5px}
-  .rk-src{display:none}                /* 来源名次要，手机上不占宽度 */
-  /* 触屏没有 hover，把「找这本」常显出来，否则用户不知道能点 */
-  .rk-go{opacity:1;color:var(--t-3)}
-  /* 「已在书架」也是常显的，手机上收窄一点别把书名挤没了 */
-  .rk-owned{font-size:11px;padding:2px 7px}
-  .rk-item{padding:11px 4px}
-}
+.ranks.folded .rk-desc{display:none}

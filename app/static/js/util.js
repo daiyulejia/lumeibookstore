@@ -227,3 +227,20 @@ export async function copyText(s) {
     } catch { return false; }
   }
 }
+
+/* ==========================================================================
+   迁移桥 · 把本模块的关键对象挂到 window，供新的 Vue 侧复用
+   --------------------------------------------------------------------------
+   为什么要有它：项目正在「分页迁移到 Vue3 + Naive UI」（见 frontend/）。
+   Vue 侧需要 $ / esc / api / bus / PRE 这些**同一份实例** ——
+   如果让 Vite 把 util.js 打进产物，运行期就会存在两个模块实例，
+   最要命的是 `bus` 会有两个：Vue 侧 emit、旧侧收不到（幽灵 bug）。
+
+   所以约定：**旧模块在运行期把导出挂到 window.__lumeiLegacy**，
+   Vue 侧只取引用、不重新打包（见 frontend/src/legacy/util.js）。
+
+   等全部页面迁完、旧代码删掉时，这个桥和 legacy/ 一起删。
+   ========================================================================== */
+window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, {
+  $, $$, esc, fmtSize, fmtTime, PRE, bus, TOKEN, api, toast, confirmBox, copyText,
+});

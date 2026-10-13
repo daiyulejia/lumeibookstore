@@ -649,3 +649,7 @@ export function searchFromHash(kw) {
   kickConfirm(kw);
   runSearch(kw, true);
 }
+
+/* 迁移桥：Vue 侧点榜单书名要走同一条搜索路径（理由见 util.js 末尾）。
+   挂 searchFromHash 而不是 runSearch —— 前者会顺手填好输入框，语义更完整。 */
+window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, { searchFromHash });

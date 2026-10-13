@@ -399,7 +399,13 @@ def main() -> int:
             for extra in ("/static/css/motion.css", "/static/css/lumei.css",
                           "/static/js/motion.js", "/static/js/art.js",
                           "/static/img/lumei/hero_lulu@480.webp",
-                          "/static/img/lumei/read_pair@480.webp"):
+                          "/static/img/lumei/read_pair@480.webp",
+                          # Vue 构建产物（Vite → app/static/dist/）。
+                          # 它们本来就会从 index.html 的引用里被正则捞到，
+                          # 这里再显式列一遍：万一哪天 index.html 的引用被
+                          # 误删/写错路径，"产物没传上去"这件事仍会被抓到。
+                          "/static/dist/vue-app.js",
+                          "/static/dist/vue-app.css"):
                 refs.add(extra)
             bad = []
             for path in sorted(refs):

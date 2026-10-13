@@ -5,6 +5,16 @@ __pycache__/
 
 # 打包产物
 dist/
+# ⚠ 例外：前端构建产物**必须进版本库**。
+#   服务器是纯 Python，不装 node、不跑构建 —— 它只拿现成的静态文件。
+#   所以 app/static/dist/ 里的东西是"要部署的东西"，不是中间产物。
+#   （不加这条排除的话，`git push` 之后服务器上的目录还是空的，
+#     线上会 404 白屏。）
+!app/static/dist/
+!app/static/dist/**
+
+# 前端依赖：几万个文件，机器上有 npm 就能重装
+frontend/node_modules/
 
 # 下载的二进制（cloudflared，55MB，用的时候会自己下）
 tools/bin/

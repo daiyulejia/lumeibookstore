@@ -165,3 +165,6 @@ export function initMotion() {
     mountScrollChrome();
   } catch (e) { console.error("动效层初始化失败（不影响功能）:", e); }
 }
+
+/* 迁移桥：把 stagger 暴露给新的 Vue 侧复用同一份实现（理由见 util.js 末尾）。 */
+window.__lumeiLegacy = Object.assign(window.__lumeiLegacy || {}, { stagger });

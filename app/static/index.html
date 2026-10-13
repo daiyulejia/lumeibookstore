@@ -20,8 +20,15 @@
 <link rel="stylesheet" href="/static/css/motion.css"/>
 <link rel="stylesheet" href="/static/css/lumei.css"/>
 
+<!-- Vue 应用的产物（Vite 构建，源码在 frontend/）。
+     ⚠ 放在 lumei.css **之后** —— 组件级样式要能盖住基础样式，
+        否则主题层会把组件外观顶掉。产物由 frontend/ 构建，不要手改。
+     引入构建体系的原因见 frontend/README.md：
+     旧的 innerHTML 拼字符串方式「接新轮子」太难，换 Vue + Naive UI。 -->
+<link rel="stylesheet" href="/static/dist/vue-app.css"/>
+
 <!-- 仿真翻页用 StPageFlip（本地副本，局域网离线也能用）。
-     它是 UMD，暴露全局 St；经典脚本会在下面的 module 之前执行。 -->
+     它是 UMD，暴露全局 St；经典脚本必须在下面的 module 之前执行。 -->
 <script src="/static/vendor/page-flip.js"></script>
 </head>
 <body>
@@ -149,23 +156,14 @@
     <div class="statbar" id="statbar"></div>
 
     <!-- 热门榜单：不知道读什么的时候，看看别人都在读什么。
-         数据来自已适配站点的公开榜单（见 app/ranks.py）。 -->
-    <section class="ranks" id="ranksBox" hidden>
-      <div class="rk-head">
-        <h2>🔥 热门榜单</h2>
-        <span class="rk-sub">来源：公开榜单</span>
-        <span class="rk-age" id="ranksAge"></span>
-        <span class="grow"></span>
-        <button class="btn ghost sm" id="ranksRefresh" title="立刻抓一次最新榜单">刷新</button>
-        <button class="btn ghost sm" id="ranksFold">收起</button>
-      </div>
-      <div class="rk-tabs" id="ranksTabs" role="tablist"></div>
-      <div class="rk-desc" id="ranksDesc"></div>
-      <div class="rk-list" id="ranksList"></div>
-      <div class="rk-foot">
-        榜单来自公开榜单页，后台每 30 分钟自动刷新 ·
-        <button class="rk-link" id="ranksToLib" type="button">去看我的书架 ›</button>
-      </div>
+         数据来自已适配站点的公开榜单（见 app/ranks.py）。
+
+         ⚠ 这一块已迁移到 Vue（frontend/src/components/RanksPanel.vue）。
+         `data-vue-ranks` 是给 Vue 的挂载信号：有它就挂载组件，
+         没有就说明这页还没迁 —— 旧代码与 Vue 因此能在同一页共存。
+         `#ranksBox` 这个 id 保留（旧测试与旧代码还会找它）。 -->
+    <section class="ranks" id="ranksBox" data-vue-ranks hidden>
+      <div id="vue-root"></div>
     </section>
 
     <!-- 联网发现实况：本地来源都搜不到时，这里一步步显示「出去找」的过程 -->
@@ -382,6 +380,13 @@
   </div>
 </div>
 
+<!-- 旧前端（ES module，直接静态提供）。迁移期与 Vue 并存。
+     ⚠ 顺序：必须先跑旧模块 —— 它会把 $/esc/api/bus/stagger 挂到
+        window.__lumeiLegacy，Vue 侧的 legacy/ 桥要靠这些引用。
+        （见 app/static/js/util.js 末尾的「迁移桥」注释。）
+        module 都是 defer 语义、按出现顺序执行，所以这一行在上一行。 -->
 <script type="module" src="/static/js/main.js"></script>
+<!-- Vue 应用产物（Vite 构建）。空挂载点会被静默跳过，不影响未迁移的页面。 -->
+<script type="module" src="/static/dist/vue-app.js"></script>
 </body>
 </html>

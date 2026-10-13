@@ -123,8 +123,13 @@ document.addEventListener("keydown", e => {
   loadSources();
   loadShelf();
   bootRoute();
-  // 榜单自己会判断要不要联网（收起状态不拉），所以这里直接挂上
-  mountRanks();
+  // ⚠ 榜单已迁移到 Vue（frontend/src/components/RanksPanel.vue）。
+  //   这里用「容器上有没有 data-vue-ranks」来判断该不该用旧实现 ——
+  //   迁移期两种实现并存：Vue 版没有就退回旧版，页面永远不会空着。
+  //   全部迁完后这两行连同 ranks.js 一起删。
+  if (!document.querySelector("[data-vue-ranks]")) {
+    mountRanks();
+  }
 
   // ⚠ 运行时改 hash 也要真的跳过去。
   // 没有这一行，`location.hash="#shelf"`（榜单里的「去看我的书架」就是这么调的）

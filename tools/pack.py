@@ -37,6 +37,18 @@ ROOT = Path(__file__).resolve().parent.parent
 EXCLUDE_DIRS = {
     ".venv", "__pycache__", "shots", "logs", ".git", "dist", ".idea", ".vscode",
     "tools/bin",          # 见下面 WITH_CLOUDFLARED 开关
+    "node_modules",       # 前端依赖，几万个文件；服务器不跑构建，用不到
+}
+
+# ⚠ "dist" 这个名字有个坑，必须显式豁免：
+#   EXCLUDE_DIRS 的匹配是**按路径段**的（`parts[i] in EXCLUDE_DIRS`），
+#   所以 `app/static/dist/` 会因为**恰好也叫 dist** 而被误排掉
+#   —— 那是前端构建产物的目录，是**真正要部署的东西**。
+#   不豁免的话：产物不进包 → 服务器上没有 → 线上白屏 404，
+#   而所有测试都是绿的（它们跑在本地，产物好好的）。
+#   用完整相对路径做白名单，比改匹配逻辑更安全（不动既有行为）。
+KEEP_ALWAYS = {
+    "app/static/dist",        # Vite 产物（见 frontend/README.md）
 }
 
 # 明确排除的文件（相对项目根）
@@ -52,6 +64,13 @@ KEEP_HINT = ("library/", "downloads/", "cache/", "app/", "tools/")
 
 def is_excluded(rel: Path) -> bool:
     parts = rel.parts
+    joined = "/".join(parts)
+    # 白名单优先：前缀命中 KEEP_ALWAYS 的一律进包
+    # （用来救那些"名字撞上 EXCLUDE_DIRS、但实际必须部署"的目录，
+    #   目前只有 app/static/dist —— 见上面的说明）
+    for keep in KEEP_ALWAYS:
+        if joined == keep or joined.startswith(keep + "/"):
+            return False
     for i in range(len(parts)):
         if "/".join(parts[: i + 1]) in EXCLUDE_DIRS:
             return True

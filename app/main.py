@@ -249,7 +249,7 @@ class AdaptReq(BaseModel):
 # 页面
 # ---------------------------------------------------------------------------
 _VER_CACHE: tuple[float, str] = (0.0, "")
-_ASSET_DIRS = ("js", "css", "vendor")
+_ASSET_DIRS = ("js", "css", "vendor", "dist")
 
 
 def _asset_version() -> str:

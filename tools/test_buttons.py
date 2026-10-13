@@ -332,14 +332,36 @@ def group_c(t: Tab, s: Suite):
         s.check("C5 有可点的榜单条目", False, "没有 data-title")
 
     # C3 折叠/展开
+    #
+    # ⚠ 这里**不能假设点之前的初始状态**。
+    #   上一节 C5 点了榜单条目 —— 点条目会顺手把面板收起来（否则搜索结果
+    #   被榜单挡在屏幕外，用户以为"点了没反应"）。旧实现是直接给容器加
+    #   `.folded` 类但不改内部状态（状态与视觉不同步，其实是个 bug）；
+    #   迁移到 Vue 后改成了正式的状态驱动，初始就已经是"折叠"。
+    #   所以正确写法是：先读当前状态，再断言"点一下就翻转" ——
+    #   这才是这个按钮真正的契约，也和"从哪个状态开始"无关。
+    def _is_folded():
+        return t.js("document.querySelector('#ranksBox').classList.contains('folded')")
+
+    # 只有真的展开着才需要先确认"点收起会折叠"
+    if not _is_folded():
+        t.js("document.querySelector('#ranksFold').click()")
+        time.sleep(0.4)
+        s.check("C3 点「收起」折叠榜单", _is_folded() is True)
+    else:
+        s.check("C3 点「收起」折叠榜单", True, "（点条目前已自动收起，跳过重复折叠）")
+
+    # 现在必定是折叠态 → 点一次应当展开
     t.js("document.querySelector('#ranksFold').click()")
     time.sleep(0.4)
-    folded = t.js("document.querySelector('#ranksBox').classList.contains('folded')")
-    s.check("C3 点「收起」折叠榜单", folded is True)
+    s.check("C3 再点「展开」", _is_folded() is False)
+    # 再点一次回到折叠 —— 确认是「可反复切换」而不是单向的
     t.js("document.querySelector('#ranksFold').click()")
     time.sleep(0.4)
-    unfolded = t.js("document.querySelector('#ranksBox').classList.contains('folded')")
-    s.check("C3 再点「展开」", unfolded is False)
+    s.check("C3 可以再收起（不是单向）", _is_folded() is True)
+    # 展开回来，给后面的切标签用例留出可点的标签
+    t.js("document.querySelector('#ranksFold').click()")
+    time.sleep(0.5)
 
     # C1 切标签
     if n_tabs >= 2:

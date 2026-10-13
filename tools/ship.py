@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -89,6 +90,11 @@ STATIC_SUITES = [
     # 当成真封面缓存下来，那本书就永远显示灰图；懒加载站（src=占位、
     # data-src=真图）只读 src 则 100% 拿错。两种写法都是从真实站点抄来的。
     ("test_cover.py", "封面抽取"),
+    # 前端产物上线链路：产物存在 / 被引用 / pack 不误排 / 版本号扫得到 /
+    # 路径一致。五个坏法全都表现成"白屏但部署成功"，人工必漏。
+    # 尤其 pack.py 的 EXCLUDE_DIRS 含 `dist`、而匹配按路径段 ——
+    # app/static/dist/ 会被误伤（接 Vite 时真踩过）。见该文件注释。
+    ("test_frontend.py", "前端产物链路"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）
@@ -231,6 +237,87 @@ def run_suite(name: str, desc: str, extra: list[str] | None = None) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# 前端构建（Vite → app/static/dist）
+# ---------------------------------------------------------------------------
+FRONTEND = ROOT / "frontend"
+
+# 找 node/npm：优先 managed 版本（本项目约定的隔离环境），再退到 PATH。
+# 为什么要按路径找而不是直接用 "npm"：Windows 上 Git Bash 的 PATH
+# 不一定带 node，而 managed 版本是确定存在的。
+_NODE_CANDIDATES = [
+    Path(os.path.expanduser("~")) / ".workbuddy" / "binaries" / "node" /
+    "versions" / "22.22.2-6",
+]
+
+
+def _find_node_bin() -> tuple[str | None, str | None]:
+    """返回 (node_dir, npm_cmd)。找不到就 (None, None)。"""
+    for d in _NODE_CANDIDATES:
+        npm = d / ("npm.cmd" if os.name == "nt" else "npm")
+        if npm.exists():
+            return str(d), str(npm)
+    # 退到 PATH
+    npm = shutil.which("npm")
+    if npm:
+        return None, npm
+    return None, None
+
+
+def build_frontend(dry_run: bool = False) -> bool:
+    """构建前端 + 自检产物。没有 node 时**不阻断**（只是警告）。
+
+    为什么"没有 node 就不阻断"：服务器上不装 node，线上是纯 Python 起的；
+    开发者机器上应该有。缺 node 说明是在一个不能构建的环境里跑
+    （比如远端），这时用已有的产物继续是对的 —— 总比整个流程卡死好。
+    但**只要 node 在，构建失败就是硬失败** —— 那说明源码有语法错，
+    绝不能带着旧产物上线。
+    """
+    if not FRONTEND.exists():
+        print("  ~ 没有 frontend/ 目录，跳过（还没迁到 Vue？）")
+        return True
+
+    node_dir, npm = _find_node_bin()
+    if not npm:
+        print("  ~ 找不到 node/npm，跳过构建（用现有产物继续）")
+        print("    装了 node 之后重跑，产物才会是最新的。")
+        return True
+
+    env = dict(os.environ)
+    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
+        env.pop(k, None)
+    if node_dir:
+        env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+
+    if dry_run:
+        print(f"  （dry-run）会执行：{npm} run build:check  （cwd={FRONTEND}）")
+        return True
+
+    r = subprocess.run(
+        [npm, "run", "build:check"], cwd=FRONTEND, env=env,
+        capture_output=True, text=True, shell=(os.name == "nt"),
+    )
+    out = (r.stdout or "") + (r.stderr or "")
+    lines = out.strip().splitlines()
+    if r.returncode == 0:
+        tail = lines[-1:] or [""]
+        print(f"  ✓ 构建 + 产物自检  {tail[0][:70]}")
+        return True
+
+    print("  ✗ 前端构建/自检失败 —— 产物没更新，**不能上线**")
+    # 和 run_suite 同理：把 ✗ 行连上下文抓出来，别让人只看个"失败"
+    fails = [i for i, ln in enumerate(lines) if "✗" in ln or "error" in ln.lower()]
+    shown: list[int] = []
+    for i in fails[:12]:
+        for j in range(max(0, i - 1), min(len(lines), i + 2)):
+            if j not in shown:
+                shown.append(j)
+    shown.sort()
+    for j in shown:
+        print(f"      {lines[j]}")
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only-test", action="store_true", help="只自检，不同步")
@@ -244,8 +331,25 @@ def main() -> int:
     print("=" * 62)
     t0 = time.time()
 
+    # ------------------------------------------------------------------
+    # [0/4] 前端构建
+    # ------------------------------------------------------------------
+    # 为什么把构建放进 ship、而不是让人记得手动跑：
+    # 前端已经迁到 Vite + Vue3（见 frontend/），源码在 frontend/src/，
+    # 产物在 app/static/dist/。**产物才是真正被部署的东西**。
+    # 忘了构建 → 改了源码、传的还是上次的产物 → 线上看起来"改了没生效"，
+    # 而所有测试又都是绿的（它们测的是产物）。这是最隐蔽的一类事故。
+    #
+    # 所以：构建 → 产物自检 → 测试，都在一条链上，顺序不可颠倒。
+    # 没有 node 时**只警告不阻断**（服务器上没有 node，也不该有）。
     if not a.skip_test:
-        print("\n[1/3] 静态自检")
+        print("\n[0/4] 前端构建（Vite → app/static/dist）")
+        if not build_frontend(a.dry_run):
+            print("✗ 前端构建失败，没有继续。")
+            return 1
+
+    if not a.skip_test:
+        print("\n[1/4] 静态自检")
         failed = [n for n, d in STATIC_SUITES if not run_suite(n, d)]
         if failed:
             print(f"\n✗ 静态自检有 {len(failed)} 项没过：{failed}")
@@ -253,7 +357,7 @@ def main() -> int:
             return 1
 
         if not a.skip_live:
-            print("\n[2/3] 真机自检（需要本地服务 + Chrome）")
+            print("\n[2/4] 真机自检（需要本地服务 + Chrome）")
             try:
                 with LocalServer() as srv:
                     failed = []
@@ -271,16 +375,17 @@ def main() -> int:
                 print("  **没有推到线上。**")
                 return 1
         else:
-            print("\n[2/3] 真机自检 —— 已跳过")
+            print("\n[2/4] 真机自检 —— 已跳过")
     else:
-        print("\n[1/3] 静态自检 —— 已跳过")
-        print("[2/3] 真机自检 —— 已跳过")
+        print("\n[0/4] 前端构建 —— 已跳过（--skip-test）")
+        print("[1/4] 静态自检 —— 已跳过")
+        print("[2/4] 真机自检 —— 已跳过")
 
     if a.only_test:
         print(f"\n✓ 自检全绿（{time.time()-t0:.1f}s）。没同步（--only-test）。")
         return 0
 
-    print("\n[3/3] 同步到云服务器")
+    print("\n[3/4] 同步到云服务器")
     cmd = [PY, str(ROOT / "tools" / "sync_cloud.py")]
     if a.dry_run:
         cmd.append("--dry-run")

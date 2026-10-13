@@ -1,0 +1,22 @@
+{
+  "name": "lumei-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "噜妹书院前端 —— Vite + Vue3 + Naive UI，构建产物输出到 app/static/dist/",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "vite build",
+    "build:check": "vite build && node tools/verify-dist.mjs"
+  },
+  "dependencies": {
+    "@esbuild/win32-x64": "^0.28.2",
+    "@rollup/rollup-win32-x64-msvc": "^4.64.5",
+    "naive-ui": "^2.40.1",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7"
+  }
+}
