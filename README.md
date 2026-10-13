@@ -92,9 +92,9 @@
 | HTTP | **httpx** | 支持 async/流式；重定向钩子用于 SSRF 二次校验 |
 | 解析 | **re 为主，零重量级依赖** | 小说站结构简陋且多变，正则比 CSS 选择器更好控 |
 | 中文处理 | **zhconv**（繁简）+ **pypinyin**（排序/首字母） | 繁简统一后再比对，否则匹配全废 |
-| 前端 | **原生 JS（无框架）** | 模块化 ES Module + 事件总线，避免构建步骤 |
-| 样式 | **原生 CSS**，分层为 tokens / app / motion / lumei | token 层定义变量，品牌层可整体剥离 |
-| 部署 | **systemd --user** + 可选 systemd timer | 常驻、开机自启、榜单定时刷新 |
+| 前端 | **Vite + Vue 3 + Naive UI**（分页迁移中，见 `frontend/`） | 旧版是手写 DOM，加新组件（日历/虚拟滚动/图表）要手搓绑定与清理；换声明式渲染后 `import` 即用 |
+| 样式 | 旧层：`tokens / app / motion / lumei`；新层：组件 `<style scoped>` | token 层是唯一真相源（Naive 主题也读它），品牌层可整体剥离 |
+| 部署 | **`tools/serve.py` 守护进程**（非 systemd）+ 榜单抓取的 systemd timer | 常驻、榜单定时刷新；⚠ 改 Python 后要手动重启，见下 |
 
 设计取向是**依赖尽量少**：小说站页面结构参差，能用标准库解决就不引框架，
 少一层依赖就少一处版本冲突。（历史包袱里唯一的例外见 `requirements.txt`。）
@@ -157,6 +157,38 @@ python run.py
 ```
 
 `tools/ship.py` 会一次跑完全部套件再上线。
+
+### 改完必做（两条硬规则）
+
+**① 同步到云服务器** —— 任何代码改动完成后：
+
+```bash
+.venv/Scripts/python tools/sync_cloud.py
+```
+
+只覆盖代码，**绝不动** `library/` `downloads/` `logs/` `.venv/`。
+
+**② 改了 Python 要重启线上服务** —— 同步**不会**自动重启。
+
+线上跑的是 `tools/serve.py` 的守护进程（**不是** systemd；
+`systemctl is-active noveldock` 是 `inactive`，别被它误导）：
+
+```bash
+# 线上目录是 /home/ubuntu/noveldock
+ssh -i ~/.ssh/noveldock_ed25519 ubuntu@106.53.203.108 \
+  "cd /home/ubuntu/noveldock && .venv/bin/python3 tools/serve.py --stop"
+ssh -i ~/.ssh/noveldock_ed25519 ubuntu@106.53.203.108 \
+  "cd /home/ubuntu/noveldock && \
+   nohup .venv/bin/python3 tools/serve.py --host 0.0.0.0 --port 8000 >/dev/null 2>&1 &"
+```
+
+前端产物（`app/static/dist/`）是静态文件，**不用**重启。
+
+⚠ 重启完必须 `curl` 量一次关键接口 + 线上跑一遍真机套件，
+确认新代码真的在跑（不然会出现"我明明改了"却毫无变化的迷惑现场）。
+
+⚠ 别用 `systemctl restart noveldock` —— 那个 unit 是 inactive 的，
+重启它只会报错或者什么都没发生，而你会以为已经生效了。
 
 ---
 
