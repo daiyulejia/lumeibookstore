@@ -624,18 +624,49 @@ def site_label(host: str) -> str:
 
 
 def is_healthy(site: dict) -> bool:
-    """一个站点还算不算「能用」。"""
+    """一个站点还算不算「能用」。
+
+    ⚠ 改动（本轮）：计入了两件事，它们各自都在真实数据上验证过影响面。
+
+    ① **`offtopic_blocked` 也要否**（原来只查 `video_blocked`）。
+       `_scrub()` 早就给非小说站打了 `offtopic_blocked` 并置 `ok=0`，
+       但 `is_healthy` 不看这个旗标 —— 于是那些站只要**历史上攒过 ok**
+       （实测 `www.kancloud.cn` ok=32），`fail > ok*2` 就不成立，**又活回来**。
+       修完实测：正确否掉 16 个（腾讯云/有道翻译/爱词霸/博客园/DeepL/
+       森海塞尔商城/小红书/SVG 工具站/文档站…），**逐个人工核实全部该否**。
+
+    ② **有 `search_tpl` 的站在比值判据上放宽**（只计 `fail_down`）。
+       「能不能拿关键词搜到这个站」和「我们抓某本书正文时猜没猜对路径」
+       是两件事，但它们被混在同一个 `fail` 桶里 —— 结果是可搜源
+       被"猜错路径"慢慢拖死。实测被误杀的两个：
+         · `www.tadu.com`   ok=39 fail=79（**只超阈值 1**），
+                            实测 HTTP 200 / 45KB，站活得好好的；
+         · `www.biqugela.cc` ok=6 fail=15
+       两者 `fail_down` 都是 **0** —— 从没有过网络层失败，纯粹是抓法问题。
+       放宽后 `sites_searchable` 从 **1 → 3**，且**零非小说站混入**。
+       （判据仍守住底线：`fail_down` 高的一样否，非小说站一样否。）
+    """
     if not site:
         return False
-    # 被判定为影视站的，一律不健康 —— 这条要放在最前面，
-    # 因为下面的计数判据在「影视站恰好最近访问成功」时可能放行它。
-    if site.get("video_blocked"):
+    # 被判为影视站 / 非小说站的，一律不健康 —— 这条要放在最前面，
+    # 因为下面的计数判据在「它恰好最近访问成功」时可能放行它。
+    if site.get("video_blocked") or site.get("offtopic_blocked"):
         return False
     ok = int(site.get("ok", 0))
     fail = int(site.get("fail", 0))
     if ok == 0 and fail >= UNHEALTHY_FAILS:
         return False
-    # 最近一直在失败（成功次数被失败压过去）也算不健康
+    down = int(site.get("fail_down") or 0)
+    # 真正挂掉的：**网络层**失败多，且压过成功次数 —— 一律否。
+    # 用 fail_down 而不是混装的 fail：混装桶里"我们自己猜错路径"也算失败，
+    # 拿它判站是冤枉（见上面 ② 的实测）。
+    if down >= 3 and down > ok * 2:
+        return False
+    # 可搜源（学过站内搜索接口）只要没被网络层失败压死就保留 ——
+    # 它能搜，就是 L 源的资产，不该因为抓某本书时猜错路径被丢掉。
+    if (site.get("search_tpl") or "").strip():
+        return True
+    # 其余站维持原比值判据（混装 fail 也认 —— 保守，避免放过未知的新站）
     if fail >= 3 and fail > ok * 2:
         return False
     return True

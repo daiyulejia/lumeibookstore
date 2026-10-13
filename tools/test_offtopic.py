@@ -150,6 +150,65 @@ def main() -> int:
     n2 = registry._scrub(db)
     check("第二次 scrub 返回 0", n2 == 0, f"实际 {n2}")
 
+    # ------------------------------------------------------------------
+    print("\n── 6. off-topic 旗标必须真的能拦住「历史 ok 很多」的站 ──")
+    #
+    # ⚠ 这一节钉的是一个**真实漏检**（本轮发现并修）：
+    #   `_scrub` 早就给非小说站打了 `offtopic_blocked` 并把 ok 归零，
+    #   但 `is_healthy` **只看 video_blocked**、不看 offtopic_blocked。
+    #   于是那些站只要历史上攒过 ok（实测 www.kancloud.cn ok=32），
+    #   `fail > ok*2` 就不成立 —— **又活回来了**。
+    #   第 4 节那条「垃圾站变成不健康」测不出这个：runoob 是 ok=0，
+    #   靠的是 `ok==0 and fail>=3` 那条命中的，与旗标无关。
+    #
+    #   所以这里构造一个「ok 很高 + 带 offtopic 旗标」的站：
+    #   只有真的读旗标，它才会被判不健康。
+    hot = {
+        "ok": 32, "fail": 3,
+        "offtopic_blocked": 1,
+        "name": "某文档站",
+    }
+    check("带 offtopic 旗标、且 ok=32 的站 → 不健康",
+          not registry.is_healthy(hot),
+          "旗标没被 is_healthy 读到（这正是修之前的 bug）")
+    # 反例：同样的 ok/fail，去掉旗标 → 健康（证明是"旗标"起了作用，
+    # 不是 ok/fail 恰好算下来不健康）
+    hot2 = dict(hot)
+    del hot2["offtopic_blocked"]
+    check("同样计数、去掉旗标 → 健康（证明是旗标起的效力）",
+          registry.is_healthy(hot2),
+          "去掉旗标也判不健康，说明这条断言没测到旗标")
+
+    print("\n── 7. 可搜源（search_tpl）不该被「猜错路径」拖死 ──")
+    #
+    # ⚠ 本轮第二个真实修复：fail 是**混装桶**（网络失败 / URL 猜错 / 搜不出
+    #   都算），于是「能站内搜索」的站会因抓某本书时猜错路径而累积 fail，
+    #   最终被 `fail > ok*2` 误杀，连带丢掉 search_tpl 这个 L 源资产。
+    #   实测被误杀：www.tadu.com（ok=39/fail=79，只超阈值 1，站实测活着）、
+    #   www.biqugela.cc（ok=6/fail=15）。两者 fail_down 都是 0。
+    tpl_site = {
+        "ok": 39, "fail": 79, "fail_down": 0,   # 混装 fail 超阈值，但无网络失败
+        "search_tpl": "/search",
+        "name": "某小说站",
+    }
+    check("可搜源：混装 fail 超阈值、但无网络层失败 → 仍健康",
+          registry.is_healthy(tpl_site),
+          "被混装 fail 误杀了（修复前就是这个行为）")
+    # 底线：同样的站若**网络层失败**确实高，照样否 —— 放宽不等于放水
+    dead_tpl = {
+        "ok": 1, "fail": 9, "fail_down": 9,     # 网络层失败压过成功
+        "search_tpl": "/search",
+        "name": "已挂的可搜站",
+    }
+    check("可搜源：网络层失败压过成功 → 照样否（放宽≠放水）",
+          not registry.is_healthy(dead_tpl),
+          "放宽后把真挂掉的站也放行了")
+    # 非可搜站维持原判据（保守，别动未知行为）
+    plain_dead = {"ok": 1, "fail": 9, "fail_down": 0, "name": "普通站"}
+    check("普通站（无 search_tpl）维持混装比值判据",
+          not registry.is_healthy(plain_dead),
+          "普通站的判据被顺手放宽了（不该）")
+
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")
     print("=" * 62)

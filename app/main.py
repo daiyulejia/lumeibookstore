@@ -78,7 +78,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import security, tunnel
+from . import history, security, tunnel, visits
 from .engine import Engine, source_meta
 from .errors import Cancelled, SourceBlocked
 from .exporter import DOWNLOAD_DIR, export as export_book
@@ -105,6 +105,25 @@ logger = get_logger("novel.app")
 
 app = FastAPI(title="噜妹书院 · 找书 / 下载 / 阅读")
 engine = Engine()
+
+
+def _client_ip(request: Request) -> str:
+    """取真实客户端 IP，给访客统计用。
+
+    直连时 `request.client.host` 就是对的；但走隧道/反代时那是**代理的**
+    地址（127.0.0.1），所有人会算成同一个访客，UV 永远是 1。
+    所以优先读代理留下的头。
+
+    ⚠ 顺序很讲究：X-Forwarded-For 是 `客户端, 代理1, 代理2`，
+    **第一个**才是原始客户端。取最后一个会把代理算成访客。
+    ⚠ 这些头是可以伪造的 —— 但它只用于"大致统计"，不参与任何鉴权，
+    被伪造最多让 UV 数字不准，不会造成安全问题。
+    """
+    for h in ("cf-connecting-ip", "x-real-ip", "x-forwarded-for"):
+        v = request.headers.get(h)
+        if v:
+            return v.split(",")[0].strip()
+    return getattr(request.client, "host", "") or ""
 
 
 @app.middleware("http")
@@ -145,6 +164,17 @@ async def _observe(request: Request, call_next):
         slow = " 慢" if ms > 800 else ""
         log_event(logger, "http", lv, method=request.method, path=path,
                   status=code, ms=f"{ms:.0f}{slow}")
+        # 访客记录：只记 API（静态资源一次加载几十条，记了纯属自残）。
+        # ⚠ 必须 try 包起来 —— 统计出问题绝不能让业务接口挂。
+        try:
+            visits.record(
+                path,
+                _client_ip(request),
+                request.headers.get("user-agent", ""),
+                ms, code, is_api=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("visits.record 异常（已忽略，不影响请求）")
     elif code >= 400:
         log_event(logger, "http.asset", logging.WARNING, path=path, status=code)
     resp.headers["X-Request-Id"] = rid
@@ -935,6 +965,13 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                 from .aggregate import group as group_books
 
                 books = group_books(results)
+                # 记搜索历史。**只记成书数**而不是原始候选数 ——
+                # "搜了 X 出来 0 本"才是书库缺口的证据；候选里混着一堆
+                # 沾边的噪声，拿它当 hits 会掩盖"其实一本能读的都没有"。
+                try:
+                    history.add_search(kw, hits=len(books))
+                except Exception:  # noqa: BLE001
+                    logger.exception("history.add_search 异常（已忽略）")
                 log_event(logger, "search.done", 书名=kw, 候选=len(results),
                           成书=len(books),
                           可读=sum(1 for r in results if r.available),
@@ -1059,6 +1096,81 @@ async def registry_faults():
             "sites": len(registry.sites()),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# 搜索历史 / 访客记录 —— 产品化的两个数据面板
+# ---------------------------------------------------------------------------
+# 为什么要开这两组接口（而不是"看日志就行"）：
+#   日志是**给排障用的** —— 会轮转、会删、格式面向 grep。
+#   「最近大家在搜什么」「今天有多少人来过」是**产品问题**，
+#   需要一个稳定留存、可直接拿来渲染的结构化来源。
+# 它们的共同点是**只读**（历史可删单条/清空，访客只能清空），
+# 且**绝不影响主流程** —— 记录失败一律吞掉，不让搜索/访问跟着挂。
+@app.get("/api/history/search")
+async def history_search(limit: int = 20):
+    """最近搜过的词（时间倒序）。前端搜索框的下拉提示用它。"""
+    return {"ok": True, "items": history.get_recent(limit)}
+
+
+@app.get("/api/history/search/hot")
+async def history_search_hot(limit: int = 20):
+    """热门搜索词（次数倒序）—— 「大家都在搜」用它。
+
+    ⚠ 与 /api/history/search 是两个维度：那个是"最近"，这个是"最多"。
+    两者都用同一个库，只是排序不同。
+    """
+    return {"ok": True, "items": history.get_hot(limit)}
+
+
+@app.get("/api/history/search/stats")
+async def history_search_stats():
+    """搜索历史体检：共多少词、累计搜了多少次、有几个词一无所获。
+
+    `empty_words` 是最有价值的一栏 —— 搜了却搜不到的书，
+    直接指向书库的覆盖缺口。
+    """
+    return {"ok": True, **history.stats()}
+
+
+@app.delete("/api/history/search")
+async def history_search_clear(kw: str = ""):
+    """删一个搜索词；**不给 kw 就清空全部**。
+
+    为什么用**查询参数**而不是路径参数（`/api/history/search/{kw}`）：
+      路径段里放不下斜杠。书名带斜杠非常常见（"哈利波特/魔法石"、
+      "斗破苍穹/之万界商城"），而 `%2F` 编码在 Starlette 里会被
+      解码成 `/` 去匹配路由 → 404。实测确认过：
+      `/api/history/search/aaa%2Fbbb` 和 `/api/history/search/aa/bb`
+      **都是 404**（前者编了码、后者没编）。
+      查询参数没有这个限制，`?kw=a%2Fb` 能正确还原成 `a/b`。
+
+    ⚠ 两个语义合并在一个路由上，是为了让"清空"和"删一条"共用同一处
+      参数校验。但**务必注意**：不带 kw 就是**清空全部** —— 这是破坏性
+      操作，前端必须走二次确认（sources.js 里已经包了 confirmBox）。
+    """
+    kw = (kw or "").strip()
+    if kw:
+        return {"ok": True, "deleted": history.delete(kw), "cleared": 0}
+    return {"ok": True, "removed": history.clear(), "deleted": False}
+
+
+@app.get("/api/visits")
+async def visits_recent(limit: int = 50):
+    """最近 N 条访问明细（谁在什么时候打开了哪个接口）。"""
+    return {"ok": True, "items": visits.recent(limit)}
+
+
+@app.get("/api/visits/stats")
+async def visits_stats(days: int = 14):
+    """访问汇总：今日/昨日 PV·UV、累计、以及最近 N 天趋势。"""
+    return {"ok": True, **visits.stats(days)}
+
+
+@app.delete("/api/visits")
+async def visits_clear():
+    """清空访客数据。"""
+    return {"ok": True, "removed_days": visits.clear()}
 
 
 @app.get("/api/registry/check")

@@ -21,6 +21,20 @@ const KIND_LABEL = {
   builtin: "内置", adapted: "自动适配", custom: "自定义", discovered: "联网发现",
 };
 
+/* 把任意值渲染成**纯数字**字符串，用于插进 innerHTML 的计数位。
+ *
+ * 为什么数字也要过一道（而不是直接 `${x || 0}`）：
+ *   这些字段来自接口，虽然服务端现在用 int() 强转过，但"接口返回的一定是
+ *   数字"是**对另一端的信任**。一旦哪天服务端改成返回字符串、或数据被污染，
+ *   直接把值插进 innerHTML 就是注入点。
+ *   过 Number() 之后非有限值一律变 0 —— 既防注入，也顺手兜住了 NaN/undefined
+ *   渲染成"NaN"那种难看的情况。
+ */
+const num = v => {
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : "0";
+};
+
 function srcCard(s, i) {
   const state = s.ok === true ? "ok" : s.ok === false ? "bad" : "mute";
   const word = s.ok === true ? "正常" : s.ok === false ? "打不开" : "未测";
@@ -234,19 +248,22 @@ async function renderRegistry() {
 }
 
 /* --------------------------------------------------------------------------
-   抽屉：两个页签
+   抽屉：三个页签
    -------------------------------------------------------------------------- */
 let tab = "check";
 
 function renderTab() {
   $$("#srcTabs .stab").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
-  $("#srcHint").textContent = tab === "check"
-    ? "当前能不能打开"
+  $("#srcHint").textContent =
+    tab === "check" ? "当前能不能打开"
+    : tab === "stats" ? "搜索历史与访客（本机数据）"
     : "联网发现攒下来的站和书";
-  if (tab === "check") renderSources(); else renderRegistry();
+  if (tab === "check") renderSources();
+  else if (tab === "stats") renderStats();
+  else renderRegistry();
 }
 
-/* 深链：#sources 开抽屉、#registry 直接落在来源库那一页。
+/* 深链：#sources 开抽屉、#registry 开来源库、#stats 开统计。
    刷新能保持，也能把「我的来源库」直接发给别人看。 */
 function setHash(h) {
   if (location.hash === h) return;
@@ -254,19 +271,146 @@ function setHash(h) {
 }
 
 bus.on("drawer:closed", id => {
-  if (id === "srcDrawer" && /^#(sources|registry)$/.test(location.hash)) setHash("");
+  if (id === "srcDrawer" && /^#(sources|registry|stats)$/.test(location.hash)) setHash("");
 });
 
+/* --------------------------------------------------------------------------
+   统计页签：搜索历史 + 访客记录
+   --------------------------------------------------------------------------
+   为什么放在这个抽屉里而不是另开一页：
+     它们都是"关于这个站本身"的数据，和来源库/来源检测是同一类东西
+     （都是"运维视角"）；另开一页会让底部导航变长，而移动端导航栏
+     只有 3~4 格，再加就挤了。放页签里既找得到、又不占导航。
+
+   两块都有"清空"，所以都走 confirmBox 二次确认 —— 数据是一点点攒的，
+   手滑一下全没了会很难受（而且删了就真没了，服务端不留备份）。
+   -------------------------------------------------------------------------- */
+async function renderStats() {
+  const body = $("#srcBody");
+  if (!body) return;
+  const my = take();
+  body.innerHTML = Array.from({ length: 3 }).map(() =>
+    `<div class="skel" style="margin-bottom:9px"><i class="w1"></i></div>`).join("");
+  try {
+    const [hs, vs, recent, hot] = await Promise.all([
+      api.get("/api/history/search/stats"),
+      api.get("/api/visits/stats"),
+      api.get("/api/visits?limit=12"),
+      api.get("/api/history/search/hot?limit=10"),
+    ]);
+    if (!fresh(my)) return;
+
+    const emptyWords = (hs.empty_words || []);
+    const topPaths = (vs.top_paths_today || []);
+    const rows = (recent && recent.items) || [];
+    const hotWords = (hot && hot.items) || [];
+
+    body.innerHTML = `
+      <div class="stgrid">
+        <div class="stcell"><b>${num(vs.pv_today)}</b><span>今日访问</span></div>
+        <div class="stcell"><b>${num(vs.uv_today)}</b><span>今日来客</span></div>
+        <div class="stcell"><b>${num(vs.pv_yesterday)}</b><span>昨日访问</span></div>
+        <div class="stcell"><b>${num(vs.uv_total)}</b><span>累计来客</span></div>
+      </div>
+
+      <div class="stsec">
+        <div class="sth">搜索 <span>共 ${num(hs.words)} 个词 · 搜了 ${num(hs.searches)} 次</span></div>
+        ${hotWords.length
+          ? `<div class="stnote">大家都在搜（点一下直接再搜一次）：</div>
+             <div class="stchips">${hotWords.map(w =>
+               `<span class="stchip click" data-hot="${esc(w.kw)}" title="搜过 ${num(w.count)} 次">${esc(w.kw)} <i>${num(w.count)}</i></span>`
+             ).join("")}</div>`
+          : `<div class="stnone">还没有搜过任何词</div>`}
+        ${emptyWords.length
+          ? `<div class="stnote">这 ${num(hs.empty)} 个词一本都没搜到 —— 多半是书库还没覆盖：</div>
+             <div class="stchips">${emptyWords.map(w =>
+               `<span class="stchip bad">${esc(w)}</span>`).join("")}</div>`
+          : `<div class="stnone">还没有"搜不到"的词</div>`}
+        <button class="mini" data-act="clrh">清空搜索历史</button>
+      </div>
+
+      <div class="stsec">
+        <div class="sth">访问 <span>今天最常打开的接口</span></div>
+        ${topPaths.length
+          ? `<div class="stchips">${topPaths.map(p =>
+              `<span class="stchip">${esc(p.path)} <i>${num(p.n)}</i></span>`).join("")}</div>`
+          : `<div class="stnone">今天还没有访问</div>`}
+        <div class="stnote">
+          下载进度、健康探测这类机器轮询计入访问数，但不占下面的明细 ——
+          否则一屏全是心跳，看不出"谁真的打开了什么"。
+        </div>
+        ${rows.length ? `
+          <div class="sth" style="margin-top:10px">最近来过</div>
+          <div class="stlist">${rows.map(r => {
+            const d = new Date((r.ts || 0) * 1000);
+            const t = `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} `
+              + `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+            return `<div class="strow${r.new ? " isnew" : ""}">
+              <span class="t">${t}</span>
+              <span class="p">${esc(r.path || "")}</span>
+              <span class="w">${esc(r.ua || "")}</span>
+              <span class="c${r.code >= 500 ? " bad" : ""}">${num(r.code)}</span>
+            </div>`;
+          }).join("")}</div>` : ""}
+        <button class="mini" data-act="clrv">清空访问记录</button>
+      </div>
+
+      <div class="stnote" style="margin-top:14px">
+        IP 已脱敏（只留前三段），不存 Cookie、不做跨站追踪 —— 只用来大致知道"有人在用"。
+      </div>`;
+
+    // 「大家都在搜」点一下直接复用主搜索流程 —— 不另写一套搜索逻辑，
+    // 否则两个入口的埋点/历史记录 / 流式行为会漂移。
+    // 做法：把词填回 #q 再派发回车，和用户自己敲完按回车走的是同一条路。
+    $$("[data-hot]", body).forEach(el => {
+      el.onclick = () => {
+        const q = $("#q");
+        if (!q) return;
+        q.value = el.dataset.hot || "";
+        // 收起抽屉，否则会盖在结果上（用户点了词却看不见搜出来的东西）。
+        // 走 openDrawer 挂在宿主节点上的 __wbClose（它会解绑 document 上的
+        // Esc 监听），不要直接 remove() —— 那会留下孤儿监听（util.js 有详述）。
+        const host = document.getElementById("srcDrawer");
+        if (typeof host?.__wbClose === "function") { try { host.__wbClose(); } catch {} }
+        q.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      };
+    });
+    const clrh = $("[data-act=clrh]", body);
+    if (clrh) clrh.onclick = async () => {
+      if (!(await confirmBox({
+        title: "清空搜索历史？",
+        message: "搜过的词会全部忘掉，无法恢复。",
+        okText: "清空", danger: true,
+      }))) return;
+      try { await api.del("/api/history/search"); toast("搜索历史已清空"); renderStats(); }
+      catch (e) { toast("清空失败：" + e.message, "err"); }
+    };
+    const clrv = $("[data-act=clrv]", body);
+    if (clrv) clrv.onclick = async () => {
+      if (!(await confirmBox({
+        title: "清空访问记录？",
+        message: "今日/累计的访问与来客数都会归零，无法恢复。",
+        okText: "清空", danger: true,
+      }))) return;
+      try { await api.del("/api/visits"); toast("访问记录已清空"); renderStats(); }
+      catch (e) { toast("清空失败：" + e.message, "err"); }
+    };
+  } catch (e) {
+    if (fresh(my)) body.innerHTML = `<div class="errtext">读取统计失败：${esc(e.message)}</div>`;
+  }
+}
+
 export function openSources(initialTab = "") {
-  if (initialTab) tab = initialTab;
+  if (initialTab === "stats" || initialTab === "registry" || initialTab === "check") tab = initialTab;
   const existing = document.getElementById("srcDrawer");
-  if (existing) { renderTab(); setHash(tab === "registry" ? "#registry" : "#sources"); return; }
+  if (existing) { renderTab(); setHash(tab === "registry" ? "#registry" : tab === "stats" ? "#stats" : "#sources"); return; }
   openDrawer({
     id: "srcDrawer",
     title: "来源",
     body: `<div id="srcTabs">
         <button class="stab on" data-tab="check">实时检测</button>
         <button class="stab" data-tab="registry">来源库</button>
+        <button class="stab" data-tab="stats">统计</button>
       </div>
       <div class="shint" id="srcHint"></div>
       <div id="srcBody"></div>`,
@@ -274,12 +418,12 @@ export function openSources(initialTab = "") {
     onMount: d => {
       $$("#srcTabs .stab", d.el).forEach(b => b.onclick = () => {
         tab = b.dataset.tab;
-        setHash(tab === "registry" ? "#registry" : "#sources");
+        setHash(tab === "registry" ? "#registry" : tab === "stats" ? "#stats" : "#sources");
         renderTab();
       });
       $("#srcAgainH", d.el).onclick = () => renderTab();
       renderTab();
     },
   });
-  setHash(tab === "registry" ? "#registry" : "#sources");
+  setHash(tab === "registry" ? "#registry" : tab === "stats" ? "#stats" : "#sources");
 }

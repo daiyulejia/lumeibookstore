@@ -41,6 +41,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -122,6 +123,24 @@ STATIC_SUITES = [
     # 谁下次随手写回 `--remote-debugging-port=9344`，这条就拦住他。
     # 见 tools/test_browser_launch.py 的注释。
     ("test_browser_launch.py", "Chrome 启动器纪律"),
+    # 搜索历史：同一本书搜两次不能新增条目（否则热词榜全是重复）、
+    # 空白必须折叠归一、**搜不到的词要标出来**（那是书库缺口的证据）。
+    # 它"绝不能影响搜索本身"，所以出问题会**静默降级**，
+    # 没人会发现，直到某天想看热词才发现库是空的。
+    # 见 tools/test_history.py 的注释。
+    ("test_history.py", "搜索历史"),
+    # 访客记录：跑在每个 API 请求上（中间件热路径），三条红线 ——
+    # ① 永不抛异常（抛了所有接口一起 500）；② 落盘必须节流（否则打满磁盘）；
+    # ③ 静态资源/4xx/自身接口不许记（否则自激、噪音淹没有数据）。
+    # 另外 IP 必须脱敏（隐私）、UV 口径必须带"日"（否则变成历史总人数）。
+    # 见 tools/test_visits.py 的注释。
+    ("test_visits.py", "访客记录"),
+    # 搜索历史/访客的**接线**自检（纯静态）：模块各自的行为测试保证
+    # 内部逻辑对，但"有人调用它吗、路由挂了吗、CSS 类名对得上吗、
+    # 深链接了吗、登记表同步了吗"这些**接线**问题它们都抓不到 ——
+    # 而且这类坏法全都不报错，只是界面上那块永远空着 / 没样式。
+    # 见 tools/test_search_history.py 的注释。
+    ("test_search_history.py", "历史/访客接线"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）
@@ -175,6 +194,17 @@ LIVE_SUITES = [
     # **偶发且极难查**）、旧代码依赖的 id 丢失（$() 拿 null 直接抛错，
     # 整条链路静默中断）。这条把它们钉成"永久红"。
     ("test_reader_shell.py", "阅读器外壳"),
+    # 搜索历史下拉。静态断言只能保证"代码接上了"，保证不了**真的能点** ——
+    # 下拉的坑全在运行时：blur 抢在 click 前把下拉收掉（点上去"像没反应"）、
+    # absolute 找不到定位祖先跑到整页宽、派发的 Enter 没被接住（点了不搜）、
+    # ↑↓ 只改变量不改 DOM。这些静态扫描一个都抓不到。
+    # 已做回退验证：拆掉 .h-wrap 立刻报红（左差 302px / 宽 1264 vs 660）。
+    ("test_history_ui.py", "搜索历史下拉"),
+    # 统计面板（来源抽屉的第三个页签）。改动点全在**跨模块接缝**上，
+    # 而接缝坏了全都不报错：renderTab 的 if/else 没跟上（点了页签
+    # 高亮过去、内容还是旧的）、#stats 深链没登记、拉接口失败整块空白、
+    # 清空按钮没绑（点了没反应）。
+    ("test_stats_ui.py", "统计面板"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -196,6 +226,8 @@ LIVE_ARGS = {
     "test_files_ui.py": "--url",
     "test_discover_ui.py": "--url",
     "test_reader_shell.py": "--url",
+    "test_history_ui.py": "--url",
+    "test_stats_ui.py": "--url",
 }
 
 
@@ -236,6 +268,18 @@ class LocalServer:
         env.pop("HTTP_PROXY", None)
         env.pop("HTTPS_PROXY", None)
         env["NOVEL_SCHED"] = "0"          # 测试时关掉后台调度，免得互相干扰
+        # ⚠ 把**统计类**数据文件指到临时目录。
+        #   为什么必须这么做：真机套件里有会**真的搜索 / 真的访问**的用例
+        #   （test_history_ui 要往历史里种种子词、每次请求都会记访问），
+        #   不隔离的话它们会写进你的真实 `cache/history.json` / `visits.json`。
+        #   测试自己虽然会清理，但那依赖 finally 一定跑得到 —— 中途崩了
+        #   就往用户的数据里留垃圾。指到临时目录就没有这个风险。
+        #   只隔离这两个"纯统计"文件：registry / library / cache 是对业务
+        #   结果有影响的，恰好相反 —— 真机测试**需要**它们是真的。
+        _tmpstats = tempfile.mkdtemp(prefix="novel-ship-stats-")
+        env["NOVEL_HISTORY"] = str(Path(_tmpstats) / "history.json")
+        env["NOVEL_VISITS"] = str(Path(_tmpstats) / "visits.json")
+        self._stats_dir = _tmpstats
         self.proc = subprocess.Popen(
             [PY, str(ROOT / "run.py"), "--host", "127.0.0.1",
              "--port", str(self.port), "--no-check"],
@@ -255,6 +299,8 @@ class LocalServer:
                 self.proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+        # 清掉临时统计目录
+        shutil.rmtree(getattr(self, "_stats_dir", ""), ignore_errors=True)
 
 
 def run_suite(name: str, desc: str, extra: list[str] | None = None) -> bool:

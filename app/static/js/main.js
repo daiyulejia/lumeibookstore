@@ -9,6 +9,7 @@ import { initMotion } from "./motion.js";
 import { nav, onNav, mountShell, bootstrapAuth } from "./shell.js";
 import { mountDiscover, loadSources, searchFromHash } from "./discover.js";
 import { mountRanks } from "./ranks.js";
+import { mountHistory } from "./history.js";
 import { mountShelf, loadShelf } from "./shelf.js";
 import { mountFiles, loadFiles, wireFilesEvents } from "./files.js";
 import { mountTasks, createExport, cacheBook, openTasks, pollTask } from "./tasks.js";
@@ -77,6 +78,7 @@ async function bootRoute() {
   const se = h.match(/^#search=(.+)$/);
   if (se) { nav("home"); searchFromHash(se[1]); return; }
   if (h === "#registry") { nav("home"); openSources("registry"); return; }
+  if (h === "#stats") { nav("home"); openSources("stats"); return; }
   if (h === "#sources") { nav("home"); openSources(); return; }
   if (h === "#shelf") nav("shelf");
   else if (h === "#files") nav("files");
@@ -99,6 +101,11 @@ document.addEventListener("keydown", e => {
   initMotion();
   mountShell();
   mountDiscover();
+  // ⚠ 必须在 mountDiscover **之后** —— 那个函数会插入（或复用）搜索框周围的
+  //   DOM；如果先把 .searchbox 包进 .h-wrap，mountDiscover 里的
+  //   `$("#q")` 虽然还是找得到，但 `input.closest(".searchbox")` 的层级判断
+  //   会落在旧结构上。跑在它后面就没有这个先后依赖。
+  mountHistory();
   mountShelf();
   mountFiles();
   wireFilesEvents();
