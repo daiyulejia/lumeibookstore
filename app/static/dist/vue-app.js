@@ -253,6 +253,9 @@ var require_vue_app = __commonJS({
       }
       return String(a) === String(b);
     }
+    function looseIndexOf(arr, val) {
+      return arr.findIndex((item) => looseEqual(item, val));
+    }
     const isRef$1 = (val) => {
       return !!(val && val["__v_isRef"] === true);
     };
@@ -2287,6 +2290,36 @@ var require_vue_app = __commonJS({
       renderFnWithContext._c = true;
       renderFnWithContext._d = true;
       return renderFnWithContext;
+    }
+    function withDirectives(vnode, directives) {
+      if (currentRenderingInstance === null) {
+        return vnode;
+      }
+      const instance = getComponentPublicInstance(currentRenderingInstance);
+      const bindings = vnode.dirs || (vnode.dirs = []);
+      for (let i = 0; i < directives.length; i++) {
+        let [dir, value, arg, modifiers = EMPTY_OBJ] = directives[i];
+        if (dir) {
+          if (isFunction$1(dir)) {
+            dir = {
+              mounted: dir,
+              updated: dir
+            };
+          }
+          if (dir.deep) {
+            traverse(value);
+          }
+          bindings.push({
+            dir,
+            instance,
+            value,
+            oldValue: void 0,
+            arg,
+            modifiers
+          });
+        }
+      }
+      return vnode;
     }
     function invokeDirectiveHook(vnode, prevVNode, instance, name) {
       const bindings = vnode.dirs;
@@ -7304,6 +7337,99 @@ var require_vue_app = __commonJS({
       container.removeChild(clone);
       return hasTransform;
     }
+    const getModelAssigner = (vnode) => {
+      const fn = vnode.props["onUpdate:modelValue"] || false;
+      return isArray$1(fn) ? (value) => invokeArrayFns(fn, value) : fn;
+    };
+    const assignKey = /* @__PURE__ */ Symbol("_assign");
+    const vModelSelect = {
+      // <select multiple> value need to be deep traversed
+      deep: true,
+      created(el, { value, modifiers: { number } }, vnode) {
+        el._modelValue = value;
+        addEventListener(el, "change", () => {
+          const selectedVal = Array.prototype.filter.call(el.options, (o) => o.selected).map(
+            (o) => number ? looseToNumber(getValue$1(o)) : getValue$1(o)
+          );
+          const multiple = el.multiple;
+          const assignedValue = multiple ? isSet(el._modelValue) ? new Set(selectedVal) : selectedVal : selectedVal[0];
+          const pending = el._pendingValue = [
+            multiple,
+            multiple ? isArray$1(assignedValue) ? selectedVal.slice() : selectedVal : assignedValue
+          ];
+          try {
+            el[assignKey](assignedValue);
+          } finally {
+            nextTick(() => {
+              if (el._pendingValue === pending) {
+                el._pendingValue = void 0;
+              }
+            });
+          }
+        });
+        el[assignKey] = getModelAssigner(vnode);
+      },
+      // set value in mounted & updated because <select> relies on its children
+      // <option>s.
+      mounted(el, { value }) {
+        setSelected(el, value);
+      },
+      beforeUpdate(el, { value }, vnode) {
+        el._modelValue = value;
+        el[assignKey] = getModelAssigner(vnode);
+      },
+      updated(el, { value }) {
+        const pending = el._pendingValue;
+        el._pendingValue = void 0;
+        if (!pending || pending[0] !== el.multiple || !isSameSelectValue(value, pending[1], pending[0])) {
+          setSelected(el, value);
+        }
+      }
+    };
+    function isSameSelectValue(value, assignedValue, multiple) {
+      if (!multiple) return looseEqual(value, assignedValue);
+      if (isArray$1(value)) return looseEqual(value, assignedValue);
+      if (isSet(value)) {
+        if (value.size !== assignedValue.length) return false;
+        for (const item of assignedValue) {
+          if (!value.has(item)) return false;
+        }
+        return true;
+      }
+      return false;
+    }
+    function setSelected(el, value) {
+      const isMultiple = el.multiple;
+      const isArrayValue = isArray$1(value);
+      if (isMultiple && !isArrayValue && !isSet(value)) {
+        return;
+      }
+      for (let i = 0, l = el.options.length; i < l; i++) {
+        const option = el.options[i];
+        const optionValue = getValue$1(option);
+        if (isMultiple) {
+          if (isArrayValue) {
+            const optionType = typeof optionValue;
+            if (optionType === "string" || optionType === "number") {
+              option.selected = value.some((v) => String(v) === String(optionValue));
+            } else {
+              option.selected = looseIndexOf(value, optionValue) > -1;
+            }
+          } else {
+            option.selected = value.has(optionValue);
+          }
+        } else if (looseEqual(getValue$1(option), value)) {
+          if (el.selectedIndex !== i) el.selectedIndex = i;
+          return;
+        }
+      }
+      if (!isMultiple && el.selectedIndex !== -1) {
+        el.selectedIndex = -1;
+      }
+    }
+    function getValue$1(el) {
+      return "_value" in el ? el._value : el.value;
+    }
     const rendererOptions = /* @__PURE__ */ extend({ patchProp }, nodeOps);
     let renderer;
     function ensureRenderer() {
@@ -10857,11 +10983,11 @@ ${style}
  height: 1em;
  width: 1em;
  `)])])]);
-    const _hoisted_1$3 = ["viewBox"];
-    const _hoisted_2$3 = ["values", "dur"];
-    const _hoisted_3$3 = ["stroke-width", "cx", "cy", "r", "stroke-dasharray", "stroke-dashoffset"];
-    const _hoisted_4$2 = ["values", "dur"];
-    const _hoisted_5$2 = ["values", "dur"];
+    const _hoisted_1$4 = ["viewBox"];
+    const _hoisted_2$4 = ["values", "dur"];
+    const _hoisted_3$4 = ["stroke-width", "cx", "cy", "r", "stroke-dasharray", "stroke-dashoffset"];
+    const _hoisted_4$3 = ["values", "dur"];
+    const _hoisted_5$3 = ["values", "dur"];
     const duration = "1.6s";
     const exposedLoadingProps = {
       strokeWidth: {
@@ -10931,7 +11057,7 @@ ${style}
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_2$3), createBaseVNode("circle", {
+          }, null, 8, _hoisted_2$4), createBaseVNode("circle", {
             class: normalizeClass$1(`${clsPrefix}-base-loading__icon`),
             fill: "none",
             stroke: "currentColor",
@@ -10950,14 +11076,14 @@ ${style}
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_4$2), createBaseVNode("animate", {
+          }, null, 8, _hoisted_4$3), createBaseVNode("animate", {
             attributeName: "stroke-dashoffset",
             values: `${5.67 * radius};${1.42 * radius};${5.67 * radius}`,
             begin: "0s",
             dur: duration,
             fill: "freeze",
             repeatCount: "indefinite"
-          }, null, 8, _hoisted_5$2)], 10, _hoisted_3$3)])], 14, _hoisted_1$3))], 2)], 2)) : (openBlock(), createElementBlock("div", {
+          }, null, 8, _hoisted_5$3)], 10, _hoisted_3$4)])], 14, _hoisted_1$4))], 2)], 2)) : (openBlock(), createElementBlock("div", {
             key: "placeholder",
             class: normalizeClass$1(`${clsPrefix}-base-loading__placeholder`)
           }, [normalizeVNode(() => this.$slots.default?.())], 2))
@@ -17126,34 +17252,34 @@ ${style}
       }
       return target;
     };
-    const _hoisted_1$2 = { class: "rk-vue" };
-    const _hoisted_2$2 = { class: "rk-head" };
-    const _hoisted_3$2 = {
+    const _hoisted_1$3 = { class: "rk-vue" };
+    const _hoisted_2$3 = { class: "rk-head" };
+    const _hoisted_3$3 = {
       class: "rk-age",
       id: "ranksAge"
     };
-    const _hoisted_4$1 = { class: "rk-actions" };
-    const _hoisted_5$1 = {
+    const _hoisted_4$2 = { class: "rk-actions" };
+    const _hoisted_5$2 = {
       key: 0,
       id: "ranksTabs",
       class: "rk-tabs",
       role: "tablist"
     };
-    const _hoisted_6$1 = ["data-kind", "aria-selected", "onClick"];
-    const _hoisted_7$1 = {
+    const _hoisted_6$2 = ["data-kind", "aria-selected", "onClick"];
+    const _hoisted_7$2 = {
       key: 1,
       class: "rk-desc",
       id: "ranksDesc"
     };
-    const _hoisted_8$1 = {
+    const _hoisted_8$2 = {
       key: 2,
       class: "rk-body"
     };
-    const _hoisted_9$1 = {
+    const _hoisted_9$2 = {
       key: 0,
       class: "rk-skel"
     };
-    const _hoisted_10$1 = ["data-title", "data-kind", "onClick"];
+    const _hoisted_10$2 = ["data-title", "data-kind", "onClick"];
     const _hoisted_11$1 = { class: "rk-src" };
     const _hoisted_12$1 = {
       key: 0,
@@ -17172,7 +17298,7 @@ ${style}
       key: 3,
       class: "rk-err"
     };
-    const _sfc_main$3 = {
+    const _sfc_main$4 = {
       __name: "RanksPanel",
       setup(__props) {
         const RefreshIcon = {
@@ -17190,6 +17316,7 @@ ${style}
         const folded = /* @__PURE__ */ ref(PRE.get("ranksFold", false));
         const age = /* @__PURE__ */ ref(null);
         const refreshedAt = /* @__PURE__ */ ref(0);
+        const staleNow = /* @__PURE__ */ ref(false);
         const onShelf = /* @__PURE__ */ ref(null);
         const shelfPromise = /* @__PURE__ */ ref(null);
         function normTitle(s) {
@@ -17245,10 +17372,7 @@ ${style}
             const d = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
             if (!d || !d.ok) throw new Error(d && d.error || "拿不到榜单");
             if (cur.value !== want) return;
-            items.value = d.items || [];
-            emptyHint.value = d.empty_hint || "";
-            if (typeof d.age === "number") age.value = d.age;
-            refreshedAt.value = 0;
+            applyRank(d);
           } catch (e) {
             if (cur.value !== want) return;
             try {
@@ -17256,10 +17380,7 @@ ${style}
               if (cur.value !== want) return;
               const d2 = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
               if (!d2 || !d2.ok) throw new Error(d2 && d2.error || "拿不到榜单");
-              items.value = d2.items || [];
-              emptyHint.value = d2.empty_hint || "";
-              if (typeof d2.age === "number") age.value = d2.age;
-              refreshedAt.value = 0;
+              applyRank(d2);
             } catch (e2) {
               if (cur.value !== want) return;
               error.value = e2.message || String(e2);
@@ -17272,6 +17393,33 @@ ${style}
             const root2 = document.querySelector("[data-vue-ranks]") || document;
             stagger(root2, ".rk-item");
           });
+        }
+        function applyRank(d) {
+          items.value = d.items || [];
+          emptyHint.value = d.empty_hint || "";
+          if (typeof d.age === "number") age.value = d.age;
+          refreshedAt.value = 0;
+          staleNow.value = d.fresh === false;
+          if (staleNow.value) scheduleRecheck();
+        }
+        let recheckTimer = null;
+        function scheduleRecheck() {
+          clearTimeout(recheckTimer);
+          recheckTimer = setTimeout(async () => {
+            if (!staleNow.value || !document.querySelector("[data-vue-ranks]")) return;
+            const want = cur.value;
+            try {
+              const d = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
+              if (!d || !d.ok || cur.value !== want) return;
+              if (d.fresh === false) return;
+              applyRank(d);
+              requestAnimationFrame(() => {
+                const root2 = document.querySelector("[data-vue-ranks]") || document;
+                stagger(root2, ".rk-item");
+              });
+            } catch {
+            }
+          }, 6e4);
         }
         function onKindChange(k) {
           if (k === cur.value) return;
@@ -17344,13 +17492,14 @@ ${style}
         onUnmounted(() => {
           off1 && off1();
           off2 && off2();
+          clearTimeout(recheckTimer);
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1$2, [
-            createBaseVNode("div", _hoisted_2$2, [
+          return openBlock(), createElementBlock("div", _hoisted_1$3, [
+            createBaseVNode("div", _hoisted_2$3, [
               _cache[2] || (_cache[2] = createBaseVNode("h2", { class: "rk-title" }, "热门榜单", -1)),
-              createBaseVNode("span", _hoisted_3$2, toDisplayString(freshness.value), 1),
-              createBaseVNode("div", _hoisted_4$1, [
+              createBaseVNode("span", _hoisted_3$3, toDisplayString(freshness.value), 1),
+              createBaseVNode("div", _hoisted_4$2, [
                 createVNode(unref(Button), {
                   id: "ranksRefresh",
                   size: "small",
@@ -17384,7 +17533,7 @@ ${style}
                 })
               ])
             ]),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5$1, [
+            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5$2, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(kinds.value, (k) => {
                 return openBlock(), createElementBlock("button", {
                   key: k.kind,
@@ -17394,12 +17543,12 @@ ${style}
                   "aria-selected": k.kind === cur.value,
                   type: "button",
                   onClick: ($event) => onKindChange(k.kind)
-                }, toDisplayString(k.label), 11, _hoisted_6$1);
+                }, toDisplayString(k.label), 11, _hoisted_6$2);
               }), 128))
             ])) : createCommentVNode("", true),
-            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$1, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8$1, [
-              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$1, [
+            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$2, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
+            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8$2, [
+              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$2, [
                 (openBlock(), createElementBlock(Fragment, null, renderList(6, (i) => {
                   return createVNode(unref(Skeleton_default), {
                     key: i,
@@ -17436,7 +17585,7 @@ ${style}
                       ], 4),
                       createBaseVNode("span", _hoisted_11$1, toDisplayString(it.source_display || it.source || ""), 1),
                       isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_12$1, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_13$1, "找这本 ›"))
-                    ], 10, _hoisted_10$1);
+                    ], 10, _hoisted_10$2);
                   }), 128))
                 ]),
                 _: 1
@@ -17480,11 +17629,11 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$3, [["__scopeId", "data-v-deaddbb1"]]);
-    const _hoisted_1$1 = ["src"];
-    const _hoisted_2$1 = { class: "t" };
-    const _hoisted_3$1 = { class: "a" };
-    const _sfc_main$2 = {
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-875a0654"]]);
+    const _hoisted_1$2 = ["src"];
+    const _hoisted_2$2 = { class: "t" };
+    const _hoisted_3$2 = { class: "a" };
+    const _sfc_main$3 = {
       __name: "BookCover",
       props: {
         /** 真封面外链（可空 —— 空了就用渐变色块兜底） */
@@ -17532,39 +17681,39 @@ ${style}
               loading: "lazy",
               decoding: "async",
               onError: _cache[0] || (_cache[0] = ($event) => hasImg.value = false)
-            }, null, 40, _hoisted_1$1)) : createCommentVNode("", true),
-            createBaseVNode("div", _hoisted_2$1, toDisplayString(shortTitle.value), 1),
-            createBaseVNode("div", _hoisted_3$1, toDisplayString(shortAuthor.value), 1)
+            }, null, 40, _hoisted_1$2)) : createCommentVNode("", true),
+            createBaseVNode("div", _hoisted_2$2, toDisplayString(shortTitle.value), 1),
+            createBaseVNode("div", _hoisted_3$2, toDisplayString(shortAuthor.value), 1)
           ], 6);
         };
       }
     };
-    const _hoisted_1 = { class: "wrap" };
-    const _hoisted_2 = { class: "filters" };
-    const _hoisted_3 = {
+    const _hoisted_1$1 = { class: "wrap" };
+    const _hoisted_2$1 = { class: "filters" };
+    const _hoisted_3$1 = {
       id: "shelfStat",
       class: "shelf-stat"
     };
-    const _hoisted_4 = {
+    const _hoisted_4$1 = {
       key: 0,
       class: "shelfgrid",
       id: "shelfList"
     };
-    const _hoisted_5 = {
+    const _hoisted_5$1 = {
       key: 1,
       class: "shelfgrid",
       id: "shelfList"
     };
-    const _hoisted_6 = ["data-id"];
-    const _hoisted_7 = { class: "info" };
-    const _hoisted_8 = { class: "by" };
-    const _hoisted_9 = { class: "prog" };
-    const _hoisted_10 = { class: "lb" };
+    const _hoisted_6$1 = ["data-id"];
+    const _hoisted_7$1 = { class: "info" };
+    const _hoisted_8$1 = { class: "by" };
+    const _hoisted_9$1 = { class: "prog" };
+    const _hoisted_10$1 = { class: "lb" };
     const _hoisted_11 = { class: "bar" };
     const _hoisted_12 = { class: "lb" };
     const _hoisted_13 = { class: "bar" };
     const _hoisted_14 = { class: "acts" };
-    const _sfc_main$1 = {
+    const _sfc_main$2 = {
       __name: "ShelfPanel",
       setup(__props) {
         const books = /* @__PURE__ */ ref([]);
@@ -17641,10 +17790,10 @@ ${style}
           clearTimeout(safety);
         });
         return (_ctx, _cache) => {
-          return openBlock(), createElementBlock("div", _hoisted_1, [
-            createBaseVNode("div", _hoisted_2, [
+          return openBlock(), createElementBlock("div", _hoisted_1$1, [
+            createBaseVNode("div", _hoisted_2$1, [
               _cache[1] || (_cache[1] = createBaseVNode("div", { class: "shelf-h" }, "我的书架", -1)),
-              createBaseVNode("span", _hoisted_3, toDisplayString(statText.value), 1),
+              createBaseVNode("span", _hoisted_3$1, toDisplayString(statText.value), 1),
               _cache[2] || (_cache[2] = createBaseVNode("div", { class: "spacer" }, null, -1)),
               createVNode(unref(Button), {
                 id: "btnShelfReload",
@@ -17659,7 +17808,7 @@ ${style}
                 _: 1
               }, 8, ["loading"])
             ]),
-            loading.value && !books.value.length ? (openBlock(), createElementBlock("div", _hoisted_4, [
+            loading.value && !books.value.length ? (openBlock(), createElementBlock("div", _hoisted_4$1, [
               (openBlock(), createElementBlock(Fragment, null, renderList(4, (i) => {
                 return createBaseVNode("div", {
                   key: i,
@@ -17668,7 +17817,7 @@ ${style}
                   createStaticVNode('<div class="sk-cover" data-v-f5c78a01></div><div class="info" data-v-f5c78a01><div class="sk-line w60" data-v-f5c78a01></div><div class="sk-line w40" data-v-f5c78a01></div><div class="sk-line w80 tall" data-v-f5c78a01></div></div>', 2)
                 ])]);
               }), 64))
-            ])) : (openBlock(), createElementBlock("div", _hoisted_5, [
+            ])) : (openBlock(), createElementBlock("div", _hoisted_5$1, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(books.value, (b, i) => {
                 return openBlock(), createElementBlock("div", {
                   key: b.id,
@@ -17676,17 +17825,17 @@ ${style}
                   "data-id": b.id,
                   style: normalizeStyle({ "--mo-i": i })
                 }, [
-                  createVNode(_sfc_main$2, {
+                  createVNode(_sfc_main$3, {
                     cover: b.cover,
                     title: b.title,
                     author: b.author
                   }, null, 8, ["cover", "title", "author"]),
-                  createBaseVNode("div", _hoisted_7, [
+                  createBaseVNode("div", _hoisted_7$1, [
                     createBaseVNode("h4", null, toDisplayString(b.title), 1),
-                    createBaseVNode("div", _hoisted_8, toDisplayString(b.author || "作者未知") + " · " + toDisplayString(b.source_display || b.source || ""), 1),
-                    createBaseVNode("div", _hoisted_9, [
+                    createBaseVNode("div", _hoisted_8$1, toDisplayString(b.author || "作者未知") + " · " + toDisplayString(b.source_display || b.source || ""), 1),
+                    createBaseVNode("div", _hoisted_9$1, [
                       createBaseVNode("div", null, [
-                        createBaseVNode("div", _hoisted_10, [
+                        createBaseVNode("div", _hoisted_10$1, [
                           createBaseVNode("span", null, "读到 " + toDisplayString(b.position?.index || 1) + "/" + toDisplayString(b.total || "?") + " 章", 1),
                           createBaseVNode("span", null, toDisplayString(readPct(b).toFixed(0)) + "%", 1)
                         ]),
@@ -17753,7 +17902,7 @@ ${style}
                       }, 8, ["onClick"])
                     ])
                   ])
-                ], 12, _hoisted_6);
+                ], 12, _hoisted_6$1);
               }), 128))
             ])),
             createBaseVNode("div", {
@@ -17771,7 +17920,215 @@ ${style}
         };
       }
     };
-    const ShelfPanel = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-f5c78a01"]]);
+    const ShelfPanel = /* @__PURE__ */ _export_sfc(_sfc_main$2, [["__scopeId", "data-v-f5c78a01"]]);
+    const _hoisted_1 = { class: "wrap" };
+    const _hoisted_2 = { class: "filters" };
+    const _hoisted_3 = {
+      key: 0,
+      id: "fileList"
+    };
+    const _hoisted_4 = {
+      key: 1,
+      id: "fileList"
+    };
+    const _hoisted_5 = ["data-ext"];
+    const _hoisted_6 = ["data-ext", "innerHTML"];
+    const _hoisted_7 = { class: "nm" };
+    const _hoisted_8 = ["title"];
+    const _hoisted_9 = { class: "acts" };
+    const _hoisted_10 = ["href"];
+    const _sfc_main$1 = {
+      __name: "FilesPanel",
+      setup(__props) {
+        const ICONS = {
+          txt: "M4 2h8l4 4v12H4zM12 2v4h4",
+          epub: "M4 2h9l4 4v12H4zM13 2v4h4M7 10h7M7 13h7",
+          html: "M12 2a10 10 0 100 20 10 10 0 000-20M2 12h20M12 2c2.5 2.7 3.8 6.2 3.8 10S14.5 19.3 12 22M12 2C9.5 4.7 8.2 8.2 8.2 12S9.5 19.3 12 22"
+        };
+        function fmtIcon(ext) {
+          const p2 = ICONS[ext] || "M4 2h8l4 4v12H4z";
+          return `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="${p2}"/></svg>`;
+        }
+        const files = /* @__PURE__ */ ref([]);
+        const loading = /* @__PURE__ */ ref(true);
+        const fmt = /* @__PURE__ */ ref(PRE.get("fmt", "txt"));
+        function onFmt(v) {
+          PRE.set("fmt", v);
+        }
+        const fmtSize = (n) => legacy("fmtSize")(n);
+        const fmtTime = (t) => legacy("fmtTime")(t);
+        function downloadUrl(f) {
+          return api.url("/api/file/" + encodeURIComponent(f.name));
+        }
+        function onOpen(f) {
+          window.open(downloadUrl(f), "_blank");
+        }
+        async function onDel(f) {
+          const yes = await confirmBox({
+            title: "删除文件",
+            message: `删除 ${f.name}？这个操作不能撤销。`,
+            okText: "删除",
+            danger: true
+          });
+          if (!yes) return;
+          try {
+            await api.del("/api/file/" + encodeURIComponent(f.name));
+            toast("已删除");
+            reload();
+          } catch (e) {
+            toast("删除失败：" + e.message, "err");
+          }
+        }
+        let gotData = false;
+        async function reload() {
+          loading.value = true;
+          armSafety();
+          try {
+            await legacy("loadFiles")();
+          } catch (e) {
+            toast("读取文件失败：" + e.message, "err");
+            loading.value = false;
+          }
+        }
+        const onLoaded = (list) => {
+          gotData = true;
+          files.value = Array.isArray(list) ? list : [];
+          loading.value = false;
+          clearTimeout(safety);
+        };
+        let safety = null;
+        function armSafety() {
+          clearTimeout(safety);
+          safety = setTimeout(() => {
+            loading.value = false;
+          }, 15e3);
+        }
+        onMounted(async () => {
+          await whenAuthReady();
+          bus.on("files:loaded", onLoaded);
+          bus.on("task:done", onTaskDone);
+          loading.value = true;
+          setTimeout(() => {
+            if (!gotData) reload();
+          }, 200);
+        });
+        function onTaskDone(t) {
+          if (t && t.kind === "download") reload();
+        }
+        onUnmounted(() => {
+          bus.off("files:loaded", onLoaded);
+          bus.off("task:done", onTaskDone);
+          clearTimeout(safety);
+        });
+        return (_ctx, _cache) => {
+          return openBlock(), createElementBlock("div", _hoisted_1, [
+            createBaseVNode("div", _hoisted_2, [
+              _cache[4] || (_cache[4] = createBaseVNode("div", { class: "files-h" }, "导出文件", -1)),
+              _cache[5] || (_cache[5] = createBaseVNode("div", { class: "spacer" }, null, -1)),
+              _cache[6] || (_cache[6] = createBaseVNode("label", {
+                class: "sr",
+                for: "fmtPick"
+              }, "导出格式", -1)),
+              withDirectives(createBaseVNode("select", {
+                id: "fmtPick",
+                "onUpdate:modelValue": _cache[0] || (_cache[0] = ($event) => fmt.value = $event),
+                class: "fmt-select",
+                onChange: _cache[1] || (_cache[1] = ($event) => onFmt(fmt.value))
+              }, [..._cache[2] || (_cache[2] = [
+                createBaseVNode("option", { value: "txt" }, "TXT（哪里都能开）", -1),
+                createBaseVNode("option", { value: "epub" }, "EPUB（Kindle / 阅读器）", -1),
+                createBaseVNode("option", { value: "html" }, "HTML（自带小阅读器的单文件）", -1)
+              ])], 544), [
+                [vModelSelect, fmt.value]
+              ]),
+              createVNode(unref(Button), {
+                id: "btnFilesReload",
+                size: "small",
+                quaternary: "",
+                loading: loading.value,
+                onClick: reload
+              }, {
+                default: withCtx(() => [..._cache[3] || (_cache[3] = [
+                  createTextVNode(" 刷新 ", -1)
+                ])]),
+                _: 1
+              }, 8, ["loading"])
+            ]),
+            loading.value && !files.value.length ? (openBlock(), createElementBlock("div", _hoisted_3, [
+              (openBlock(), createElementBlock(Fragment, null, renderList(3, (i) => {
+                return createBaseVNode("div", {
+                  key: i,
+                  class: "fsk"
+                }, [..._cache[7] || (_cache[7] = [
+                  createStaticVNode('<div class="sk-ic" data-v-3663db34></div><div class="sk-col" data-v-3663db34><div class="sk-line w60" data-v-3663db34></div><div class="sk-line w40" data-v-3663db34></div></div><div class="sk-acts" data-v-3663db34><div class="sk-btn" data-v-3663db34></div><div class="sk-btn" data-v-3663db34></div></div>', 3)
+                ])]);
+              }), 64))
+            ])) : (openBlock(), createElementBlock("div", _hoisted_4, [
+              (openBlock(true), createElementBlock(Fragment, null, renderList(files.value, (f) => {
+                return openBlock(), createElementBlock("div", {
+                  key: f.name,
+                  class: "file",
+                  "data-ext": f.ext
+                }, [
+                  createBaseVNode("div", {
+                    class: "ic",
+                    "data-ext": f.ext,
+                    innerHTML: fmtIcon(f.ext)
+                  }, null, 8, _hoisted_6),
+                  createBaseVNode("div", _hoisted_7, [
+                    createBaseVNode("b", {
+                      title: f.name
+                    }, toDisplayString(f.name), 9, _hoisted_8),
+                    createBaseVNode("span", null, toDisplayString((f.ext || "").toUpperCase()) + " · " + toDisplayString(fmtSize(f.size)) + " · " + toDisplayString(fmtTime(f.mtime)), 1)
+                  ]),
+                  createBaseVNode("div", _hoisted_9, [
+                    f.ext === "html" ? (openBlock(), createBlock(unref(Button), {
+                      key: 0,
+                      size: "small",
+                      "data-open": f.name,
+                      onClick: ($event) => onOpen(f)
+                    }, {
+                      default: withCtx(() => [..._cache[8] || (_cache[8] = [
+                        createTextVNode(" 打开看 ", -1)
+                      ])]),
+                      _: 1
+                    }, 8, ["data-open", "onClick"])) : createCommentVNode("", true),
+                    createBaseVNode("a", {
+                      class: "btn sm",
+                      href: downloadUrl(f),
+                      download: ""
+                    }, "下载", 8, _hoisted_10),
+                    createVNode(unref(Button), {
+                      size: "small",
+                      quaternary: "",
+                      "data-del": f.name,
+                      onClick: ($event) => onDel(f)
+                    }, {
+                      default: withCtx(() => [..._cache[9] || (_cache[9] = [
+                        createTextVNode("删除", -1)
+                      ])]),
+                      _: 1
+                    }, 8, ["data-del", "onClick"])
+                  ])
+                ], 8, _hoisted_5);
+              }), 128))
+            ])),
+            createBaseVNode("div", {
+              id: "fileEmpty",
+              class: normalizeClass(["empty", { hidden: files.value.length > 0 || loading.value }])
+            }, [..._cache[10] || (_cache[10] = [
+              createBaseVNode("div", {
+                class: "empty-art",
+                "aria-hidden": "true"
+              }, null, -1),
+              createBaseVNode("h3", null, "还没导出过", -1),
+              createBaseVNode("p", null, "在书籍卡片上点「导出」，或者在书架里导出整本 —— 打包好就能带走。", -1)
+            ])], 2)
+          ]);
+        };
+      }
+    };
+    const FilesPanel = /* @__PURE__ */ _export_sfc(_sfc_main$1, [["__scopeId", "data-v-3663db34"]]);
     const _sfc_main = {
       __name: "App",
       props: {
@@ -17780,7 +18137,7 @@ ${style}
       },
       setup(__props) {
         const props = __props;
-        const REGISTRY = { RanksPanel, ShelfPanel };
+        const REGISTRY = { RanksPanel, ShelfPanel, FilesPanel };
         const comp = computed(() => REGISTRY[props.only] || RanksPanel);
         return (_ctx, _cache) => {
           return openBlock(), createBlock(unref(ConfigProvider_default), {
@@ -17797,7 +18154,8 @@ ${style}
     };
     const MOUNTS = [
       { name: "RanksPanel", sel: "[data-vue-ranks]" },
-      { name: "ShelfPanel", sel: "[data-vue-shelf]" }
+      { name: "ShelfPanel", sel: "[data-vue-shelf]" },
+      { name: "FilesPanel", sel: "[data-vue-files]" }
     ];
     let mounted = 0;
     for (const m of MOUNTS) {

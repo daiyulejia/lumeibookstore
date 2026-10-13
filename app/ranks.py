@@ -350,7 +350,23 @@ def _fetch_one(kind: str) -> list[dict[str, Any]]:
 
 
 def get_rank(kind: str) -> list[dict[str, Any]]:
-    """取某一类榜单（带缓存）。未知 kind 返回空列表。"""
+    """取某一类榜单（带缓存）。未知 kind 返回空列表。
+
+    ⚠ 缓存策略是 **stale-while-revalidate（先给旧的，后台再去抓）**。
+    改这里之前先读下面这段 —— 它修的是一个真实的首屏体验问题：
+
+      原来：缓存过期后**同步**去抓（全量榜单要十几秒甚至几十秒）。
+        症状：用户打开首页，榜单区一直转圈；服务冷启动 + 机器忙时
+        实测能到 60 秒以上（ship 的并发真机测试就是被这个打红的）。
+      现在：只要手上有上一份数据（哪怕过期很久），**立刻返回**，
+        同时起一个后台线程去刷新。用户 0 秒看到榜单，几十秒后
+        界面上的「x 分钟前更新」会自然变成"刚刚更新"。
+
+    边界处理：
+      · 从没有过缓存（首次部署）→ 只能同步等，没有别的选择；
+      · 已有人在抓 → 不重复抓，直接把旧数据给他；
+      · 抓取失败 → 旧数据留在缓存里不动（下面 `if items` 那句守着）。
+    """
     if kind not in _KINDS:
         return []
 
@@ -360,10 +376,20 @@ def get_rank(kind: str) -> list[dict[str, Any]]:
     if hit and now - hit[0] < _TTL:
         return hit[1]
 
+    # —— 缓存过期，但手上有旧数据 ——
+    # 立刻还给用户，抓取丢后台。
+    if hit and hit[1]:
+        _kick_bg_refresh(kind)
+        return hit[1]
+
+    # —— 从来没有过缓存：只能同步等 ——
     # 已有别人在抓这一类 → 等它，别重复抓
     with _lock:
         hit = _CACHE.get(kind)
         if hit and now - hit[0] < _TTL:
+            return hit[1]
+        if hit and hit[1]:
+            # 刚才那一瞬别人抓回来了，直接用
             return hit[1]
         if kind in _inflight:
             return hit[1] if hit else []
@@ -391,6 +417,44 @@ def get_rank(kind: str) -> list[dict[str, Any]]:
     finally:
         with _lock:
             _inflight.discard(kind)
+
+
+# 后台刷新线程集合：防同一类榜单被同时刷两遍。
+# 用 _lock 保护（和 _inflight 共用同一把锁，避免两套互斥量打架）。
+_BG: set[str] = set()
+
+
+def _kick_bg_refresh(kind: str) -> None:
+    """起一个后台线程去刷新某一类榜单（不阻塞调用方）。
+
+    ⚠ 为什么必须是 daemon 线程：服务被 Ctrl-C / 被 systemd 重启时，
+    不能让一个抓取中的线程把进程吊住不退出（用户会遇到"关不掉"）。
+    抓一半被杀没有副作用 —— 缓存要么是旧的完整数据、要么还没写入。
+    """
+    import threading
+
+    with _lock:
+        if kind in _inflight or kind in _BG:
+            return          # 已经有人在抓了，别重复
+        _BG.add(kind)
+
+    def _work() -> None:
+        try:
+            items = _fetch_one(kind)
+            if items:
+                with _lock:
+                    _CACHE[kind] = (time.time(), items)
+                _save_to_disk()
+                print(f"  [ranks] 后台刷新 {kind}：{len(items)} 条", flush=True)
+            else:
+                print(f"  [ranks] 后台刷新 {kind}：没抓到，保留旧数据", flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [ranks] 后台刷新 {kind} 失败：{e}", flush=True)
+        finally:
+            with _lock:
+                _BG.discard(kind)
+
+    threading.Thread(target=_work, name=f"ranks-bg-{kind}", daemon=True).start()
 
 
 def refresh(kinds_: Optional[list[str]] = None, force: bool = True) -> dict[str, Any]:

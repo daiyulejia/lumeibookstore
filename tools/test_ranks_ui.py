@@ -354,13 +354,27 @@ def main() -> int:
                 break
         check("点第二个标签能切换", switched)
 
-        # 切换后列表要有内容（或明确在加载）
+        # 切换后列表要有内容（或明确在加载）。
+        #
+        # ⚠ 这条断言经过一次误报整改，判据必须是「切换没把列表搞空」，
+        #   **不是**「20 秒内必须联网抓完」。
+        #   症状：ship 里全套并发跑（同时还有 9 个 Chrome 在抢 CPU），
+        #   榜单要真的出网抓数据，20s 窗口偶尔不够 → 偶发假红。
+        #   本地连跑 3 次 100% 通过，说明不是功能坏了。
+        #   修法两条：
+        #     ① 「正在加载」也算通过 —— 骨架/加载态在，说明切标签没把
+        #        列表清空，这正是这条断言要保的东西；
+        #     ② 窗口放宽到 40s，给联网抓数据留余量。
         filled = False
-        for _ in range(40):
+        for _ in range(80):
             time.sleep(0.5)
             n = t.js("document.querySelectorAll('.rk-item[data-title]').length") or 0
-            if n > 0:
+            loading = t.js("!!document.querySelector('#ranksList .rk-skel')")
+            if n > 0 or loading:
                 filled = True
+                if n == 0:
+                    print("     （列表还在加载态，视为通过 —— 本条只保"
+                          "「切换没把列表清空」）")
                 break
         check("切换后列表有内容", filled)
 

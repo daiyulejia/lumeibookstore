@@ -22,14 +22,17 @@ frontend/
 ├── vite.config.js        # 构建配置（含三条硬约束的注释，改前先读）
 ├── tools/verify-dist.mjs # 产物自检（9 项断言）
 └── src/
-    ├── main.js           # 入口：找 #vue-root，有就挂载，没有就跳过
-    ├── App.vue           # 根组件（NConfigProvider 包主题）
+    ├── main.js           # 入口：找所有 data-vue-* 容器，逐个挂 app
+    ├── App.vue           # 根组件（NConfigProvider 包主题 + only 路由）
     ├── theme/
     │   ├── tokens.js     # 把 tokens.css 的 CSS 变量喂给 Naive UI
     │   └── naive.js      # 装主题 + 监听主题切换
     ├── legacy/           # 迁移期桥接旧模块（见下）
     └── components/
-        └── RanksPanel.vue  # 热门榜单（第一个迁移的页面）
+        ├── RanksPanel.vue  # 热门榜单（第一个迁移的页面）
+        ├── ShelfPanel.vue  # 书架页
+        ├── FilesPanel.vue  # 文件页
+        └── BookCover.vue   # 复用的书封（榜单/书架共用）
 ```
 
 ## 三个必须知道的硬约束
@@ -133,12 +136,32 @@ Vue 重写渲染方式时，**要把这些钩子保留下来**，而不是去改
 - [x] 主题桥（7 套主题的 CSS 变量 → Naive themeOverrides）
 - [x] 热门榜单（`RanksPanel.vue`）
 - [x] 书架页（`ShelfPanel.vue` + 复用的 `BookCover.vue`）
+- [x] 文件页（`FilesPanel.vue`）
 - [ ] 发现页搜索结果区
-- [ ] 文件页
 - [ ] 阅读器（最大，995 行，最后迁）
 
 每迁完一个页面，删掉对应的旧模块和 `legacy/` 里的桥接项。
 全迁完后 `legacy/` 整个目录都可以删。
+
+## 两个"跨模块契约"：删了会静默坏掉
+
+迁移时最容易踩的不是渲染，是**别的模块靠 DOM 找你这块东西**。
+旧代码大量用 `$("#id")` 反查，Vue 一换渲染方式这些 id 就没了。
+必须保留的、以及为什么：
+
+| id / 结构 | 谁在读 | 丢了会怎样 |
+|---|---|---|
+| `#fmtPick`（**必须是原生 `<select>`**） | `main.js` 3 处 `fmt: $("#fmtPick").value` | 导出静默用错格式。n-select 渲成 `div`，`.value` 取到 `None` —— 踩过，`test_files_ui.py` 第 2 节有断言 |
+| `#q` `#btnSearch` `#statbar` `#results` `#filters` `#homeEmpty` `#confirmBox` | `discover.js` 搜索流程 | 搜索整条链断 |
+| `#view-<name>` + `data-view` | `shell.js` 的 `nav()` 切 `.hidden` | 导航点了没反应 |
+| `#shelfList` `#shelfEmpty` `#shelfStat` `#shelfN` | `shelf.js` / 真机测试 | 书架刷新失效 |
+| `#fileList` `#fileEmpty` | `files.js` / 真机测试 | 文件列表不更新 |
+| `#ranksBox` 等 | `ranks.js` / `test_ranks_ui.py` | 榜单不刷新 |
+
+⚠ 判断"该不该用 Vue 实现"，看旧模块里有没有 `vueOwnsXxx()`
+（`shelf.js` / `files.js` 各有一份）。它的语义是：
+**容器在，就我（Vue）管；容器不在，旧实现顶上** ——
+保证迁移期任一侧出问题页面都不会空白。
 
 ## 挂载模型（很重要，改之前先看这条）
 

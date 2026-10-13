@@ -52,6 +52,9 @@ def reset(cached: dict | None = None) -> None:
     """把模块状态清成"刚启动、有/没有缓存"的样子。"""
     ranks._CACHE.clear()
     ranks._inflight.clear()
+    # ⚠ _BG 也要清 —— 它是"正在后台刷新的榜单集合"。
+    #   不清的话上一组留下的 kind 会把下一组的去重逻辑挡住（假绿）。
+    getattr(ranks, "_BG", set()).clear()
     ranks._loaded = True          # 阻止 _load_from_disk 去读临时文件
     if cached:
         ranks._CACHE.update(cached)
@@ -68,14 +71,30 @@ def main() -> int:
     print("榜单过期缓存兜底 —— 抓不到时不能给空白页")
     print("=" * 66)
 
-    print("\n── 1. 缓存过期 + 抓取失败（被限流）→ 必须回退旧缓存 ────────────")
-    # 这是本次事故的核心场景。384g 冷却时走的就是这条路。
+    print("\n── 1. 缓存过期 + 有旧数据 → 立刻回旧数据，抓取丢后台 ──────────")
+    # ⚠ 这一组在引入 stale-while-revalidate 后**语义变了**：
+    #   以前是"同步去抓，抓不到才回退旧缓存"（用户要等十几秒）；
+    #   现在是"立刻回旧缓存，同时后台去抓"（用户 0 秒看到内容）。
+    #   两者都保证"不给空白页"，但前者有可感知的等待。
     reset({"allvote": (_OLD, _ITEMS)})
+    went_bg: list[str] = []
     ranks._fetch_one = lambda k: []
-    got = ranks.get_rank("allvote")
+    # 把后台线程换掉，别真起线程 —— 这里要测的是"调用方拿到什么"，
+    # 不是"线程有没有跑起来"（那是下面第 6 组的事）。
+    orig_kick = ranks._kick_bg_refresh
+    ranks._kick_bg_refresh = lambda k: went_bg.append(k)
+    try:
+        t0 = time.time()
+        got = ranks.get_rank("allvote")
+        dt = time.time() - t0
+    finally:
+        ranks._kick_bg_refresh = orig_kick
     check("回退到那份过期缓存（不是空白页）", len(got) == 20,
           f"只拿到 {len(got)} 条 —— 用户会看到空标签")
     check("回退的确实是旧榜内容", bool(got) and got[0]["title"] == "旧榜第0本")
+    check("调用方**没有**被同步抓取阻塞（< 0.5s）", dt < 0.5,
+          f"等了 {dt:.2f}s —— 用户会对着骨架干等")
+    check("后台刷新被踢起来了", went_bg == ["allvote"], f"实际：{went_bg}")
 
     print("\n── 2. 缓存新鲜 → 直接用缓存，不发起抓取（省一次联网）──────────")
     reset({"allvote": (_FRESH, _ITEMS)})
@@ -95,14 +114,68 @@ def main() -> int:
         check("不能抛异常", False, f"抛了 {type(e).__name__}: {e}")
     check("返回空列表", got == [], repr(got))
 
-    print("\n── 4. 抓取成功 → 新数据覆盖缓存 ───────────────────────────────")
-    reset({"allvote": (_OLD, _ITEMS)})
+    print("\n── 4. 无缓存 + 抓取成功 → 同步等，拿到新数据 ──────────────────")
+    # 首次部署的场景：手上什么都没有，只能等。
+    # ⚠ 这条**必须**保持同步语义 —— 改成"后台抓 + 立刻返回空"
+    #   会让第一次访问的用户看到空榜单（比等十几秒更糟）。
+    reset()
     ranks._fetch_one = lambda k: _NEW
     got = ranks.get_rank("allvote")
-    check("用新数据（不是旧缓存）", len(got) == 1 and got[0]["title"] == "新榜第1本",
+    check("拿到新数据", len(got) == 1 and got[0]["title"] == "新榜第1本",
           repr(got[:2]))
     check("新数据已写进内存缓存",
           ranks._CACHE.get("allvote", (0, []))[1][0]["title"] == "新榜第1本")
+
+    print("\n── 6. 后台刷新真的会更新缓存（不是踢一脚就完事）─────────────")
+    # 用真线程跑一遍完整路径：旧缓存 → 立刻返回 → 后台抓到新数据 → 缓存被换掉。
+    # 这条钉的是 _kick_bg_refresh 里的**写入**那一段 —— 只有"踢起来了"
+    # 不够，抓回来的东西必须真的落进缓存，否则用户永远停在旧榜上。
+    reset({"allvote": (_OLD, _ITEMS)})
+    ranks._fetch_one = lambda k: _NEW
+    got = ranks.get_rank("allvote")
+    check("第一次调用拿到旧缓存", bool(got) and got[0]["title"] == "旧榜第0本")
+    # 等后台线程把新数据写进去（轮询，最多 3 秒）
+    swapped = False
+    for _ in range(60):
+        time.sleep(0.05)
+        cur_cache = ranks._CACHE.get("allvote", (0, []))[1]
+        if cur_cache and cur_cache[0]["title"] == "新榜第1本":
+            swapped = True
+            break
+    check("后台线程把新数据写进缓存了", swapped,
+          "缓存一直没更新 —— 用户会永远停在旧榜上")
+
+    print("\n── 7. 同一类榜单不会被同时刷两遍（后台去重）───────────────────")
+    # 防的是"首页 3 个组件同时请求同一个榜单 → 起 3 个抓取线程"。
+    # 判据：看**真正开出去的线程**里有几个是抓这一类榜单的。
+    # 不去重的话会是 3 个；去重了应该是 1 个。
+    reset({"allvote": (_OLD, _ITEMS)})
+    ranks._fetch_one = lambda k: (time.sleep(0.25), _NEW)[1]
+    orig_kick = ranks._kick_bg_refresh
+
+    def spy(k: str) -> None:
+        # 直接调真的那个 —— 它会做去重（_BG 集合）
+        ranks._kick_bg_refresh = orig_kick
+        try:
+            orig_kick(k)
+        finally:
+            ranks._kick_bg_refresh = spy
+
+    ranks._kick_bg_refresh = spy
+    try:
+        for _ in range(3):
+            ranks.get_rank("allvote")
+        # 数一下此刻还在跑的 ranks-bg-* 线程
+        import threading as _th
+        live = [t for t in _th.enumerate() if t.name.startswith("ranks-bg-")]
+        time.sleep(0.6)
+        after = [t for t in _th.enumerate() if t.name.startswith("ranks-bg-")]
+    finally:
+        ranks._kick_bg_refresh = orig_kick
+    check("同一类榜单同时只有一个后台刷新线程", len(live) <= 1,
+          f"同时有 {len(live)} 个 —— 去重失效（3 个组件会各起一个）")
+    check("后台线程跑完后会自己清理", len(after) == 0,
+          f"还剩 {len(after)} 个没退出")
 
     print("\n── 5. 未知 kind → 空（且不抓取）───────────────────────────────")
     reset()

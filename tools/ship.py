@@ -129,6 +129,12 @@ LIVE_SUITES = [
     # 验不到渲染层：组件挂错容器（真踩过，一个 app 管多处 DOM，
     # 书架被渲进榜单区内部、页面静默空白）、插画消失、请求回声。
     ("test_shelf_ui.py", "书架界面"),
+    # 文件页（Vue 迁移后）。这条钉的是一条**跨模块契约**：
+    # `#fmtPick` 必须还是原生 select —— main.js 有 3 处读
+    # `$("#fmtPick").value` 拿导出格式，Naive 的 n-select 渲成 div，
+    # `.value` 取到 None，导出会静默用错格式。
+    # 写这条断言时特地做了回退验证（换回 n-select 立刻报红）。
+    ("test_files_ui.py", "文件界面"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -147,6 +153,7 @@ LIVE_ARGS = {
     "test_disconnect.py": "--url",
     "test_auth_race.py": "--url",
     "test_shelf_ui.py": "--url",
+    "test_files_ui.py": "--url",
 }
 
 

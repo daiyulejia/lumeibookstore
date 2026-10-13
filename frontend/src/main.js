@@ -33,6 +33,7 @@ import { installLumeiTheme } from "./theme/naive.js";
 const MOUNTS = [
   { name: "RanksPanel", sel: "[data-vue-ranks]" },
   { name: "ShelfPanel", sel: "[data-vue-shelf]" },
+  { name: "FilesPanel", sel: "[data-vue-files]" },
 ];
 
 let mounted = 0;

@@ -157,6 +157,7 @@ const emptyHint = ref("");
 const folded = ref(PRE.get("ranksFold", false));
 const age = ref(null);
 const refreshedAt = ref(0);
+const staleNow = ref(false);   // 这一份是不是"过期缓存"（服务端 fresh=false）
 const onShelf = ref(null);
 const shelfPromise = ref(null);
 
@@ -231,10 +232,7 @@ async function loadRanks(kind) {
     const d = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
     if (!d || !d.ok) throw new Error((d && d.error) || "拿不到榜单");
     if (cur.value !== want) return; // 用户切走了，别把旧结果盖上去
-    items.value = d.items || [];
-    emptyHint.value = d.empty_hint || "";
-    if (typeof d.age === "number") age.value = d.age;
-    refreshedAt.value = 0;
+    applyRank(d);
   } catch (e) {
     if (cur.value !== want) return;
     // ⚠ 自动重试一次。
@@ -249,10 +247,7 @@ async function loadRanks(kind) {
       if (cur.value !== want) return;
       const d2 = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
       if (!d2 || !d2.ok) throw new Error((d2 && d2.error) || "拿不到榜单");
-      items.value = d2.items || [];
-      emptyHint.value = d2.empty_hint || "";
-      if (typeof d2.age === "number") age.value = d2.age;
-      refreshedAt.value = 0;
+      applyRank(d2);
     } catch (e2) {
       if (cur.value !== want) return;
       error.value = e2.message || String(e2);
@@ -266,6 +261,54 @@ async function loadRanks(kind) {
     const root = document.querySelector("[data-vue-ranks]") || document;
     stagger(root, ".rk-item");
   });
+}
+
+/** 把一次 /api/ranks 响应落到界面上。
+ *
+ * ⚠ 关键在最后那句 `scheduleRecheck()`。服务端现在是
+ * **stale-while-revalidate**：缓存过期时它**立刻返回旧数据**、
+ * 同时起后台线程去抓。所以这一份很可能是旧的（`fresh: false`）——
+ * 界面必须自己再来看一眼，否则用户手上的榜单会一直停在旧版本，
+ * "先给旧的"这个优化就变成了"永远给旧的"。
+ *
+ * 复查只做**一次**、而且是静默的（不动 loading、不弹 toast）：
+ * 后台抓一次全量榜单要十几秒，60 秒足以让它落地；
+ * 再久就不该继续占资源了（用户真在意的话会点「刷新」）。
+ */
+function applyRank(d) {
+  items.value = d.items || [];
+  emptyHint.value = d.empty_hint || "";
+  if (typeof d.age === "number") age.value = d.age;
+  refreshedAt.value = 0;
+  staleNow.value = d.fresh === false;
+  if (staleNow.value) scheduleRecheck();
+}
+
+let recheckTimer = null;
+
+function scheduleRecheck() {
+  clearTimeout(recheckTimer);
+  recheckTimer = setTimeout(async () => {
+    // 用户已经切走 / 关了页面就别再打接口了
+    if (!staleNow.value || !document.querySelector("[data-vue-ranks]")) return;
+    const want = cur.value;
+    try {
+      const d = await api.get(`/api/ranks?kind=${encodeURIComponent(want)}`);
+      if (!d || !d.ok || cur.value !== want) return;
+      // ⚠ 只在**真的变新了**的时候才重画。
+      //   如果后台还在抓（fresh 仍是 false），重画一遍旧数据毫无意义，
+      //   反而会让用户看到列表"闪一下"（错峰动画重放）。
+      //   这一轮没等到就先不追了 —— 不像"轮询"那样无限打接口。
+      if (d.fresh === false) return;
+      applyRank(d);
+      requestAnimationFrame(() => {
+        const root = document.querySelector("[data-vue-ranks]") || document;
+        stagger(root, ".rk-item");
+      });
+    } catch {
+      /* 静默：复查失败对用户没有意义，他手上已经有一份能看的榜单了 */
+    }
+  }, 60000);
 }
 
 function onKindChange(k) {
@@ -390,6 +433,11 @@ onMounted(async () => {
 onUnmounted(() => {
   off1 && off1();
   off2 && off2();
+  // ⚠ 必须清掉静默复查定时器。不清的话组件卸载后回调还会跑，
+  //   去 `api.get` 一个已经没人看的接口（而且 timeout 里访问的 ref
+  //   也是将要被回收的实例 —— Vue 会警告，Chrome 里表现为
+  //   "Unhandled promise rejection" 进埋点，看着像 bug）。
+  clearTimeout(recheckTimer);
 });
 </script>
 

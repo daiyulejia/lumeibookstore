@@ -206,26 +206,7 @@
 
 <!-- ==================== 文件 ==================== -->
 <section id="view-files" class="hidden" data-view>
-  <div class="wrap">
-    <div class="filters">
-      <div style="font-size:19px;font-weight:800">导出文件</div>
-      <div class="spacer"></div>
-      <label class="sr" for="fmtPick">导出格式</label>
-      <select id="fmtPick" style="width:auto">
-        <option value="txt">TXT（哪里都能开）</option>
-        <option value="epub">EPUB（Kindle / 阅读器）</option>
-        <option value="html">HTML（自带小阅读器的单文件）</option>
-      </select>
-      <button class="btn ghost sm" id="btnFilesReload">刷新</button>
-    </div>
-    <div id="fileList"></div>
-    <div id="fileEmpty" class="empty">
-      <img class="empty-art" src="/static/img/lumei/loading_drink@480.webp"
-           width="480" height="360" alt="" loading="lazy" decoding="async">
-      <h3>还没导出过</h3>
-      <p>在书籍卡片上点「导出」，或者在书架里导出整本 —— 打包好就能带走。</p>
-    </div>
-  </div>
+  <div id="vue-root-files" data-vue-files></div>
 </section>
 
 <!-- 移动端底部标签栏 -->

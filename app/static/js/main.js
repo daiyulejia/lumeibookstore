@@ -10,7 +10,7 @@ import { nav, onNav, mountShell, bootstrapAuth } from "./shell.js";
 import { mountDiscover, loadSources, searchFromHash } from "./discover.js";
 import { mountRanks } from "./ranks.js";
 import { mountShelf, loadShelf } from "./shelf.js";
-import { mountFiles, loadFiles } from "./files.js";
+import { mountFiles, loadFiles, wireFilesEvents } from "./files.js";
 import { mountTasks, createExport, cacheBook, openTasks, pollTask } from "./tasks.js";
 import { openSources } from "./sources.js";
 import { openAdapt } from "./adapt.js";
@@ -101,6 +101,7 @@ document.addEventListener("keydown", e => {
   mountDiscover();
   mountShelf();
   mountFiles();
+  wireFilesEvents();
   mountTasks();
   mountReaderUI();
   wireEvents();
