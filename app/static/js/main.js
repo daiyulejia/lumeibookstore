@@ -17,6 +17,7 @@ import { openSources } from "./sources.js";
 import { openAdapt } from "./adapt.js";
 import { openNet } from "./net.js";
 import { mountReaderUI, openReader, closeReader, isReaderOpen } from "./reader.js";
+import { rotateHeroArt } from "./art.js";
 
 /* ---------- 编排 ---------- */
 function wireEvents() {
@@ -112,6 +113,11 @@ document.addEventListener("keydown", e => {
   mountTasks();
   mountReaderUI();
   wireEvents();
+
+  // 首页那对水豚**每天轮换**一张素材（按日期取模，纯前端、无副作用）。
+  // ⚠ 放在 mountXxx 之后、DOM 已就绪；且它只改 src/srcset，不碰布局。
+  //   失败也不该拖垮启动 —— 里面每一处都做了空值保护。
+  rotateHeroArt();
 
   // ---- 给自动化测试一个「骨架已挂载」的信号 ----
   // ⚠ 为什么需要它：HTML 里的静态标签（#btnSearch、#q …）在**解析出来**时

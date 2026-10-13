@@ -42,9 +42,10 @@ html[data-theme="lumei-night"] .btn.primary:active{
   box-shadow:0 1px 0 color-mix(in srgb,var(--a-1) 30%,transparent);
 }
 
-/* 顶栏品牌标记：暖白底 + 水豚剪影。
-   理由：字和吉祥物是两套视觉语言，放一起会打架；
-         而且深色渐变底会吃掉剪影的细节。让水豚自己当主角更干净。 */
+/* 顶栏品牌标记：真实噜妹素材（圆脸水豚特写），裁成圆角方块。
+   ⚠ 这里**不再是手绘剪影** —— 用户反馈旧的手绘 SVG「太丑」。
+      现在是 <img>（hero_lumei），object-fit:cover 裁成方形。
+      所以 background 只作为**图片加载失败时的兜底**留着。 */
 html[data-theme="lumei"] .brand .mark,
 html[data-theme="lumei-night"] .brand .mark{
   border-radius:34%;
@@ -52,6 +53,14 @@ html[data-theme="lumei-night"] .brand .mark{
   border:1px solid var(--s-line);
   box-shadow:var(--sh-s);
   animation:lu-breathe 4s ease-in-out infinite;
+}
+/* 噜妹素材是暖橙底，直接贴上去会有一圈方形色差 —— 压一点内阴影当"纸边"，
+   让它和暖白卡片融为一体，而不是看起来像贴了一张贴纸。 */
+html[data-theme="lumei"] .brand .mark img,
+html[data-theme="lumei-night"] .brand .mark img{
+  /* 素材是 4:3 横图，脸在偏右 —— 用 object-position 把脸挪到正中，
+     否则裁成方形会把脸切掉一半。 */
+  object-position:60% 45%;
 }
 @keyframes lu-breathe{
   0%,100%{transform:scale(1)}
@@ -71,7 +80,12 @@ html[data-theme="lumei-night"] .brand .mark{
 .lu-duo{
   display:flex;align-items:flex-end;justify-content:center;
   gap:clamp(6px,1.6vw,14px);margin:6px 0 16px;
+  /* ⚠ 允许换行。极窄屏上"两张图 + 对话气泡"一行放不下，
+     气泡会顶出右边界（实测 320px 屏 → 文档被撑到 327，右侧被切）。
+     允许 wrap 后，气泡自己掉到下一行居中 —— 比压缩成省略号好读。 */
+  flex-wrap:wrap;
 }
+
 /* 一对：两张图用**同样的取景框**（同宽高、同圆角、同阴影），
    只靠"更近的间距"表达它们是一对。
    间距不能大 —— 太大就变成"两个独立装饰"，而不是"一对"。 */
@@ -83,11 +97,25 @@ html[data-theme="lumei-night"] .brand .mark{
      而不是像一张游离的方图 */
   box-shadow:var(--sh-m),
              inset 0 0 0 1px color-mix(in srgb,var(--s-line) 70%,transparent);
-  animation:lu-float 4.5s ease-in-out infinite;
+  /* 两个动画叠加（用逗号分隔）：入场 + 常驻呼吸。
+     入场用 `both`，呼吸用 `infinite` —— 顺序不能反，先播入场再进循环。 */
+  animation:
+    lu-capy-in .7s var(--ease-spring) both,
+    lu-float 4.5s ease-in-out infinite;
   will-change:transform;
 }
-/* 噜妹错开半个周期（同相位会像被同一根线牵着的木偶） */
-.lu-capy.is-lumei{animation-delay:-2.25s}
+/* 噜妹错开半个周期（同相位会像被同一根线牵着的木偶）。
+   注意：这里只调**第二个**（lu-float）的延迟，入场不动，
+   否则噜妹会比噜噜晚 2.25s 才出现。 */
+.lu-capy.is-lumei{
+  animation-delay:0s, -2.25s;
+}
+
+/* 入场：轻轻从下方浮上来 + 淡入。**不做缩放/弹跳**（违反"松弛"内核）。 */
+@keyframes lu-capy-in{
+  from{opacity:0;transform:translateY(14px)}
+  to{opacity:1;transform:translateY(0)}
+}
 
 @keyframes lu-float{
   0%,100%{transform:translateY(0) rotate(0deg)}
@@ -96,6 +124,23 @@ html[data-theme="lumei-night"] .brand .mark{
 /* 两张图轻微对倾 —— 「靠在一起」的姿势，比并排直立更像一对 */
 .lu-duo .lu-capy:first-child{transform-origin:bottom right}
 .lu-duo .lu-capy.is-lumei{transform-origin:bottom left}
+
+/* 一束很淡的暖光，在两图之间极其缓慢地脉动 ——
+   给"那里"一点生命感，但不构成任何注意力抢夺。
+   放在 .lu-duo::before 上（不占布局、不影响分页），只在噜妹主题下出现。 */
+.lu-duo{position:relative}
+.lu-duo::before{
+  content:"";position:absolute;left:50%;top:52%;z-index:-1;
+  width:min(62vw,420px);height:min(30vw,200px);transform:translate(-50%,-50%);
+  background:radial-gradient(ellipse at center,
+    color-mix(in srgb,var(--a-1) 26%,transparent), transparent 68%);
+  filter:blur(26px);opacity:.55;pointer-events:none;
+  animation:lu-glow 7s ease-in-out infinite;
+}
+@keyframes lu-glow{
+  0%,100%{opacity:.4;transform:translate(-50%,-50%) scale(1)}
+  50%{opacity:.7;transform:translate(-50%,-50%) scale(1.08)}
+}
 
 /* 对话气泡：噜噜的口头禅「没事就是呗」
    ⚠ 不要做成「淡入淡出」—— 截图和首屏常抓在隐藏相位，看起来像坏了。
@@ -703,6 +748,16 @@ html[data-theme="lumei-night"] .toast{
   /* 任务呼吸动效在小屏关掉（后台多任务时省电优先） */
   html[data-theme="lumei"] .task,
   html[data-theme="lumei-night"] .task{animation:card-in var(--dur-m) var(--ease-out) both}
+}
+
+/* ⚠⚠ 极窄屏（<380px）Hero 防溢出（2026-10-13 用户报「页面比屏幕宽」）。
+   实测：320px 屏上 `.lu-duo` 里"两张 121px 图 + 78px 气泡 + 间距"
+   ≈ 330px > 320px，气泡顶出右边界 → 文档被撑到 327px，右侧被切。
+   `.lu-duo` 已有 flex-wrap（气泡可掉行），这里再把图**缩一档**，
+   让"两张图 + 气泡"尽量仍能一行放完（一行比两行更像"一对在说话"）。 */
+@media (max-width:380px){
+  .lu-capy{width:min(34vw,120px)}
+  .lu-say{font-size:11px;padding:3px 8px;max-width:46vw;white-space:normal}
 }
 
 /* 尊重系统的「减少动效」偏好 —— 这是可访问性要求，不是可选项 */

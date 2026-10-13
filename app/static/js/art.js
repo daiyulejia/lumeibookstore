@@ -112,3 +112,64 @@ export function failHTML({ key = "error_confused", line = "出了点问题", sub
 
 /** 列出所有已定义的状态键 —— 给"素材有没有闲着的"这类检查用。 */
 export function artKeys() { return Object.keys(ART); }
+
+/* ==========================================================================
+   首页 Hero：噜噜/噜妹**每天轮换**
+   --------------------------------------------------------------------------
+   为什么要它：一对固定的图看久了就成了"背景板"，用户不会再注意到它们。
+   每天换一张（按日期取模，不需要服务端、不需要存储），
+   让"今天的噜噜"变成一个每天会变的小惊喜 —— 成本几乎为零。
+
+   ⚠ 几个必须守住的点：
+     1. **不能随机**（`Math.random()`）—— 每次刷新都换会显得"闪"、像没加载稳。
+        按**日期**取模：同一天上午下午看到的都一样，跨天变一次。
+     2. 只换 `src`/`srcset`，**不动 width/height**：所有素材宽高比一致
+        （都是 480×360），改尺寸会让页面跳一下。
+     3. 轮换单位是**一整对**，不是单张 —— 池子里每项是 `左|右`。
+        理由见 index.html 那段注释：素材分"特写"和"场景"两类取景，
+        左右各自随机挑会挑出"一大头 + 一远景"，不成一对。
+     4. 只在噜妹主题下显示（非噜妹主题 `.lu-duo` 本来就被隐藏）。
+
+   池子来自 `data-hero-pool`（写在 HTML 上，方便运营直接改 HTML 增删候选，
+   不用回来改 JS）。格式：`左键|右键,左键|右键,...`
+   ========================================================================== */
+
+/** 取"今天是第几天"（本地时区，从 Unix 纪元算起）。
+ *  用本地时区而不是 UTC：用户的"今天"应该是他自己的今天。 */
+function dayIndex() {
+  const d = new Date();
+  return Math.floor((d.getTime() - d.getTimezoneOffset() * 60000) / 86400000);
+}
+
+/**
+ * 按日期给首页 Hero 的那一对图轮换素材。
+ *
+ * @param root  容器（默认取 `[data-hero-pool]`）；没找到就静默返回。
+ */
+export function rotateHeroArt(root = null) {
+  const dup = root || document.querySelector("[data-hero-pool]");
+  if (!dup) return;
+
+  // 解析 `左|右,左|右,...`；任何一侧缺失/非法就丢掉这一对（宁可少一天候选，
+  // 也不显示半张空图）。
+  const pairs = (dup.dataset.heroPool || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => s.split("|").map(x => x.trim()))
+    .filter(p => p.length === 2 && ART[p[0]] && ART[p[1]]);
+  if (!pairs.length) return;               // 池子为空：保留 HTML 里的兜底图
+
+  const imgs = dup.querySelectorAll("[data-hero-role]");
+  if (imgs.length < 2) return;
+
+  const [lk, rk] = pairs[dayIndex() % pairs.length];
+  const assign = (img, key) => {
+    const base = `${DIR}/${ART[key].file}`;
+    img.src = `${base}@480.webp`;
+    img.srcset = `${base}@240.webp 240w, ${base}@480.webp 480w`;
+  };
+  assign(imgs[0], lk);
+  assign(imgs[1], rk);
+}
+

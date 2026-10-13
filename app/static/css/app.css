@@ -49,13 +49,20 @@ img{max-width:100%;display:block}
   background:color-mix(in srgb,var(--s-bg) 90%,transparent);
   box-shadow:var(--sh-s);
 }
-.brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:16.5px;letter-spacing:.01em;flex:0 0 auto}
+.brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:16.5px;letter-spacing:.01em;flex:0 0 auto;min-width:0}
+/* 品牌字（"噜妹书院"）在极窄屏要能收缩，否则它会和右侧图标一起把顶栏撑出屏幕。
+   min-width:0 是关键 —— flex 子项默认 min-width:auto，不会收缩到内容以下。 */
+.brand > span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .brand .mark{
   width:31px;height:31px;border-radius:10px;display:grid;place-items:center;font-size:16px;font-weight:800;
   background:linear-gradient(140deg,var(--a-1),var(--a-2));color:var(--a-ink);
   box-shadow:0 4px 14px color-mix(in srgb,var(--a-1) 38%,transparent);
   transition:transform var(--dur-m) var(--ease-spring);
+  overflow:hidden;flex:0 0 auto;
 }
+/* 标记里现在是**真实噜妹素材**（一张 <img>），不是手绘 SVG。
+   object-fit:cover 把 4:3 横图裁成方形（不裁会留白边 / 变形）。 */
+.brand .mark img{width:100%;height:100%;object-fit:cover;display:block}
 .brand:hover .mark{transform:rotate(-6deg) scale(1.06)}
 .brand small{font-weight:600;font-size:10px;color:var(--t-3);letter-spacing:.16em;text-transform:uppercase}
 
@@ -109,6 +116,27 @@ nav.tabs button #shelfN{font-size:12px;opacity:.7;font-weight:600}
   .tabbar button.on i{transform:translateY(-2px) scale(1.12)}
   .tabbar button:active i{transform:scale(.9)}
   body{padding-bottom:calc(62px + env(safe-area-inset-bottom,0px))}
+}
+
+/* ⚠⚠ 极窄屏（<380px）顶栏防溢出。
+   为什么必须有这一段（2026-10-13 用户报「页面比屏幕宽 / 一行看不全」）：
+   顶栏是 flex 一行：`.brand`（logo + 「噜妹书院」）固定 ~107px，
+   右侧 `.tools` 里**五个** 38px 图标按钮 ≈ 206px，加 gap 12px + 左右 padding 36px
+   ≈ 361px。在 360px 及以下的手机上，**顶栏内容比屏幕还宽 35px** ——
+   于是整份文档被撑到 ~355px，右侧内容（包括阅读器的行尾）就被切掉了，
+   表现出来就是「一行看不全 / 页面比屏幕宽」。
+   实测：320px 屏 → `innerWidth` 却是 355，`.topbar.scrollWidth=355`。
+   对策（保持"图标都还在、只是变小"，比隐藏功能好）：
+     · 图标按钮 38→34px（触屏热区另有 @media(pointer:coarse) 的 44px 撑开，不受影响）
+     · 顶栏左右 padding 18→12px、gap 12→8px、按钮间距 4→2px
+     · 品牌字号 16.5→15px（并已在上方允许 ellipsis 收缩）
+   这一改在 360px 上把顶栏内容从 ~361 压到 ~300，留出安全余量。 */
+@media (max-width:380px){
+  .topbar{gap:8px;padding:0 12px}
+  .brand{font-size:15px;gap:7px}
+  .brand .mark{width:29px;height:29px}
+  .tools{gap:2px}
+  .iconbtn{width:34px;height:34px;border-radius:10px}
 }
 
 /* ---------- 2. 版面 ---------- */

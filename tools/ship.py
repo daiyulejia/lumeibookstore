@@ -213,6 +213,12 @@ LIVE_SUITES = [
     # 高亮过去、内容还是旧的）、#stats 深链没登记、拉接口失败整块空白、
     # 清空按钮没绑（点了没反应）。
     ("test_stats_ui.py", "统计面板"),
+    # 窄屏不溢出（用户报「手机上一行看不全 / 页面比屏幕宽」）。
+    # 这条钉的是一个**截图看不出来**的几何判据：截图只拍可视区，
+    # 不知道右边被切了 —— 只有量 `innerWidth` vs `documentElement.scrollWidth` 才暴露。
+    # ⚠ 判据必须跟**请求的宽度**比，不能跟 innerWidth 比（后者会被内容一起撑大，
+    #   于是恒真）；这一点本套件的第一版就写错了，反证时才抓到。见 test_mobile_fit.py。
+    ("test_mobile_fit.py", "窄屏不溢出"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -236,6 +242,7 @@ LIVE_ARGS = {
     "test_reader_shell.py": "--url",
     "test_history_ui.py": "--url",
     "test_stats_ui.py": "--url",
+    "test_mobile_fit.py": "--url",
 }
 
 
