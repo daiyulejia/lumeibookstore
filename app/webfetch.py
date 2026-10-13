@@ -824,7 +824,7 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
     _bad_ep = len(toc) >= 8 and _ep_ratio >= 0.6
     _bad_name = bool(_VIDEO_NAME_RE.search(sname)) and len(toc) >= 8
     if _bad_path or _bad_ep or _bad_name:
-        registry.note_site(host, ok=False, name=sname)
+        registry.note_site(host, ok=False, name=sname, why=registry.FAIL_VIDEO)
         return {
             "kind": "unknown", "url": url, "final_url": base, "host": host,
             "note": "影视站，不是小说站", "size": len(html),
@@ -845,7 +845,7 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
                 "cover": cover,
                 "toc": toc, "quality": quality, "size": len(html),
             }
-        registry.note_site(host, ok=False, name=sname)
+        registry.note_site(host, ok=False, name=sname, why=registry.FAIL_SHAPE)
         return {
             "kind": "unknown", "url": url, "final_url": base, "host": host,
             "note": why, "size": len(html),
@@ -857,7 +857,7 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
         # 够长不代表是正文 —— 正版站的正文页能打开，但正文要登录或 JS 渲染，
         # 抽出来是一屏控件。这种必须判死，否则会显示「可读」然后一个字都读不到。
         if looks_like_ui_skeleton(body):
-            registry.note_site(host, ok=False, name=sname)
+            registry.note_site(host, ok=False, name=sname, why=registry.FAIL_GATED)
             return {
                 "kind": "unknown", "url": url, "final_url": base, "host": host,
                 "note": "只拿到页面控件，正文要登录或 JS 渲染", "size": len(html),
@@ -871,6 +871,6 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
             "title": meta["title"], "content": body, "cover": cover, "size": len(html),
         }
 
-    registry.note_site(host, ok=False, name=sname)
+    registry.note_site(host, ok=False, name=sname, why=registry.FAIL_SHAPE)
     return {"kind": "unknown", "url": url, "final_url": base, "host": host,
             "size": len(html)}

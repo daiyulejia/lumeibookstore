@@ -87,7 +87,7 @@ class DiscoveredSource(Source):
         try:
             html = fetch_text(url)
         except Exception:  # noqa: BLE001
-            registry.note_site(host, ok=False)
+            registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
             raise
 
         site = registry.known_site(host)
@@ -104,7 +104,8 @@ class DiscoveredSource(Source):
             # 抓到的是「阅读器骨架 / 登录提示 / 章节不存在」之类 —— 宁可当失败。
             # 不拦的话，付费站（正文是 JS 渲染的）会交出满页 UI 文字，
             # 而用户看着「下载成功」却读不到一个字。
-            registry.note_site(host, ok=False)
+            # why=gated：页面**打开了**，是要登录/JS，不是站挂了。
+            registry.note_site(host, ok=False, why=registry.FAIL_GATED)
             return ""
 
         # 学一手：这次命中的是什么容器，下次直接用
@@ -158,19 +159,19 @@ class DiscoveredSource(Source):
         try:
             text = self.fetch_chapter(chapters[idx]) or ""
         except Exception as e:  # noqa: BLE001
-            registry.note_site(host_of(result.url), ok=False)
+            registry.note_site(host_of(result.url), ok=False, why=registry.FAIL_DOWN)
             return {"ok": False, "chars": 0,
                     "note": note_for_exception(e), "ms": _ms(t0)}
 
         if not text.strip():
-            registry.note_site(host_of(result.url), ok=False)
+            registry.note_site(host_of(result.url), ok=False, why=registry.FAIL_GATED)
             return {"ok": False, "chars": 0,
                     "note": "目录能打开，但正文抓不到（多半是付费站或 JS 渲染）",
                     "ms": _ms(t0)}
 
         ok, note = check_content_quality(text)
         if not ok:
-            registry.note_site(host_of(result.url), ok=False)
+            registry.note_site(host_of(result.url), ok=False, why=registry.FAIL_GATED)
         else:
             registry.note_book(
                 result.url, title=result.title, author=result.author,

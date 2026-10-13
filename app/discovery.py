@@ -156,11 +156,15 @@ def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
             data = page_of(url)
     except Exception as e:  # noqa: BLE001
         logger.info("候选核实失败 %s: %s", host, e)
-        registry.note_site(host, ok=False)
+        # why=down：网络层失败（连不上/超时/5xx），这才是"站点可能挂了"。
+        registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
         return None
 
     if data.get("kind") != "toc":
-        registry.note_site(host, ok=False)
+        # why=shape：页**打开了**，只是不是章节目录 —— 多半是搜索引擎
+        # 给的地址指向了书页/简介页，是我们 URL 猜错，不是站不行。
+        # （早先这里和上面的网络失败记成同一笔，把好站拖进"高失败率"。）
+        registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)
         return None
 
     toc = data.get("toc") or []
@@ -445,19 +449,30 @@ def health_check(*, log: Optional[LogFn] = None, limit: int = 0) -> dict:
 
 
 def _check_book(url: str, meta: dict) -> bool:
+    """体检一本书（被 `sweep` 定期调用）。
+
+    这里就是「定期排查坏源」的执行体：一条条重开历史书目，
+    连不上的把站也一并记一笔失败。**为什么失败原因要分类**：
+    sweep 的结论会直接影响哪些站被降级，而"站挂了"和
+    "这本书的 URL 过期了（站还在，是书被删/改了路径）"是两件事 ——
+    只有前者该算站的账。
+    """
     host = meta.get("host") or host_of(url)
     try:
         with fast_mode(retries=0, timeout=12.0):
             data = page_of(url, force=True)
     except Exception:  # noqa: BLE001
+        # 网络层失败：站可能真的挂了 → 记站的账
         registry.note_book(url, host=host, ok=False)
-        registry.note_site(host, ok=False)
+        registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
         return False
 
     toc = data.get("toc") or []
     if data.get("kind") != "toc" or len(toc) < 3:
+        # 打开了但不像章节目录：多半是**这本书**的地址过期了，
+        # 不是站不行 → 只记书的账，站最多记 shape（不计入"站点挂了"）
         registry.note_book(url, host=host, ok=False)
-        registry.note_site(host, ok=False)
+        registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)
         return False
 
     registry.note_book(url, title=data.get("title") or meta.get("title", ""),

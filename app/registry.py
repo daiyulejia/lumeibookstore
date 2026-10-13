@@ -81,6 +81,24 @@ SAVE_MIN_INTERVAL = 1.0
 # 站点「不健康」的判定门槛：成功过 0 次、失败 ≥ 3 次
 UNHEALTHY_FAILS = 3
 
+# 失败原因分类 —— 传给 `note_site(..., why=...)`。
+# 为什么必须分类：`fail` 是个混装桶，"站点真的连不上"和"我们 URL 猜错了"
+# 都只让它 +1。于是 is_healthy 的比值判据会把猜错路径算成"这个站不行"，
+# 好站被慢慢判死；而真挂掉的站如果历史成功多，比值也压不下去。
+# 分类之后「定期排查坏源」才能只盯 FAIL_DOWN 那一类（见 FAIL_WHY_* 命名）。
+FAIL_DOWN = "down"      # 网络层失败：连不上/超时/5xx —— 站点可能真的挂了
+FAIL_EMPTY = "empty"    # 打开了但没内容：模板能开、搜不出（多半改版了）
+FAIL_SHAPE = "shape"    # 打开了但不是章节目录：URL 猜错 / 页面形态不符
+FAIL_VIDEO = "video"    # 判为影视站（剧集列表冒充章节目录）—— 主动否决，非故障
+FAIL_GATED = "gated"    # 正文要登录 / 靠 JS 渲染，只拿到一屏控件 —— 不是挂了
+FAIL_WHY_ALL = (FAIL_DOWN, FAIL_EMPTY, FAIL_SHAPE, FAIL_VIDEO, FAIL_GATED)
+
+# 哪些原因**不该**算作「这个站挂了」。
+# is_healthy 目前仍是旧的"总 fail"判据（纯增量改动，先不动线上行为），
+# 但「定期排查坏源」要按这份名单算：只有 DOWN 才说明站点真出问题了，
+# 其余三类都在说"这次抓法不对"，站点本身可能是好的。
+FAIL_WHY_SITE_FAULT = (FAIL_DOWN,)
+
 # 写盘前的「缩水护栏」：盘上至少这么多条、且新内容不到原来一半时，先留一份备份。
 SHRINK_GUARD_MIN = 5
 SHRINK_GUARD_RATIO = 0.5
@@ -326,10 +344,14 @@ def _now() -> int:
 # ---------------------------------------------------------------------------
 # 站点
 # ---------------------------------------------------------------------------
-def note_site(host: str, *, ok: bool = True, name: str = "", **fields) -> None:
+def note_site(host: str, *, ok: bool = True, name: str = "", why: str = "",
+              **fields) -> None:
     """记一次站点的抓取结果。
 
     ok=True 计入成功、ok=False 计入失败；其余字段直接合并进去。
+
+    `why` —— **失败原因分类**，这是给「定期排查坏源」用的（见下方长注释）。
+    只在 ok=False 时有意义，取值遵循下面的 FAIL_* 常量。
     """
     host = (host or "").strip().lower()
     if not host:
@@ -352,6 +374,19 @@ def note_site(host: str, *, ok: bool = True, name: str = "", **fields) -> None:
             cur["last_ok"] = _now()
         else:
             cur["fail"] = int(cur.get("fail", 0)) + 1
+            # 按原因分类单独计数。为什么要单独记而不是只加 fail：
+            # `fail` 是个**混装桶** —— 网络错、URL 猜错、真的一条结果都没有，
+            # 三者都只会让它 +1。于是 `is_healthy` 的
+            # 「fail > ok*2」判据把「我们自己 URL 猜错」也算成"这个站不行"，
+            # 一个好好的站会因为猜错路径被慢慢判死；反过来，
+            # 一个真正挂掉的站只要历史上成功过很多次，比值也压不下去。
+            # 分桶之后，「定期排查坏源」才能只看 FAIL_DOWN 那一类。
+            # ⚠ 本字段是**纯增量**：目前不改任何健康判定（避免动线上行为），
+            #   先攒数据；等数据够了再让 registry.check 用它做决策。
+            if why:
+                key = f"fail_{why}"
+                cur[key] = int(cur.get(key, 0)) + 1
+                cur["fail_last_why"] = why
         if "first_seen" not in cur:
             cur["first_seen"] = _now()
         cur["updated"] = _now()

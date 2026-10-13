@@ -177,13 +177,15 @@ class RegistrySource(Source):
                     html, final = fetch_text(url, with_url=True)
         except Exception as e:  # noqa: BLE001
             logger.debug("自有来源抓取失败 %s: %s", host, e)
-            registry.note_site(host, ok=False)
+            registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
             return []
         finally:
             self._note_speed((time.time() - t_start) * 1000)
 
         if not html:
-            registry.note_site(host, ok=False)
+            # 请求成功但没拿到 HTML —— 站能开、只是这次没内容，
+            # 归 empty（不是 down，别把站判死）
+            registry.note_site(host, ok=False, why=registry.FAIL_EMPTY)
             return []
 
         base = final or url
@@ -211,7 +213,7 @@ class RegistrySource(Source):
             # 搜到了结果页、但一条书链接都没有 —— 多半是这个模板「能开但搜不出」
             # （站改版了）。记一笔失败，但不删模板（模板本身没错，
             # 是抽链接的启发式需要跟着变）。
-            registry.note_site(host, ok=False)
+            registry.note_site(host, ok=False, why=registry.FAIL_EMPTY)
         return out
 
     @classmethod
@@ -249,7 +251,8 @@ class RegistrySource(Source):
         try:
             html = fetch_text(url)
         except Exception:  # noqa: BLE001
-            registry.note_site(host, ok=False)
+            # 取正文失败 = 网络层，算站的账
+            registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
             raise
 
         site = registry.known_site(host)
@@ -262,7 +265,8 @@ class RegistrySource(Source):
         from .base import check_content_quality
         ok, _why = check_content_quality(body)
         if not ok:
-            registry.note_site(host, ok=False)
+            # 拿到了页面但正文质量不行（多半是要登录/JS 渲染）→ gated，非站挂
+            registry.note_site(host, ok=False, why=registry.FAIL_GATED)
             return ""
         hint = webfetch.extract_content_hint(html)
         registry.note_site(host, ok=True, **({"content_hint": hint} if hint else {}))

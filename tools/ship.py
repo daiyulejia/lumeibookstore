@@ -102,6 +102,12 @@ STATIC_SUITES = [
     # 只在线上排障时白烧时间。本轮实测抓到 11 个死条目 + 8 个未登记。
     # 见 tools/test_events_registry.py 的注释。
     ("test_events_registry.py", "埋点登记表"),
+    # 来源库「失败原因分类」：note_site 的 why 分桶必须真的落盘。
+    # 背景：fail 一直是混装桶（网络错 / URL 猜错 / 要登录 都只 +1），
+    # 导致 is_healthy 的比值判据分不清"站不行"还是"这次抓法不对" ——
+    # 这正是「定期排查坏源」做不起来的原因。本改动先攒数据、不改判定。
+    # 见 tools/test_registry_why.py 的注释。
+    ("test_registry_why.py", "失败原因分类"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）

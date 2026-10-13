@@ -22,19 +22,37 @@ description: 把噜妹书院（novel-downloader）的本地改动自检、同步
 
 它会依次：
 
-1. **静态自检**（16 套）—— `test_motion.py`（动效 + 主题覆盖 31 项）/ `test_art.py` /
+1. **静态自检**（17 套）—— `test_motion.py`（动效 + 主题覆盖 37 项）/ `test_art.py` /
    `test_parse.py` / `test_ranks.py` / `test_registry.py` / `test_registry_author.py` /
    `test_relevance.py` / `test_sitelearn.py` / `test_deobfuscate.py` / `test_security.py` /
    `test_discover_fallback.py` / `test_ranks_stale.py` / `test_bookurl.py` /
-   `test_junk.py`（影视站 + 话题标签符）/ `test_filename.py`（Windows 文件名）
-2. **真机自检**（6 套，自己起临时服务、跑完自动关）—— `test_motion_live.py` /
-   `test_buttons.py`（78 项）/ `test_ranks_ui.py` / `test_reader_ui.py`（30 项）/
-   `test_xss.py`（17 项注入）/ `test_concurrency.py`（11 项并发竞态）/
-   `test_telemetry.py`（8 项前端埋点）
+   `test_junk.py`（影视站 + 话题标签符）/ `test_filename.py`（Windows 文件名）/
+   `test_cover.py` / `test_frontend.py` /
+   `test_events_registry.py`（埋点登记表双向一致性，5 项）
+2. **真机自检**（14 套，自己起临时服务、跑完自动关）—— `test_motion_live.py` /
+   `test_buttons.py`（79 项）/ `test_ranks_ui.py` / `test_reader_ui.py`（30 项）/
+   `test_xss.py`（19 项注入）/ `test_concurrency.py`（11 项并发竞态）/
+   `test_telemetry.py`（8 项前端埋点）/ `test_disconnect.py`（5 项断连止损）/
+   `test_auth_race.py`（鉴权时序）/ `test_shelf_ui.py` / `test_files_ui.py` /
+   `test_discover_ui.py` / `test_reader_shell.py`（23 项阅读器外壳）
 3. **同步** —— 调 `tools/sync_cloud.py`：打包 → scp → 远端只覆盖代码 → 验证
 
 **任何一项红就停下，绝不往线上推。** 这是这个脚本最重要的性质 ——
 以前是"先同步了再说"，结果线上跑到一半才发现坏了。
+
+## 改完之后的两条自证纪律
+
+### A. 反证（测试写完必须故意破坏产品代码）
+新写的断言，一定要把对应功能拆掉/改坏，确认它**真能报红**。
+本项目已经抓到多次"看着在测、其实恒真"的假测试。
+反证时**不要**在 `ship.py` 跑的同时改文件（见下）。
+
+### B. 改了后端代码要验证时，先重启本地服务
+本地 8000 由 `tools/serve.py` 守护，**不热重载**。
+踩过：补了 `verify.*` 埋点后搜书，`grep logs/app.log` 一片空白，
+差点以为埋点没生效 —— 实际是服务还跑着旧代码。
+"grep 不到日志"优先怀疑服务没重启，再怀疑代码。
+
 
 ## 第二步：推送 GitHub
 
@@ -44,7 +62,7 @@ git commit -m "<见下面的规范>"
 git push origin main
 ```
 
-- 仓库：`git@github.com:daiyulejia/lumei-bookstore.git`（**私有**）
+- 仓库：`git@github.com:daiyulejia/lumeibookstore.git`（**私有**）
 - 下载的小说不传（`.gitignore` 已排除 `library/` `downloads/` `cache/` `tmp_assets/`）
 - commit message 写清三件事：**为什么改 / 改了啥 / 结果如何**。
   例：
