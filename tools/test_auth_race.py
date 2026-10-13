@@ -167,8 +167,11 @@ def main() -> int:
     print("Vue 迁移 · 鉴权时序真机验证")
     print("=" * 62)
 
+    # 探活也要带令牌 —— 这套件的存在意义就是跑**要令牌**的环境，
+    # 不带令牌探活会被 401 挡住，反而报"连不上"，白白跑不起来。
+    probe = base + "/api/health" + (f"?t={urllib.parse.quote(token)}" if token else "")
     try:
-        urllib.request.urlopen(base + "/api/health", timeout=5).read()
+        urllib.request.urlopen(probe, timeout=5).read()
     except Exception as e:  # noqa: BLE001
         print(f"\n连不上 {base}：{e}")
         return 2
