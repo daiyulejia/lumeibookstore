@@ -95,6 +95,13 @@ STATIC_SUITES = [
     # 尤其 pack.py 的 EXCLUDE_DIRS 含 `dist`、而匹配按路径段 ——
     # app/static/dist/ 会被误伤（接 Vite 时真踩过）。见该文件注释。
     ("test_frontend.py", "前端产物链路"),
+    # 埋点事件名登记表 ↔ 实际代码的一致性。纯静态、不用服务。
+    # 为什么必须有：这张表会**双向静默漂移** —— 登记了没人发（死条目，
+    # 日志里 grep 不到，看起来像"链路没触发"，实际是根本没埋）、
+    # 发了没登记（照着表找事件永远找不到）。两种漂移都不报错，
+    # 只在线上排障时白烧时间。本轮实测抓到 11 个死条目 + 8 个未登记。
+    # 见 tools/test_events_registry.py 的注释。
+    ("test_events_registry.py", "埋点登记表"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）

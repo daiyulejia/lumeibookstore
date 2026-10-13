@@ -709,11 +709,28 @@ class Engine:
                     on_verified(r)
                 if r.available:
                     ok += 1
+                    # 埋点：哪一个候选、哪一源、验证结果、耗时。
+                    # 这条是"L 源闭环"的眼睛 —— 想判断一个源好不好，
+                    # 就看 verify.ok 里它出现的比例；全是 fail 的就是坏源，
+                    # 该进定期排查名单（registry.check）。
+                    # 注意**逐条发**而不是只发汇总：线上排障时要能按
+                    # 「源=xxx」grep 出这个源最近到底怎么挂的，汇总给不了这个。
+                    log_event(logger, "verify.ok", 源=r.source,
+                              书名=r.title[:30], 章=r.chapter_count,
+                              耗时=f"{r.probe_ms}ms")
                     if ok >= PROBE_ENOUGH:
                         # 已经有这么多个可用来源了，剩下的不必再验：
                         # 再验一个就要多占一次同域请求，而用户在等。
                         logger.info("已验出 %d 个可用候选，提前收手", ok)
                         break
+                else:
+                    # 失败也逐条记：失败原因（超时/无正文/404）是评估源质量
+                    # 最值钱的信息 —— 只说"某个源不行"没法定位是站点改版
+                    # 还是被限流，带上 note 才能一眼分辨。
+                    log_event(logger, "verify.fail", 源=r.source,
+                              书名=r.title[:30],
+                              原因=(r.note or "未知")[:60],
+                              耗时=f"{r.probe_ms}ms")
         except Exception:  # noqa: BLE001  (TimeoutError 或其它)
             logger.info("探测超预算，剩余候选标记为未验证")
         finally:
