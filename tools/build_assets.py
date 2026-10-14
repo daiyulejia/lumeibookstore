@@ -101,6 +101,24 @@ SCENES = {
     # 提到 0.7 后压到 ~10，肉眼基本齐平，且还没到"洗掉固有色"的程度。
     "hero_lumei":     ("sheet_b", 3, 2, 0.28),   # 正面特写，暖橙 + 粉蝴蝶结 = 噜妹
 
+    # ---- 首页 Hero（同框场景左右各取窗）新增两对 ----
+    # ⚠ 为什么新增（2026-10-14，用户反馈「首页两个图片都是噜噜，没有噜妹」）：
+    #   原池三对里只有第一对含噜妹（B3,2 是全库唯一的**单人**噜妹特写），
+    #   另外两对都是"噜噜的单人图"，所以轮到它们的那两天，首页**看不到噜妹**。
+    # 解法：素材里「噜噜 + 噜妹」同框的场景其实很多（旧注释里"几乎没有合影"
+    #   是当时没细看）。把**同一格的两侧各取一个窗口**，就得到一对
+    #   「同一场景 → 光照/色温天然一致」的 噜噜 | 噜妹 ——
+    #   比跨场景硬拼更稳，而且**保证噜妹在场**。
+    # 两侧的窗口（占格宽的比例）不能取满一半：两人大致坐在 1/3 与 2/3 处，
+    #   取 0~0.60 / 0.40~1.00 能让各自居中，又不会把对方切一半进来。
+    #   ⚠ 左右不能搞反：这几格都是**左=噜噜（橙、无装饰/工装裤），
+    #     右=噜妹（粉衣、头顶蝴蝶结）**。搞反了会把两个人搞混。
+    # focus 是实测调出来的（16:10 窗口下两人的头大约落在 30%~42% 处）。
+    "hero_lulu2":     ("sheet_b", 2, 3, 0.30, (0.00, 0.54)),  # B2,3 左：橙色噜噜
+    "hero_lumei2":    ("sheet_b", 2, 3, 0.40, (0.48, 1.00)),  # B2,3 右：粉衣戴蝴蝶结噜妹
+    "hero_lulu3":     ("sheet_b", 2, 4, 0.38, (0.00, 0.52)),  # B2,4 左：橙色噜噜
+    "hero_lumei3":    ("sheet_b", 2, 4, 0.40, (0.50, 1.00)),  # B2,4 右：粉衣戴蝴蝶结噜妹
+
     # ---- 空状态 ----
     # ⚠ empty_sleep 曾用 D0,2（躺床看手机）—— 那格**带「好难啊」表情包文字**，
     #   而且情绪是"焦虑"不是"松驰"，与「书架空着、睡得正香」完全相反。已换。
@@ -317,12 +335,32 @@ def tone_match(im: Image.Image, ref: Image.Image, strength: float = 0.5) -> Imag
 
 def sheet_of(role: str) -> str:
     spec = SCENES[role]
-    return f"{spec[0]}[{spec[1]},{spec[2]}]"
+    win = window_of(role)
+    tag = f" x[{win[0]:g}~{win[1]:g}]" if win else ""
+    return f"{spec[0]}[{spec[1]},{spec[2]}]{tag}"
 
 
 def focus_of(role: str) -> float:
     spec = SCENES[role]
     return spec[3] if len(spec) > 3 else 0.30
+
+
+def window_of(role: str):
+    """该角色是否只取格子的一个横向窗口 —— 返回 (起, 止) 两个 0~1 的比例，
+    不取窗口则返回 None。
+
+    用途：素材里大量「噜噜 + 噜妹」同框的场景。对**同一格**的两侧各取一个
+    窗口，就得到一对「同一场景 → 光照/色温天然一致」的角色图 ——
+    比"跨场景各挑一张再色温硬拼"稳得多，而且能保证两个人都在。
+
+    ⚠ 窗口不要取成正好一半：两个角色大致坐在 1/3 与 2/3 处，
+      取 0~0.6 / 0.4~1.0 才让各自居中，又不会把对方切半张进来。
+    """
+    spec = SCENES[role]
+    win = spec[4] if len(spec) > 4 else None
+    if isinstance(win, tuple) and len(win) == 2:
+        return win
+    return None
 
 
 def warn_tone() -> None:
@@ -372,6 +410,39 @@ def contact_sheet() -> None:
     SHOTS.mkdir(exist_ok=True)
     sheet.save(SHOTS / "assets_check.png")
     print(f"校对图 → shots/assets_check.png（{len(files)} 张）")
+
+
+# ---------------------------------------------------------------------------
+# 站点图标（favicon / 加到主屏幕的图标）
+# ---------------------------------------------------------------------------
+# ⚠ 为什么必须有这一步（2026-10-14 用户报「图标怎么是噜噜，不是噜妹」）：
+#   标签页那枚 favicon 一直是**手绘的 SVG 水豚**（没有蝴蝶结）—— 那是顶栏
+#   logo 还在用手绘时的遗留。顶栏后来按用户要求换成了真实素材，favicon 忘了跟。
+#   而 favicon 恰恰是**最常被看到的图标**：浏览器标签页、收藏夹、
+#   「添加到主屏幕」的桌面图标全都是它。
+#
+# 做法：直接从 hero_lumei（= 有粉蝴蝶结的那张）里裁一个正方形，
+#   水平重心沿用顶栏 logo 的 0.60（把脸摆正中），输出两档：
+#     favicon.png 64   —— 标签页 / 收藏夹
+#     apple-touch-icon.png 180 —— iOS/Android 加到主屏幕
+#   选 hero_lumei 而不是别的：它是全库唯一"正面、单人、蝴蝶结清晰"的噜妹图。
+FAVICON_CENTER_X = 0.60     # 与 lumei.css 里 .brand .mark 的 object-position 一致
+
+
+def build_icons() -> None:
+    src = OUT / "hero_lumei@480.webp"
+    if not src.exists():
+        print("      ! 跳过图标（缺 hero_lumei@480.webp）")
+        return
+    im = Image.open(src).convert("RGB")
+    W, H = im.size
+    side = min(W, H)
+    left = max(0, min(W - side, round(W * FAVICON_CENTER_X - side / 2)))
+    square = im.crop((left, 0, left + side, side))
+    for name, px in (("favicon.png", 64), ("apple-touch-icon.png", 180)):
+        dest = ROOT / "app" / "static" / name
+        square.resize((px, px), Image.LANCZOS).save(dest, "PNG", optimize=True)
+        print(f"      ✓ {name}  {px}×{px}  {dest.stat().st_size // 1024 or 1}KB")
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +499,11 @@ def main() -> int:
         except Exception as e:
             print(f"      ! 跳过 {role}（{e}）")
             continue
+        # 同框格的两侧各取一个窗口：见 window_of() 的说明。
+        win = window_of(role)
+        if win:
+            W, H = cell.size
+            cell = cell.crop((round(W * win[0]), 0, round(W * win[1]), H))
         ar = (16, 10) if role.startswith("hero") else (4, 3)
         base = cover(cell, *ar, focus=focus)
         # 残影修补要在**裁到目标比例之后**做 —— 修补用的是"角上那块背景"，
@@ -455,6 +531,9 @@ def main() -> int:
 
     print("[3/3] 出校对图 …")
     contact_sheet()
+
+    print("      出站点图标（favicon / 主屏图标）…")
+    build_icons()
 
     # 色温自检：把每对「应该看起来像一套」的图量一遍 R-B，
     # 超容差就告警。这一步是补"人眼会漏"的洞 —— 前几版一冷一暖

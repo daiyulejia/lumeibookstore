@@ -485,6 +485,64 @@ def t_assets() -> None:
         else:
             bad(f"{f} 没在首页引用 —— 首页会少一半吉祥物")
 
+    # ---------------------------------------------------------------------
+    # ⚠⚠ Hero 轮换池的两条硬契约（2026-10-14 新增）
+    #
+    # 背景：用户报「首页两个图片都是噜噜，没有噜妹」。根因是轮换池里的条目
+    #   在 `rotateHeroArt()` 里被 `ART[key]` **静默过滤掉了** ——
+    #   `hero_lulu`/`hero_lumei` 当时只登记在 HTML_ONLY，没进 ART，
+    #   于是"含噜妹的那一对"每天都被丢弃，连着几天首页只有噜噜。
+    #   而当时的测试只数了 `data-hero-pool` 里的**字符串条数**，
+    #   没验"过滤之后还剩几对"→ 假绿。
+    #
+    # 所以这里改成**对着 art.js 真正校验过滤结果**：
+    #   ① 池里每一项的左右两个键都必须在 ART 里（否则会被丢掉）
+    #   ② 每一项都必须**含且只含一个**「噜妹」键（LUMEI_KEYS）
+    # ② 就是「每一天首页都要有噜妹」这句产品承诺的机器化表达。
+    # ---------------------------------------------------------------------
+    m = re.search(r'data-hero-pool="([^"]+)"', html_txt)
+    lumei = re.search(r"LUMEI_KEYS = new Set\(\[([^\]]*)\]\)", art)
+    if not m:
+        bad("首页找不到 data-hero-pool —— Hero 就不会轮换")
+    elif not lumei:
+        bad("art.js 没有 LUMEI_KEYS —— 无法校验『每天都要有噜妹』")
+    else:
+        art_keys = {k for k, _, _, _ in entries}
+        lumei_keys = set(re.findall(r'"(\w+)"', lumei.group(1)))
+        raw = [s.strip() for s in m.group(1).split(",") if s.strip()]
+        dropped, no_lumei, both_lumei = [], [], []
+        for item in raw:
+            pair = [x.strip() for x in item.split("|")]
+            if len(pair) != 2 or any(k not in art_keys for k in pair):
+                dropped.append(item)          # 会被 rotateHeroArt 静默丢掉
+                continue
+            n = sum(1 for k in pair if k in lumei_keys)
+            if n == 0:
+                no_lumei.append(item)
+            elif n == 2:
+                both_lumei.append(item)
+
+        if dropped:
+            bad(f"Hero 轮换池里有会被丢弃的条目（键不在 ART 里）：{', '.join(dropped)}\n"
+                f"      → rotateHeroArt() 会静默跳过它们，轮换就少几天。"
+                f"加素材时记得同时登记进 art.js 的 ART。")
+        else:
+            ok(f"Hero 轮换池 {len(raw)} 对全部有效（没有会被静默丢弃的）")
+
+        if no_lumei:
+            bad(f"Hero 轮换池里有**不含噜妹**的配对：{', '.join(no_lumei)}\n"
+                f"      → 轮到它们的那天，首页只有噜噜，用户会说『没有噜妹』。"
+                f"排布约定：左=噜噜、右=噜妹（见 index.html 注释）。")
+        elif both_lumei:
+            bad(f"Hero 轮换池里有**两边都是噜妹**的配对：{', '.join(both_lumei)}")
+        else:
+            ok(f"Hero 每一对都含且只含一个噜妹（{len(raw)} 对）")
+
+        if len(raw) < 2:
+            bad(f"Hero 轮换池只有 {len(raw)} 对 —— 起不到『每天轮换』的作用")
+        else:
+            ok(f"Hero 轮换池 ≥2 对（当前 {len(raw)} 对）")
+
     # read_pair / read_eat 走 CSS 背景，确认真的被引用了
     for f in ("read_pair", "read_eat"):
         if f"img/lumei/{f}" in css_txt:

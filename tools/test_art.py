@@ -69,7 +69,13 @@ def check(cond: bool, msg: str, detail: str = "") -> bool:
 #   empty_sleep   用过"躺床上刷手机 + 好难啊"的图 —— 那是焦虑，不是松弛。
 MOOD = {
     "hero_lulu":      "平静、正面、无负面情绪（门面，不能是不高兴）",
-    "hero_lumei":     "平静、正面、与 hero_lulu 同一光照",
+    "hero_lumei":     "平静、正面、与 hero_lulu 同一光照；必须有粉蝴蝶结（她是噜妹）",
+    # ⚠ 下面四张是「同框场景两侧各取一个窗口」来的（见 build_assets.SCENES）：
+    #   左恒为噜噜、右恒为噜妹。写清左右，是防日后有人把窗口参数调反。
+    "hero_lulu2":     "平静、正面（B2,3 左侧 = 噜噜，橙色无装饰）",
+    "hero_lumei2":    "平静、正面（B2,3 右侧 = 噜妹，粉衣 + 蝴蝶结）",
+    "hero_lulu3":     "平静、正面（B2,4 左侧 = 噜噜，橙色无装饰）",
+    "hero_lumei3":    "平静、正面（B2,4 右侧 = 噜妹，粉色连帽）",
     "empty_wait":     "期待、等人（空态：等你来搜）",
     "empty_sleep":    "松弛、闭眼（空态：睡得香。绝不能是焦虑/失眠）",
     "empty_lonely":   "安静、望向远处（空态：有点想书）",

@@ -27,6 +27,19 @@ const DIR = "/static/img/lumei";
  *  mood 是这张图传达的情绪 —— 换素材时拿它当验收标准。
  */
 const ART = {
+  /* 首页 Hero —— 由 index.html 直引（不是 st-art 体系），
+     ⚠ 但**必须登记在这里**：`rotateHeroArt()` 用 `ART[key]` 过滤候选池，
+       漏登记就会被**静默丢弃**。真踩过：hero_lulu/hero_lumei 只写在
+       HTML_ONLY 里，于是"含噜妹的那一对"每天都被过滤掉，
+       连续几天首页都只有噜噜 —— 用户报「首页两个图片都是噜噜」就是这个。
+       16:10 横幅 → 480×300。 */
+  hero_lulu:  { file: "hero_lulu",  w: 480, h: 300, mood: "噜噜：正面特写，暖橙，无装饰" },
+  hero_lumei: { file: "hero_lumei", w: 480, h: 300, mood: "噜妹：正面特写，头顶粉蝴蝶结" },
+  hero_lulu2:  { file: "hero_lulu2",  w: 480, h: 300, mood: "噜噜（B2,3 左）：同框场景里的他" },
+  hero_lumei2: { file: "hero_lumei2", w: 480, h: 300, mood: "噜妹（B2,3 右）：同框场景里的她，粉蝴蝶结" },
+  hero_lulu3:  { file: "hero_lulu3",  w: 480, h: 300, mood: "噜噜（B2,4 左）：同框场景里的他" },
+  hero_lumei3: { file: "hero_lumei3", w: 480, h: 300, mood: "噜妹（B2,4 右）：同框场景里的她，粉色连帽" },
+
   /* 空状态 */
   empty_wait:   { file: "empty_wait",   w: 480, h: 360, mood: "等你来搜" },
   empty_sleep:  { file: "empty_sleep",  w: 480, h: 360, mood: "睡得正香" },
@@ -53,7 +66,21 @@ const ART = {
 export const CSS_ONLY = new Set(["read_pair", "read_eat"]);
 
 /** 由 index.html 直引的素材（首页 Hero 是它自己的布局，不走 st-art 体系）。 */
-export const HTML_ONLY = new Set(["hero_lulu", "hero_lumei"]);
+export const HTML_ONLY = new Set([
+  "hero_lulu", "hero_lumei", "hero_lulu2", "hero_lumei2", "hero_lulu3", "hero_lumei3",
+]);
+
+/**
+ * 「噜妹」的素材键（= 头顶粉蝴蝶结 / 粉色连帽的那只）。
+ *
+ * ⚠ 为什么要显式列出来当**契约**：首页的品牌承诺是「噜噜和噜妹陪着」，
+ *   所以**每一天都必须有噜妹出现在首屏**。但判断"哪张是噜妹"没法从像素里
+ *   可靠地推出来（只能靠人认），所以在这里落成一份显式清单，
+ *   交给 `tools/test_mobile_fit.py` 去校验「轮换池的每一对都含噜妹」。
+ *   新增/替换 hero 素材时，**必须同步更新这里**，否则测试会红 ——
+ *   这正是我们要的：逼作者回答"这张到底是谁"。
+ */
+export const LUMEI_KEYS = new Set(["hero_lumei", "hero_lumei2", "hero_lumei3"]);
 
 /** 取某张状态的图片 URL（含 @240/@480 两档 srcset）。 */
 export function artUrl(key, size = 480) {
@@ -142,6 +169,30 @@ function dayIndex() {
 }
 
 /**
+ * 解析 `左|右,左|右,...` 形式的 Hero 素材池，返回**合法**的配对列表。
+ *
+ * 任何一侧缺失 / 名字拼错 / 不在 ART 里 → 这一对作废（宁可少一天候选，
+ * 也不显示半张空图）。⚠ 但**作废必须留痕**：见 rotateHeroArt() 里的告警 ——
+ * 静默丢弃过一次代价很大（含噜妹的那对天天被丢，连续几天首页只有噜噜）。
+ *
+ * 单独抽出来是为了让测试能直接验"过滤之后还剩几对"，
+ * 而不是只数 HTML 上写了几个字符串（那样会假绿）。
+ */
+export function heroPairs(dup) {
+  const raw = (dup?.dataset?.heroPool || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => s.split("|").map(x => x.trim()));
+  const good = [], dropped = [];
+  for (const p of raw) {
+    if (p.length === 2 && ART[p[0]] && ART[p[1]]) good.push(p);
+    else dropped.push(p.join("|"));
+  }
+  return { pairs: good, dropped };
+}
+
+/**
  * 按日期给首页 Hero 的那一对图轮换素材。
  *
  * @param root  容器（默认取 `[data-hero-pool]`）；没找到就静默返回。
@@ -150,14 +201,12 @@ export function rotateHeroArt(root = null) {
   const dup = root || document.querySelector("[data-hero-pool]");
   if (!dup) return;
 
-  // 解析 `左|右,左|右,...`；任何一侧缺失/非法就丢掉这一对（宁可少一天候选，
-  // 也不显示半张空图）。
-  const pairs = (dup.dataset.heroPool || "")
-    .split(",")
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(s => s.split("|").map(x => x.trim()))
-    .filter(p => p.length === 2 && ART[p[0]] && ART[p[1]]);
+  const { pairs, dropped } = heroPairs(dup);
+  if (dropped.length) {
+    // ⚠ 不静默：池子里写了但映射不到素材的条目，会让轮换"少几天"却毫无提示。
+    //   真踩过：hero_* 没登记进 ART → 含噜妹的那一对被丢 → 首页好几天没有噜妹。
+    console.warn("[hero] 轮换池里这些条目被丢弃（键不在 ART 里？）：", dropped);
+  }
   if (!pairs.length) return;               // 池子为空：保留 HTML 里的兜底图
 
   const imgs = dup.querySelectorAll("[data-hero-role]");

@@ -7,9 +7,15 @@
 <meta name="color-scheme" content="light dark"/>
 <meta name="description" content="噜妹书院 · 本地部署的小说搜索 / 下载 / 阅读工具"/>
 <title>噜妹书院 · 噜噜噜，找书 / 下载 / 阅读</title>
-<!-- favicon：只有 16~32px，真实素材在这尺寸下会糊，所以这一处保留手绘 SVG。
-     形态按真实 IP 来：橙黄身体 + 头顶橘子 + 两只小圆耳 + 针尖豆眼 + 圆撅嘴。 -->
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%23f7a93b'/><circle cx='50' cy='84' r='30' fill='%23f2a93b'/><circle cx='50' cy='52' r='30' fill='%23f7b247'/><ellipse cx='24' cy='26' rx='9' ry='9' fill='%23e8962c'/><ellipse cx='76' cy='26' rx='9' ry='9' fill='%23e8962c'/><circle cx='50' cy='20' r='12' fill='%23f5a623'/><path d='M50 8q2-6 7-7' stroke='%237fa88c' stroke-width='3' fill='none' stroke-linecap='round'/><circle cx='39' cy='52' r='5.5' fill='%2333241a'/><circle cx='61' cy='52' r='5.5' fill='%2333241a'/><ellipse cx='50' cy='68' rx='7' ry='5.5' fill='%23d4732a'/></svg>"/>
+<!-- favicon / 主屏图标：**真实的噜妹素材**（有粉蝴蝶结那张）。
+     ⚠ 以前这里是一段手绘 SVG 水豚（没蝴蝶结）—— 用户看到后问「图标怎么是噜噜，
+       不是噜妹」。手绘版是顶栏 logo 还在用手绘时的遗留：顶栏后来换成真实素材了，
+       favicon 忘了跟着换。而 favicon 恰恰是**最常被看到的图标**
+       （标签页 / 收藏夹 / 「添加到主屏幕」的桌面图标都是它）。
+     两张 png 由 tools/build_assets.py 的 build_icons() 从 hero_lumei 裁出，
+     不要在别处手改 —— 重跑构建会覆盖。 -->
+<link rel="icon" type="image/png" href="/static/favicon.png"/>
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png"/>
 
 <link rel="stylesheet" href="/static/css/tokens.css"/>
 <link rel="stylesheet" href="/static/css/backgrounds.css"/>
@@ -134,16 +140,23 @@
              图集切格、去水印、压缩而来），见 app/static/img/lumei/。
 
            ⚠⚠ **每天轮换**（main.js 的 `rotateHeroArt()` 按日期挑)。
-             关键约束：轮换的单位是**一整对**，不是单张 —— 候选池
-             `data-hero-pool` 里每一项写 `左|右`（用竖线分隔）。
-             为什么不是"左右各自随机挑"：素材分两类取景 ——
-               · 特写正脸（hero_lulu / hero_lumei / error_* / empty_lonely）
-               · 暖房场景（read_pair / empty_wait / read_eat / loading_*）
-             如果左右各自从混池挑，很可能左边是"大头特写"、右边是"远景小水豚"，
-             两张不像一对。按对写进池子，**保证每天左右是同一取景语言**。
+             关键约束：轮换的单位是**一整对**，而且**每一对都必须含噜妹**
+             —— 品牌承诺是「噜噜和噜妹陪着」，不能有哪一天只有噜噜。
+             这个约束由 `tools/test_mobile_fit.py` 对着 art.js 的 `LUMEI_KEYS`
+             逐对校验（漏了会红）。
+             写法：`左|右`（左恒为噜噜、右恒为噜妹，用竖线分隔）。
+             三对都取自 sheet_b 第 2~3 行（同一集动画、同一光照）：
+               1) B2,2 + B3,2 —— 两张单人特写（全库唯一天然成对的特写组合）
+               2) B2,3 的两侧   —— 同框场景里各取一个窗口
+               3) B2,4 的两侧   —— 同上
+             为什么第 2/3 对要"同框取窗"：素材里单人噜妹特写只有 B3,2 一张，
+             凑不出三对；而同框场景两侧各取一张，天然**同场景、同色温**，
+             比跨场景硬拼稳得多（旧注释说"几乎没有能用的合影"是当时没细看）。
+             ⚠ 这两格的窗口参数写在 tools/build_assets.py 的 SCENES 里，
+               左右不能反（左=橙色的噜噜，右=粉衣戴蝴蝶结的噜妹）。
              这里写死的前两个 src 只是**首屏兜底**（JS 没跑起来也有图看）。 -->
       <div class="lu-duo" aria-hidden="true"
-           data-hero-pool="hero_lulu|hero_lumei,empty_lonely|loading_read,read_pair|empty_wait">
+           data-hero-pool="hero_lulu|hero_lumei,hero_lulu2|hero_lumei2,hero_lulu3|hero_lumei3">
         <img class="lu-capy" src="/static/img/lumei/hero_lulu@480.webp"
              srcset="/static/img/lumei/hero_lulu@240.webp 240w, /static/img/lumei/hero_lulu@480.webp 480w"
              width="480" height="300" alt="" decoding="async" fetchpriority="high" data-hero-role="lulu">

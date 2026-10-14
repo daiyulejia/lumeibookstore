@@ -173,35 +173,75 @@ def main() -> int:
                 time.sleep(0.6)
                 assert_fits(tab, f"首页@{w}px", w)
 
+                # —— 其余五个视图 ——
+                # 为什么要逐个量：用户报的是「窄屏横向溢出」这一**类**问题，
+                # 而溢出往往来自某个**页面独有的**宽元素（固定 min-width 的网格、
+                # 一排表格、一个长不换行的标签）。只在首页量过，等于说
+                # "只要首页不溢出，别的页面也不会" —— 这是没有依据的假设。
+                # 实测本轮它们都干净，但**没人钉住** → 日后一改就可能悄悄退回去。
+                for vname, vhash in (("书架", "#shelf"), ("文件", "#files"),
+                                     ("统计", "#stats"), ("来源", "#sources"),
+                                     ("登记表", "#registry")):
+                    tab.call("Page.navigate", url=base + "/" + vhash)
+                    wait(tab, "!!document.querySelector('#q')", 20)
+                    wait(tab, "document.documentElement.dataset.mounted", 15)
+                    time.sleep(0.6)
+                    assert_fits(tab, f"{vname}@{w}px", w)
+
                 # —— 阅读器（两种翻页模式）——
                 for mode in ("slide", "flip"):
                     open_reader(tab, base, bid, mode)
                     wait(tab, "document.querySelectorAll('.rd-page,.flipbook .page').length>1", 20)
                     assert_fits(tab, f"阅读器@{w}px/{mode}", w)
 
-            # —— 首页 Hero 每天轮换：必须真的换过（不是永远 hero_lulu/lumei）——
-            # 判据：data-hero-pool 至少 2 个候选，且左右两张图**不相同**。
+            # —— 首页 Hero：轮换要真的生效，而且**右边永远是噜妹** ——
+            #
+            # ⚠ 旧版这里只数了 `data-hero-pool` 的**字符串条数**，于是假绿：
+            #   池里写了 3 对，但 `rotateHeroArt()` 会用 `ART[key]` 过滤，
+            #   当时 `hero_lulu/hero_lumei` 没登记进 ART → 含噜妹的那对天天被丢，
+            #   首页连着几天只有噜噜。条数测试完全看不出来。
+            #   现在改成读**真正渲染出来的 `currentSrc`**，并校验它落在池子里。
             tab.call("Emulation.setDeviceMetricsOverride",
                      width=393, height=852, deviceScaleFactor=3, mobile=True)
             tab.call("Page.navigate", url=base + "/")
             wait(tab, "!!document.querySelector('[data-hero-pool]')", 20)
-            time.sleep(0.6)
+            time.sleep(1.2)
             r = js(tab, r"""
             (() => {
               const dup = document.querySelector('[data-hero-pool]');
-              const pairs = (dup?.dataset.heroPool || '').split(',').map(s=>s.trim()).filter(Boolean)
-                .map(s => s.split('|').map(x=>x.trim()));
-              const imgs = dup ? dup.querySelectorAll('[data-hero-role]') : [];
-              const srcs = [...imgs].map(i => (i.getAttribute('src')||'').split('/').pop());
-              return JSON.stringify({pairs: pairs.length, srcs});
+              const pool = (dup?.dataset.heroPool || '').split(',').map(s=>s.trim())
+                .filter(Boolean).map(s => s.split('|').map(x=>x.trim()));
+              const imgs = [...(dup ? dup.querySelectorAll('[data-hero-role]') : [])];
+              const shown = imgs.map(i => (i.currentSrc || i.src || '').split('/').pop()
+                .replace(/@\d+\.webp$/, ''));
+              const loaded = imgs.map(i => i.naturalWidth > 0);
+              return JSON.stringify({pool, shown, loaded});
             })()
             """)
             m = json.loads(r["value"]) if r.get("ok") else {}
-            check("Hero 有轮换素材池（≥2 对）", (m.get("pairs") or 0) >= 2,
-                  f"pairs={m.get('pairs')}")
-            srcs = m.get("srcs") or []
-            check("Hero 左右两张当天不相同（是一「对」不是同一张）",
-                  len(srcs) == 2 and srcs[0] != srcs[1], f"srcs={srcs}")
+            pool = m.get("pool") or []
+            shown = m.get("shown") or []
+            loaded = m.get("loaded") or []
+
+            check("Hero 轮换池 ≥2 对（否则谈不上『每天轮换』）", len(pool) >= 2,
+                  f"pool={pool}")
+            check("Hero 两张图都真的加载出来了", len(loaded) == 2 and all(loaded),
+                  f"loaded={loaded} shown={shown} —— 名字拼错/文件缺失")
+
+            # 渲染出来的这一对必须是池子里的某一对 —— 证明 rotateHeroArt 真的跑过
+            # 且没有把这一对过滤掉（过滤掉就会回落到 HTML 里的静态兜底图）。
+            in_pool = len(shown) == 2 and any(
+                [shown[0], shown[1]] == [p[0], p[1]] for p in pool)
+            check("Hero 当前渲染的一对确实来自轮换池（轮换真生效）", in_pool,
+                  f"shown={shown} pool={pool} —— 可能是 rotateHeroArt 把它过滤掉了")
+
+            # ⚠ 这条是「首页每天都要有噜妹」的端到端判据：
+            #   约定是**左=噜噜、右=噜妹**，所以右边那张的文件名必须以 hero_lumei 开头。
+            check("Hero 右侧是噜妹（hero_lumei*）—— 首页每天都有噜妹",
+                  len(shown) == 2 and shown[1].startswith("hero_lumei"),
+                  f"shown={shown} —— 右边不是噜妹，用户会说『首页没有噜妹』")
+            check("Hero 左右两张不是同一张（是一『对』）",
+                  len(shown) == 2 and shown[0] != shown[1], f"shown={shown}")
 
             # —— 首页那句「数据都在你自己电脑上」必须已被删掉 ——
             check("首页不再有「数据都在你自己电脑上」眉标",
