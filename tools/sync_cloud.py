@@ -38,6 +38,16 @@
     （踩过的坑：健康接口只数有 meta.json 的，目录里却躺着没主的残骸，
      导致「书架显示 4 本、`ls library` 却有 5 个目录」对不上。）
 `status: toc` 的书是用户正在读的（只抓了目录+前几章），一律保留，绝不清理。
+
+重启与验证
+----------
+线上由 **systemd --user** 单元 `noveldock.service` 托管（`Restart=always`），
+所以重启走 `systemctl --user restart noveldock`（降级才用手工 `setsid` 方案）。
+
+而且重启之后**必须验证**：服务是常驻进程，代码落盘不等于代码在跑。
+「同步成功」与「线上真的换了代码」是两件事 —— 后者由
+`tools/restart_check.py` 判定（干活的进程是否比最新源码新），
+不过就 `exit 1`，让整条链以失败收场。理由见该文件注释。
 """
 from __future__ import annotations
 
@@ -197,9 +207,40 @@ else:
     print("  无孤儿目录")
 PY
 
-echo "== [服务器 6/6] 重启服务 =="
-systemctl --user restart noveldock 2>/dev/null || "$ROOT/.venv/bin/python3" "$ROOT/tools/service.py" start
+echo "== [服务器 6/7] 重启服务 =="
+# ⚠ 线上是 **systemd --user** 单元 `noveldock.service` 在管（Restart=always）——
+#   这是**实测确认过**的（2026-10-14：`systemctl --user restart noveldock`
+#   让 MainPID 885300→886492、run.py 885470→886494 一起换新，且只有一个实例）。
+#   ⚠ 曾经误判成"线上没有 systemd"（当时敲的是不带 `--user` 的
+#     `systemctl is-active noveldock`，它当然是 inactive），于是手工
+#     `pkill + setsid nohup serve.py` —— 那是**错的姿势**：它绕开 systemd
+#     又起一份 serve.py，只能靠 8000 端口占用打架，还留下两台守护进程的隐患。
+#     **别再这么干。**
+#   降级分支只在 systemd --user 真的不可用时才走（换托管方式的极端情况）。
+if systemctl --user restart noveldock 2>/dev/null; then
+  echo "  systemctl --user restart noveldock 已下发"
+else
+  echo "  ! systemctl --user 不可用，降级为直接重启守护进程"
+  pkill -9 -f "run.py --host" 2>/dev/null || true
+  sleep 1
+  cd "$ROOT"
+  setsid nohup "$ROOT/.venv/bin/python3" "$ROOT/tools/serve.py" \
+    --host 0.0.0.0 --port __PORT__ > "$ROOT/logs/serve.out" 2>&1 < /dev/null &
+fi
 sleep 7
+
+echo "  -- 重启验证：干活的进程必须比代码新 --"
+# ⚠ **「同步成功」≠「新代码在跑」。** 重启这一步会静默失败（端口被旧进程占着、
+#   旧子进程没被替代、托管单元没生效），而它的**唯一表现**是
+#   "服务器上明明是新的、用户看到的还是旧的" —— 从服务器侧看一切正常。
+#   所以这里不信"我执行过 restart 命令"，只信**事实**：
+#   真正干活的进程，是不是在最新代码落盘**之后**才启动的。
+#   判据与理由见 tools/restart_check.py 的注释（只用两个单调量的先后关系，
+#   不看耗时、不看日志，因此不随环境漂移）。
+if ! "$ROOT/.venv/bin/python3" "$ROOT/tools/restart_check.py" --root "$ROOT"; then
+  echo "  x 重启没生效：进程比源码旧 —— 线上还在跑旧代码，本次部署判失败"
+  exit 1
+fi
 echo "  服务状态: $(systemctl --user is-active noveldock 2>/dev/null || echo 未知)"
 echo "  线上标题: $(grep -o '<title>[^<]*</title>' "$ROOT/app/static/index.html" | head -1)"
 
@@ -331,7 +372,8 @@ def main() -> int:
     step("3/5", "服务器上解压 + 只覆盖代码（保留书架/令牌/下载）")
     script = (UPGRADE_SH
               .replace("__ROOT__", REMOTE_ROOT)
-              .replace("__NEW__", f"/home/{USER}/noveldock_new/noveldock"))
+              .replace("__NEW__", f"/home/{USER}/noveldock_new/noveldock")
+              .replace("__PORT__", PORT))
     if a.dry_run:
         print("  [dry-run] 远端执行 upgrade.sh")
     else:

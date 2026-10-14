@@ -149,6 +149,20 @@ STATIC_SUITES = [
     # 快、必然能跑，没装 Chrome 的环境也有保护。
     # 见 tools/test_reader_perf_static.py 的注释。
     ("test_reader_perf_static.py", "阅读器热路径"),
+    # 部署链的最后一道闸：`sync_cloud.py` 重启之后会用 tools/restart_check.py
+    # 判定"干活的进程是否比最新源码新"，不过就中止上线。
+    # ⚠ 闸门最典型的坏法是**永远开着**（恒返回通过）—— 看起来在工作，其实什么都没拦。
+    #   所以这条专门反证 judge()：喂"进程比代码旧"必须判红；并且钉住
+    #   "探针不可用（Windows 没有 pgrep）时不许谎报成功"。
+    # 见 tools/test_restart_check.py 与 tools/restart_check.py 的注释。
+    ("test_restart_check.py", "重启验证判据"),
+    # 联网发现**不许被「学站」阻塞**：结果就绪必须立刻交付。
+    # 线上真事故：本地 7 个源零覆盖 → 联网其实已经找到（实测命中 zxs8.net），
+    # 但 discover() 同步把 14s 的学站跑完才 return，而墙钟上限只有 20s
+    # → 用户看到「没找到」。它不报错、还"偶发"（网络快的时候刚好赶上）。
+    # 测试内建反证：同步版必须真的会等，否则判据无牙。
+    # 见 tools/test_discover_async.py 与 app/discovery._learn_later() 的注释。
+    ("test_discover_async.py", "联网发现不被学站阻塞"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）
