@@ -219,6 +219,14 @@ LIVE_SUITES = [
     # ⚠ 判据必须跟**请求的宽度**比，不能跟 innerWidth 比（后者会被内容一起撑大，
     #   于是恒真）；这一点本套件的第一版就写错了，反证时才抓到。见 test_mobile_fit.py。
     ("test_mobile_fit.py", "窄屏不溢出"),
+    # 静态资源缓存策略（**不用 Chrome，只用 HTTP**，但同样需要起的这个服务）。
+    # 钉的是「发版之后用户到底能不能拿到新代码」：前端是原生 ES module，
+    # 页面里只有入口 main.js?v=… 带版本号，模块间的 import 是**裸路径**，
+    # 拿不到 ?v= → art.js 曾长期没有任何 Cache-Control，浏览器走启发式缓存
+    # 并不断续期。真实事故：首页轮换池修好了、服务器上是新的，
+    # **用户手机上还在跑旧 art.js**，看到的还是一对"两个噜噜"的图。
+    # ⚠ 这个坑只从服务器侧查永远发现不了，必须看响应头。见该文件注释。
+    ("test_cache_headers.py", "资源缓存策略"),
 ]
 
 # 各真机套件的参数名不一样（历史原因，别硬统一 —— 改脚本参数名会连带改 CI）。
@@ -243,6 +251,7 @@ LIVE_ARGS = {
     "test_history_ui.py": "--url",
     "test_stats_ui.py": "--url",
     "test_mobile_fit.py": "--url",
+    "test_cache_headers.py": "--url",
 }
 
 

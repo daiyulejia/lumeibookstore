@@ -2033,7 +2033,32 @@ async def ui_log(req: UiLogReq):
     return {"ok": True}
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+class _NoCacheCode(StaticFiles):
+    """静态资源：代码类（.js / .css）必须**每次回源校验**。
+
+    为什么需要它（2026-10-14 真实踩到）：
+      `/` 会给 HTML 里的引用拼上版本号（`main.js?v=1791…`），但前端是
+      **原生 ES module** —— 模块之间的 `import "./art.js"` 是**裸路径**，
+      拿不到 `?v=`。于是 `art.js` 用的是"没有 Cache-Control"的默认策略，
+      浏览器按 `Last-Modified` 走**启发式缓存**（约 10% 的年龄，且每次
+      304 命中后还会"续期"），结果就是：**我们把首页轮换池修好了，
+      用户手机上还在跑旧逻辑**，看到的还是一对"两个噜噜"的图。
+      这一坑的可怕之处是"服务器上明明是新的" —— 只查线上会以为没问题。
+
+    做法：对 .js/.css 回 `no-cache, must-revalidate`。
+      `no-cache` 不是"不缓存"，而是"用之前必须先问一句" ——
+      配合 ETag，文件没变就回 304，几乎不费流量；变了立刻拿到新的。
+      图片/字体不在此列：它们体积大、且换素材时会换文件名，长缓存更划算。
+    """
+
+    async def get_response(self, path: str, scope):
+        resp = await super().get_response(path, scope)
+        if resp.status_code == 200 and path.endswith((".js", ".css")):
+            resp.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return resp
+
+
+app.mount("/static", _NoCacheCode(directory=STATIC_DIR), name="static")
 
 
 def local_ip() -> str:
