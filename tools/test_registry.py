@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -123,6 +124,107 @@ def main() -> int:
         check("无关的不返回", "完全无关" not in hits, str(hits))
         check("带《》也认", bool(R.find_books("《药鼎仙途》")))
         check("不存在的书返回空", R.find_books("压根没有这本书") == [])
+
+        # -----------------------------------------------------------------
+        print("\n—— 「目录可能不全」的备注（三态语义）——")
+        # 为什么盯这件事：来源库面板会把这句和「12 章」并排显示。
+        # 单看一个「12 章」和「这本书就是 12 章」长得一模一样，
+        # 而实测那本《我们猫猫不能听这些》全书 119 章、第一页只有 12 章 ——
+        # 用户按数字判断要不要下，下完才发现是零头。
+        U = "http://y.com/book/1"
+        warn = "这份目录可能不完整，只含部分章节"
+        R.note_book(U, title="大部头", host="y.com", chapters=12, note=warn)
+        check("写了 note 就能读到", R.known_book(U).get("note") == warn,
+              str(R.known_book(U)))
+        # ① 缺省（None）= 「这次没看目录」→ 不能擦掉别人的结论
+        R.note_book(U, host="y.com", ok=True)
+        check("不传 note 的调用不会擦掉已有警告",
+              R.known_book(U).get("note") == warn, str(R.known_book(U)))
+        # ② 落盘 + 合并之后警告还在（`_merge` 会拿盘上那份补键）
+        R.flush()
+        check("警告能落盘", (disk()["books"].get(U) or {}).get("note") == warn)
+        R._cache = None                   # 丢掉内存缓存 → 下次访问从盘上重读
+        check("从盘上重读后警告还在",
+              R.known_book(U).get("note") == warn, str(R.known_book(U)))
+        # ③ 传空串 = 「这次查过，目录是完整的」→ 警告必须消失，**且撤得掉**
+        R.note_book(U, host="y.com", chapters=119, note="")
+        check("目录变全后警告立刻消失（传空串清掉）", not R.known_book(U).get("note"),
+              str(R.known_book(U)))
+        check("章节数同时更新成新的", R.known_book(U).get("chapters") == 119,
+              str(R.known_book(U).get("chapters")))
+        R.flush()
+        # ⚠ 这一条才是关键：落盘走 `_merge()`，同一键是「先取盘上那份、
+        #   再用内存那份逐键覆盖」，**内存那份没有这个键时不会覆盖**。
+        #   所以清警告如果写成 `pop("note")`，合并时它就从盘上**复活**了 ——
+        #   界面上表现为"警告永远撤不掉"（连目录真修好了也撤不掉）。
+        check("清掉的警告在落盘/合并后不会复活",
+              not (disk()["books"].get(U) or {}).get("note"),
+              str((disk()["books"].get(U) or {}).get("note")))
+        # ④ 失败记账（压根没看目录）不许凭空造出警告
+        R.note_book("http://y.com/book/2", host="y.com", ok=False)
+        check("失败记账不会凭空写 note",
+              not R.known_book("http://y.com/book/2").get("note"))
+        # ⑤ 没传过 note 的书，字段是空的（不能默认成"不全"）
+        check("没结论的书没有 note", not R.known_book("http://x.com/book/1").get("note"))
+
+        # -----------------------------------------------------------------
+        print("\n—— 接线：发现流程必须真的把「目录结论」交给来源库 ——")
+        # 上面验的是 `note_book` **自己**对不对。可它再正确也没用：
+        # 只要**调用方**忘了传 `note`，界面上照样永远看不到警告 ——
+        # 而且同样是静默的（不会报错，只会少一句话）。
+        # 这里做源码级接线检查（同 tools/test_ranks.py 的前端接线检查），
+        # 配套 `tools/mutate.py` 的 discovery 突变：把参数删掉必须报红。
+        disc_path = ROOT / "app" / "discovery.py"
+        disc = disc_path.read_text(encoding="utf-8")
+        # 发现（_verify_candidate）与体检（_check_book）**两处都要交**：
+        # 只交一处的话，另一条路径下的书永远挂着过期的警告（或永远没有）。
+        wires = re.findall(r'note\s*=\s*str\(\s*data\.get\(\s*"chapter_note"\s*\)[^\n]*',
+                           disc)
+        check("发现 / 体检两处都交出了目录结论", len(wires) == 2,
+              f"找到 {len(wires)} 处：{[w[:40] for w in wires]}")
+        # 结论还得**挂到返回结果上**才传得到接口和界面（r.chapter_note）。
+        check("目录结论会挂到返回结果上（界面才拿得到）",
+              bool(re.search(r"r\.chapter_note\s*=\s*str\(", disc)))
+
+        # -----------------------------------------------------------------
+        print("\n—— 「可搜源」全项目只有一个判据 ——")
+        # 线上实测踩到的口径漂移：`stats()["sites_searchable"]` 数的是
+        # 「健康 **且** 学过模板」（=3），而 `/api/registry` 每项给界面的旗标
+        # 只看「有没有模板」（=6）—— 多出来那三个**已经判为不健康**。
+        # 同一句话出现两个数字，用户不知道信哪个；更糟的是坏站被算成资产。
+        # 判据只能有一个函数（is_searchable），两份写成断言钉住。
+        tpl = "https://{h}/search.php?q={kw}"
+        R.note_site("good.com", ok=True, name="好站",
+                    search_tpl=tpl.format(h="good.com", kw="{kw}"))
+        # 学过模板、但被判为影视站（不健康）—— 这是差值的来源
+        R.note_site("bad.com", ok=False, name="坏站", video_blocked=True,
+                    search_tpl=tpl.format(h="bad.com", kw="{kw}"))
+        # 健康、但压根没学过模板 —— 不该算进可搜源
+        R.note_site("plain.com", ok=True, name="普通站")
+        R.flush()
+        check("健康 + 有模板 → 可搜", R.is_searchable(R.sites()["good.com"]))
+        check("不健康 + 有模板 → **不算**可搜（坏站不能算资产）",
+              not R.is_searchable(R.sites()["bad.com"]))
+        check("但它照样能被识别出『模板还在』（诊断用）",
+              R.has_search_tpl(R.sites()["bad.com"]))
+        check("健康 + 没模板 → 不算可搜", not R.is_searchable(R.sites()["plain.com"]))
+
+        # 关键一条：接口返回的两个口径必须**是同一个数**。
+        from fastapi.testclient import TestClient  # noqa: E402
+        from app import main as M                  # noqa: E402
+        api = TestClient(M.app)
+        reg = api.get("/api/registry")
+        check("GET /api/registry 200", reg.status_code == 200, str(reg.status_code))
+        view = reg.json()
+        n_list = sum(1 for s in view["sites"] if s["searchable"])
+        check("总览的『可搜源』= 站点列表里标记可搜的条数",
+              view["stats"]["sites_searchable"] == n_list,
+              f"stats={view['stats']['sites_searchable']} vs 列表={n_list}")
+        check("标了可搜的站一定健康",
+              all(s["healthy"] for s in view["sites"] if s["searchable"]),
+              str([s["host"] for s in view["sites"] if s["searchable"] and not s["healthy"]]))
+        check("标了可搜的站一定有模板",
+              all(s["has_search_tpl"] for s in view["sites"] if s["searchable"]))
 
         print("\n—— 护栏：全清要显式确认 ——")
         # 先落一次盘：缩水护栏是拿「盘上那份」当基准的，

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -422,6 +423,33 @@ def main() -> int:
     check("降级后仍然没有重复书名",
           len([ranks._norm_title(i["title"]) for i in partial])
           == len({ranks._norm_title(i["title"]) for i in partial}))
+
+    # -----------------------------------------------------------------
+    # 名次只能由**声明的顺序**决定，不能由「谁先返回」决定。
+    #   `_fetch_one` 用 `as_completed` 收结果（完成顺序不可预测），
+    #   如果直接把结果按完成顺序拼桶，同一类榜单每刷新一次
+    #   第一个来源就可能换人 —— 排行榜最忌讳名次随机跳，
+    #   而且**不报错**，只表现为"每次打开顺序都不太一样"。
+    # 做法：把**第一个声明的来源**故意拖慢，让它最后一个返回。
+    first_host = ranks._SOURCES[0]["url"].split("//")[1].split("/")[0]
+    first_key = ranks._SOURCES[0]["key"]
+
+    def slow_first(url: str, **kw):
+        if first_host in url:
+            time.sleep(0.4)          # 拖到其他来源都返回之后
+        return fake_fetch(url, **kw)
+
+    ranks.fetch_text = slow_first
+    try:
+        ranks.clear_cache()
+        ordered = ranks._fetch_one("allvisit")
+    finally:
+        ranks.fetch_text = real_fetch
+    lead = ordered[0].get("source") if ordered else None
+    check(f"名次按**声明顺序**、不按返回快慢"
+          f"（声明第一的来源={first_key}/{first_host}，实际首条来自 {lead}）",
+          lead == first_key)
+    check("拖慢一个来源不影响总数", len(ordered) >= 20)
 
     # -----------------------------------------------------------------
     print()

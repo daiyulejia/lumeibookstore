@@ -27,6 +27,8 @@ from __future__ import annotations
 import argparse
 import atexit
 import hashlib
+import json
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -54,12 +56,27 @@ RANKS = ROOT / "app" / "ranks.py"
 MAIN = ROOT / "app" / "main.py"
 RANKS_VUE = ROOT / "frontend" / "src" / "components" / "RanksPanel.vue"
 
+# 来源库的「目录可能不全」备注 —— 2026-10-15 纳入反证。
+# ⚠ 它的失败方式：把"这次没看目录"和"这次看过、目录是全的"混成一个语义，
+#   于是**顺手记一笔**的调用会把体检刚写下的警告擦掉；反过来，
+#   清警告时若写成 `pop`，合并落盘时又会让旧警告从盘上**复活**。
+#   两种都不报错，只表现为"警告该有的时候没有 / 该撤的时候撤不掉"。
+REGISTRY = ROOT / "app" / "registry.py"
+DISCOVERY = ROOT / "app" / "discovery.py"
+# 引擎的"断开收手"记账 —— 2026-10-15 纳入反证。
+# ⚠ 失败方式：`aborted` 只由**采样**一个阶段回答，断开落在扇出/探测/联网
+#   阶段时收手明明发生了却报 False。它不报错，只是让真机断连测试
+#   变成"取决于掐断落在哪个窗口"的偶发假红。
+ENGINE = ROOT / "app" / "engine.py"
+
 TOC_TEST = ROOT / "tools" / "test_toc_full.py"
 SAVE_TEST = ROOT / "tools" / "test_adapt_save.py"
 LAUNCH_TEST = ROOT / "tools" / "test_chrome_launcher.py"
 DIRECT_TEST = ROOT / "tools" / "test_adapt_direct.py"
 MOTION_TEST = ROOT / "tools" / "test_motion.py"
 RANKS_TEST = ROOT / "tools" / "test_ranks.py"
+REGISTRY_TEST = ROOT / "tools" / "test_registry.py"
+FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
 
 
 @dataclass
@@ -297,6 +314,11 @@ MUTATIONS: list[Mutation] = [
              '    srcs = [s for s in _SOURCES if kind in s["kinds"]]',
              '    srcs = [s for s in _SOURCES if kind in s["kinds"]][:3]',
              RANKS_TEST),
+    Mutation("ranks", "结果按**完成顺序**拼桶（名次随响应快慢跳，不报错）",
+             RANKS,
+             "            buckets = [got.get(i, []) for i in range(len(srcs))]",
+             "            buckets = list(got.values())",
+             RANKS_TEST),
     Mutation("ranks", "跨来源去重失效（同一本书出现两次）",
              RANKS,
              "            if not key or key in seen:",
@@ -372,6 +394,68 @@ MUTATIONS: list[Mutation] = [
              "const HUE = { allvisit: 22, weekvisit: 315, allvote: 350",
              "const HUE = { allvisit: 22, allvote: 350",
              RANKS_TEST),
+
+    # ------- 「目录可能不全」备注（tools/test_registry.py）-------
+    Mutation("registry", "「这次不评价目录」和「这次查过、目录是全的」混成一个语义"
+                         "（顺手记一笔的调用会擦掉体检刚写下的警告）",
+             REGISTRY,
+             "        if note is not None:",
+             "        if note:",
+             REGISTRY_TEST),
+    Mutation("registry", "清警告用 pop（落盘合并时从盘上复活，警告永远撤不掉）",
+             REGISTRY,
+             '            cur["note"] = note[:120]',
+             '            cur.pop("note", None) if not note else cur.update({"note": note[:120]})',
+             REGISTRY_TEST),
+    Mutation("registry", "发现流程不再交出目录结论（界面上永远没有那句警告）",
+             DISCOVERY,
+             '                       note=str(data.get("chapter_note") or ""))\n'
+             "    r.score = score_result(r, keyword)",
+             "                       )\n"
+             "    r.score = score_result(r, keyword)",
+             REGISTRY_TEST),
+    Mutation("registry", "目录结论不再挂到返回结果上（接口/界面拿不到）",
+             DISCOVERY,
+             '    if data.get("chapter_note"):\n'
+             '        r.chapter_note = str(data["chapter_note"])',
+             '    if data.get("chapter_note"):\n'
+             "        pass",
+             REGISTRY_TEST),
+    Mutation("registry", "『可搜源』的判据漏掉健康度（坏站又被算成资产）",
+             REGISTRY,
+             "    return has_search_tpl(site) and is_healthy(site)",
+             "    return has_search_tpl(site)",
+             REGISTRY_TEST),
+    Mutation("registry", "总览的『可搜源』不走统一判据（数模板不管健康，与列表对不上）",
+             REGISTRY,
+             "        searchable = sum(1 for s in s_all.values() if is_searchable(s))",
+             "        searchable = sum(1 for s in s_all.values() if has_search_tpl(s))",
+             REGISTRY_TEST),
+    Mutation("registry", "/api/registry 的 searchable 退回旧口径（总览与列表两个数字）",
+             MAIN,
+             '             "searchable": registry.is_searchable(s),',
+             '             "searchable": bool((s.get("search_tpl") or "").strip()),',
+             REGISTRY_TEST),
+
+    # ------- 断开收手记账（tools/test_discover_fallback.py）-------
+    Mutation("engine", "`aborted` 只认采样阶段（断开落在扇出/探测阶段就不记）",
+             ENGINE,
+             '                "aborted": bool(aborted or cut_short),',
+             '                "aborted": bool(aborted),',
+             FALLBACK_TEST),
+    Mutation("engine", "`_stop()` 不再置位（收手发生了但没人记账）",
+             ENGINE,
+             "            if should_stop and should_stop():\n"
+             "                cut_short = True\n"
+             "                return True",
+             "            if should_stop and should_stop():\n"
+             "                return True",
+             FALLBACK_TEST),
+    Mutation("engine", "探测阶段直接透传原始 should_stop（绕过唯一的记账点）",
+             ENGINE,
+             "                                       should_stop=_stop)",
+             "                                       should_stop=should_stop)",
+             FALLBACK_TEST),
 ]
 
 
@@ -391,6 +475,80 @@ def _read(path: Path) -> str:
 
 def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="")
+
+
+# ------------------------------------------------------- 被强杀时的残留还原
+# 为什么需要它（2026-10-15 真踩到，代价是一次莫名其妙的"基线全红"）：
+#   `check_one()` 用 `try/finally` 还原，可 `finally` **只在 Python 能正常
+#   退栈时才跑**。进程被 SIGTERM / 被工具超时杀掉时它不跑，`atexit` 也不跑
+#   —— 那条突变就**留在了源码里**。
+#   最阴的是下一步：工具紧接着再跑一次，而它是拿"**当前**内容"当基准的
+#   （`_load` 第一次读盘就是基准），于是把上一次留下的污染**当成了基线**。
+#   表现形式有两种，都不指向真因：
+#     · "基线就是红的，跳过"（看着像测试烂了）
+#     · 更糟 —— 反证全绿：被破坏的代码恰好和突变方向一致，突变等于没做。
+#   对策：每写坏一个文件之前，把它的**原始内容**另存一份到 `_PENDING`；
+#   跑完正常还原后把它**清空**；启动时若发现有内容，先还原再干活。
+#
+#   ⚠ 为什么是"清空"而不是"删除"：一轮全量反证会调它 50+ 次，`unlink()`
+#     会撞上沙箱的**批量删除护栏**（实测：`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，
+#     整个反证步骤当场判失败 —— 而且报错出现在 mutate 的日志里，看起来像
+#     测试烂了，其实是我自己在删文件）。留个空壳既等效，也不触发护栏。
+_PENDING = ROOT / "dist" / "tmp" / "mutate_pending.json"
+# 上一次写进 `_PENDING` 的内容（内存里去重，避免上百次重复写盘）
+_PENDING_LAST: str | None = None
+
+
+def _save_pending() -> None:
+    """记下"已经动过、还没还原"的那些文件的原始内容。"""
+    global _PENDING_LAST
+    try:
+        payload = json.dumps({str(p): t for p, t in _ORIGINALS.items()},
+                             ensure_ascii=False)
+    except (TypeError, ValueError):
+        return
+    # 内容没变就别再写 —— 一轮全量反证会调它上百次，而内容只在
+    # "第一次碰某个文件"时才会变。少写 100 次纯属顺带。
+    if payload == _PENDING_LAST:
+        return
+    try:
+        _PENDING.parent.mkdir(parents=True, exist_ok=True)
+        _PENDING.write_text(payload, encoding="utf-8", newline="")
+        _PENDING_LAST = payload
+    except OSError:
+        pass          # 记不下来也不该让反证跑不成（正常退出还会还原）
+
+
+def _clear_pending() -> None:
+    global _PENDING_LAST
+    if _PENDING_LAST == "{}":
+        return
+    try:
+        _PENDING.write_text("{}", encoding="utf-8", newline="")
+        _PENDING_LAST = "{}"
+    except OSError:
+        pass
+
+
+def _recover_pending() -> list[str]:
+    """上次跑了一半被杀？先把残留的突变还原掉，再拿干净内容当基准。"""
+    try:
+        data = json.loads(_PENDING.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not data:
+        return []
+    fixed: list[str] = []
+    for p, text in data.items():
+        path = Path(p)
+        try:
+            if _read(path) != text:
+                _write(path, text)
+                fixed.append(f"{path.relative_to(ROOT)}")
+        except OSError:
+            pass
+    _clear_pending()
+    return fixed
 
 
 def _load(path: Path) -> str:
@@ -438,6 +596,20 @@ def restore_all() -> list[str]:
 atexit.register(restore_all)
 
 
+def _sigterm(signum, frame):   # noqa: ARG001
+    """被 SIGTERM 杀掉时也要还原。
+
+    ⚠ 只拦 SIGTERM：SIGKILL 谁也拦不住（那种只能靠 `_PENDING` 兜底），
+      SIGINT 交给 Python 默认处理 —— KeyboardInterrupt 会正常退栈、
+      走进 `finally`，用不着这里插手。
+    """
+    left = restore_all()
+    _clear_pending()
+    print("\n⚠ 被 SIGTERM 终止 —— 已把源码还原回去"
+          + (f"（**未能还原**：{left}）" if left else ""), flush=True)
+    raise SystemExit(3)
+
+
 def run_test(test: Path) -> tuple[bool, list[str]]:
     p = subprocess.run([PY, str(test)], cwd=str(ROOT), capture_output=True,
                        text=True, encoding="utf-8", errors="replace")
@@ -461,9 +633,13 @@ def check_one(m: Mutation) -> tuple[str, str]:
         if _to_lf(_read(m.path)) == flat:
             # 替换"没落盘"是最隐蔽的假反证：看起来跑过了，其实产品代码没变。
             return "detached", "替换没有真正落盘（源码没变）"
+        # ⚠ 必须在**写坏之后**才记待还原清单：否则"没来得及写就崩"也会留下
+        #   一条记录，下次启动凭空"还原"一遍（内容其实没变，但白吓一跳）。
+        _save_pending()
         ok, reds = run_test(m.test)
     finally:
         _write(m.path, src)
+        _clear_pending()
     if ok:
         return "survived", "突变后测试仍然全绿 —— 断言没有牙"
     return "caught", " · ".join(reds[:2])[:150]
@@ -487,6 +663,21 @@ def main() -> int:
             print(f"[{m.group}] {m.name}\n      {m.path.relative_to(ROOT)} → {m.test.name}")
         print(f"共 {len(todo)} 条")
         return 0
+
+    try:
+        signal.signal(signal.SIGTERM, _sigterm)
+    except (ValueError, OSError, AttributeError):
+        pass     # 非主线程 / 平台不支持 —— 还有 `_PENDING` 兜底
+
+    # ⚠ 先清掉上一次被强杀留下的残留突变，再拿基准。
+    #   顺序不能反：`_load()` 第一次读盘就是基准，读到的若是污染内容，
+    #   整轮反证就全建在错的基线上（轻则"基线就红"，重则全绿而其实没测）。
+    leftovers = _recover_pending()
+    if leftovers:
+        print("⚠ 上一次没跑完，源码里还留着突变 —— 已还原："
+              + "、".join(leftovers))
+        print("  （`finally` 只在正常退栈时才跑，被强杀时不跑；"
+              "而本工具是拿「当前内容」当基准的，残留会被误当成基线。）")
 
     print(f"反证 {len(todo)} 条（组：{'/'.join(sorted({m.group for m in todo}))}）")
     print("=" * 70)
@@ -512,6 +703,7 @@ def main() -> int:
             bad.append((m.group, m.name, why))
 
     left = restore_all()
+    _clear_pending()
     print("=" * 70)
     print(f"突变 {len(todo)} 条 · 问题 {len(bad)} 条")
     for g, n, w in bad:

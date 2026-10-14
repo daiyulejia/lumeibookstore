@@ -1062,8 +1062,13 @@ async def registry_view():
     return {
         "stats": registry.stats(),
         "sites": [
+            # ⚠ `searchable` 必须和 `stats()["sites_searchable"]` **同判据**，
+            #   否则界面上「综合/可搜源」会出现两个数字（实测差过 3 vs 6）。
+            #   `has_search_tpl` 是纯诊断：模板有但站已不健康 ——
+            #   那种站该去清库/换域名，不是"再学一次"。
             {"host": h, "healthy": registry.is_healthy(s), "label": registry.site_label(h),
-             "searchable": bool((s.get("search_tpl") or "").strip()), **s}
+             "searchable": registry.is_searchable(s),
+             "has_search_tpl": registry.has_search_tpl(s), **s}
             for h, s in sorted(registry.sites().items(),
                                key=lambda kv: -int(kv[1].get("ok", 0)))
         ],

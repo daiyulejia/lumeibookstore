@@ -163,8 +163,19 @@ function siteRow(s, i) {
 
 function bookRow(b, i) {
   const hp = b.healthy ? `<span class="pill ok">可用</span>` : `<span class="pill bad">已失效</span>`;
+  // ⚠ 章节数必须和「目录可能不全」**一起**出现。
+  //   单看一个「12 章」和「这本书就是 12 章」长得一模一样 ——
+  //   我们实测过的那本《我们猫猫不能听这些》全书 119 章，
+  //   站点把完整目录放在 /mulu/2.html，只跟第一页就是 12 章。
+  //   用户按这个数字判断"要不要下"，下完才发现是零头。
+  //   `b.note` 是体检/联网发现抓目录时如实带回来的结论（见 app/registry.py
+  //   note_book 的三态说明）：这个来源的目录是不是只有一部分。
+  const chap = b.chapters
+    ? `<span class="tag${b.note ? " slow" : ""}"${b.note ? ` title="${esc(b.note)}"` : ""}>`
+      + `${b.chapters} 章${b.note ? " ⚠ 可能不全" : ""}</span>`
+    : (b.note ? `<span class="tag slow" title="${esc(b.note)}">目录可能不全</span>` : "");
   const tags = [
-    b.chapters ? `<span class="tag">${b.chapters} 章</span>` : "",
+    chap,
     b.author ? `<span class="tag">${esc(b.author)}</span>` : "",
     b.ok ? `<span class="tag ok">命中 ${b.ok} 次</span>` : "",
   ].filter(Boolean).join("");

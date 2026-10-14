@@ -17673,7 +17673,7 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-c0328722"]]);
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-784f026a"]]);
     const _hoisted_1$6 = ["src"];
     const _hoisted_2$6 = { class: "t" };
     const _hoisted_3$6 = { class: "a" };

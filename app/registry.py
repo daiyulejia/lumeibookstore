@@ -672,6 +672,32 @@ def is_healthy(site: dict) -> bool:
     return True
 
 
+def is_searchable(site: dict) -> bool:
+    """这个站现在**能不能直接站内搜** —— 全项目唯一判据。
+
+    ⚠ 为什么必须收敛到一处（线上实测抓到的口径漂移）：
+      以前「可搜源」有两套口径 ——
+        · `stats()["sites_searchable"]` 数的是「健康 **且** 有 search_tpl」
+        · `/api/registry` 每项给界面的 `searchable` 只看「有没有 search_tpl」
+      实测差了一倍（3 vs 6），多出来的三个
+      （`www.xizids.com` / `big5.cctv.com` / `350.ooo`）**都已经被判为不健康**。
+      于是同一句「有 N 个可搜源」，看总览是 3、按站点列表数是 6，
+      用户没法知道该信哪个 —— 更糟的是**坏站被算进了资产**。
+      两处各写一遍判据就一定会再漂，所以只留这一个函数。
+    """
+    return has_search_tpl(site) and is_healthy(site)
+
+
+def has_search_tpl(site: dict) -> bool:
+    """有没有学过站内搜索接口（**不管站还健不健康**）—— 只给诊断用。
+
+    界面该说「能搜」= `is_searchable`；这个只用来区分
+    「模板压根没学过」和「模板有、但站已经不行了」——
+    两者的修法完全不同（前者去学站，后者去清库/换域名）。
+    """
+    return bool((site.get("search_tpl") or "").strip())
+
+
 def forget_site(host: str) -> bool:
     host = (host or "").strip().lower()
     with _lock:
@@ -751,9 +777,29 @@ def note_book(
     intro: str = "",
     host: str = "",
     chapters: int = 0,
+    note: Optional[str] = None,
     ok: bool = True,
 ) -> None:
-    """把一本「联网发现」的书记下来。"""
+    r"""把一本「联网发现」的书记下来。
+
+    `note` 是**三态**，别把它简化成字符串默认值：
+
+      None（缺省） = 「这次调用不评价目录完整性」→ **不动**已有的 note
+      ""           = 「这次查过，目录是完整的」→ **清掉**已有的 note
+      "非空串"      = 「这次查过，目录只拿到一部分」→ 写上原因
+
+    ⚠ 为什么必须区分 None 和 ""：写这句话的调用方有两类 ——
+    体检（`discovery._check_book`，真的去抓过目录、有资格下结论）和
+    顺手记录（`web.py` 的抓正文成功、`discovery` 的失败记账，**没看目录**）。
+    如果 "" 和 None 一个语义，第二类调用就会把第一类刚写下的
+    「目录可能不全」**顺手擦掉** —— 于是那条警告在库里的存在时间取决于
+    调用顺序，而不是取决于目录到底全不全。
+
+    ⚠ 反过来同样要防：**目录后来变全了，警告必须能消失**。
+    只写不清（`if note:` 那种写法）的话，一条过早写下的警告会永远挂在
+    那本书上，用户看到的是一个早就修好的假问题。所以体检那条路
+    每次都把结论（哪怕是空串）交上来。
+    """
     url = (url or "").strip()
     if not url:
         return
@@ -770,6 +816,14 @@ def note_book(
             cur["host"] = host
         if chapters:
             cur["chapters"] = int(chapters)
+        if note is not None:
+            # ⚠ 清掉警告时必须写**空串**，不能 `pop` 掉这个键。
+            #   落盘走 `_merge()`，它对同一个键是「先取盘上那份、再用内存那份
+            #   逐个键覆盖」，而**内存那份没有这个键时不会覆盖** ——
+            #   于是 `pop` 掉的 note 会在合并时从盘上复活，
+            #   用户看到的警告永远撤不掉（"目录其实已经修好了"也撤不掉）。
+            #   写空串就落在"覆盖"这一侧，合并之后仍然是空的。
+            cur["note"] = note[:120]
         if ok:
             cur["ok"] = int(cur.get("ok", 0)) + 1
             cur["last_ok"] = _now()
@@ -882,9 +936,10 @@ def stats() -> dict:
             if h:
                 by_host[h] = by_host.get(h, 0) + 1
         top = sorted(by_host.items(), key=lambda kv: -kv[1])[:8]
-        # 「可搜源」的统计一并给出来 —— 界面用来说明 L 源到底长了多少
-        searchable = sum(1 for s in s_all.values()
-                         if is_healthy(s) and (s.get("search_tpl") or "").strip())
+        # 「可搜源」的统计一并给出来 —— 界面用来说明 L 源到底长了多少。
+        # ⚠ 判据走 `is_searchable()`，和 `/api/registry` 每项那个旗标**同一个函数**；
+        #   两处各写一遍就会出现「总览说 3、列表数出 6」这种没法解释的差。
+        searchable = sum(1 for s in s_all.values() if is_searchable(s))
         return {
             "sites": len(s_all),
             "sites_ok": s_ok,

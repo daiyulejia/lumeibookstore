@@ -193,7 +193,13 @@ def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
 
     registry.note_site(real_host, ok=True, **({"name": site_name} if site_name else {}))
     registry.note_book(real_url, title=r.title, author=r.author, host=real_host,
-                       intro=r.intro, chapters=r.chapter_count)
+                       intro=r.intro, chapters=r.chapter_count,
+                       # ⚠ 把「目录可能不全」一起记进来源库。
+                       #   不记的话，来源库面板只会显示「12 章」——
+                       #   和"这本书就是 12 章"长得一模一样，而这条信息
+                       #   恰恰是用户下完才发现上当时最需要的那句。
+                       #   这里交的是**本次结论**（None → ""），完整就清掉旧警告。
+                       note=str(data.get("chapter_note") or ""))
     r.score = score_result(r, keyword)
     logger.info("联网发现命中: %s 《%s》 %d 章 (质量 %.2f)",
                 real_host, r.title, r.chapter_count, float(data.get("quality") or 0))
@@ -541,6 +547,10 @@ def _check_book(url: str, meta: dict) -> bool:
 
     registry.note_book(url, title=data.get("title") or meta.get("title", ""),
                        author=data.get("author") or meta.get("author", ""),
-                       host=host, chapters=len(toc), ok=True)
+                       host=host, chapters=len(toc), ok=True,
+                       # 这次**真的抓过目录**了 → 有资格下"全 / 不全"的结论。
+                       # 交的是本次结论（没有 note 就是空串 → 清掉旧警告），
+                       # 所以目录后来补全时那句警告会自己消失。
+                       note=str(data.get("chapter_note") or ""))
     registry.note_site(host, ok=True)
     return True

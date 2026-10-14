@@ -225,9 +225,25 @@ class Engine:
         if not keyword:
             return []
 
+        # 「这一轮有没有真的被打断过」——所有阶段的收手都汇到这一处。
+        # ⚠ 以前这个问题只由 `verify_samples`（采样）一个阶段回答，于是断开
+        #   如果落在**扇出抓取 / 探测 / 联网兜底**那几个阶段，收手确实发生了
+        #   （那些阶段都认 should_stop、也确实提前停了），但 `aborted` 仍然
+        #   是 False —— 对外报的是"这一轮完整跑完了"。
+        #   后果不只是数字不准：真机断连测试的判据就是它，于是那条测试
+        #   能不能过**取决于那 2 秒掐断恰好落在采样窗口里**（窗口很窄），
+        #   表现为"时绿时红的偶发假红"——而偶发假红最容易把真问题一起
+        #   糊过去。`aborted` 的语义既然是"这一轮被打断"，就该由**所有**
+        #   阶段的收手信号共同决定，所以在唯一入口 `_stop()` 里统一置位。
+        cut_short = False
+
         def _stop() -> bool:
             # 一次调用里包一层，避免到处都是 `is not None and ...()`
-            return bool(should_stop and should_stop())
+            nonlocal cut_short
+            if should_stop and should_stop():
+                cut_short = True
+                return True
+            return False
 
         # 「这一轮是不是被客户端断开打断的」——供 stats / 日志 / 真机测试读。
         # ⚠ 必须在**分支之外**先初始化。踩过：一开始只在 `if sample and results:`
@@ -515,7 +531,7 @@ class Engine:
 
         if probe and results:
             self.probe_all(results, on_verified=on_verified, top=probe_top,
-                           should_stop=should_stop)
+                           should_stop=_stop)
             results = self.refine(results, keyword)
 
         # ---- 本地一条可读的都没有？出去找 ----
@@ -561,7 +577,7 @@ class Engine:
                 if extra:
                     if probe:
                         self.probe_all(extra, on_verified=on_verified, top=len(extra),
-                                       should_stop=should_stop)
+                                       should_stop=_stop)
                     results = rank(results + extra, keyword)
                     results = self.refine(results, keyword)
         elif discover and need_web and already_web:
@@ -569,12 +585,12 @@ class Engine:
             # （上面 raw 已 extend，这里 results=rank(raw) 已包含 web_extra）
             if results and probe:
                 self.probe_all(results, on_verified=on_verified, top=probe_top,
-                               should_stop=should_stop)
+                               should_stop=_stop)
                 results = self.refine(results, keyword)
 
         if sample and results:
             aborted = self.verify_samples(results, on_verified=on_verified,
-                                          should_stop=should_stop)
+                                          should_stop=_stop)
 
         if stats is not None:
             stats.update({
@@ -595,7 +611,7 @@ class Engine:
                 #   影响，波动能有 5 倍（实测 2.3s ~ 25.6s），
                 #   拿它当判据必然假红假绿；而这个布尔量只取决于机制本身。
                 #   断连止损测试就是踩了那个坑，改成看这个。
-                "aborted": bool(aborted),
+                "aborted": bool(aborted or cut_short),
             })
         return results
 
