@@ -17333,6 +17333,7 @@ ${style}
       key: 3,
       class: "rk-err"
     };
+    const _hoisted_16$2 = { class: "rk-foot" };
     const _sfc_main$8 = {
       __name: "RanksPanel",
       setup(__props) {
@@ -17341,10 +17342,11 @@ ${style}
     stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="M16 10a6 6 0 1 1-1.8-4.3"/><path d="M16 3v3h-3"/></svg>`
         };
-        const HUE = { allvisit: 22, allvote: 350, goodnum: 268, size: 200, postdate: 145, lastupdate: 40 };
+        const HUE = { allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268, size: 200, postdate: 145, lastupdate: 40 };
         const kinds = /* @__PURE__ */ ref([]);
         const cur = /* @__PURE__ */ ref("allvisit");
         const items = /* @__PURE__ */ ref([]);
+        const sources = /* @__PURE__ */ ref([]);
         const loading = /* @__PURE__ */ ref(false);
         const error = /* @__PURE__ */ ref("");
         const emptyHint = /* @__PURE__ */ ref("");
@@ -17369,6 +17371,12 @@ ${style}
           return meta.join(" · ");
         }
         const curDesc = computed(() => kinds.value.find((k) => k.kind === cur.value)?.desc || "");
+        const footLine = computed(() => {
+          const n = sources.value.length;
+          const names = sources.value.join(" · ");
+          const head = n > 1 ? `榜单综合 ${n} 个公开榜单页（${names}）` : n === 1 ? `榜单来自 1 个公开榜单页（${names}）` : "榜单来自公开榜单页";
+          return `${head}，后台每 30 分钟自动刷新 ·`;
+        });
         const freshness = computed(() => {
           if (age.value == null && !refreshedAt.value) return "";
           let secs = age.value ?? 0;
@@ -17431,6 +17439,7 @@ ${style}
         }
         function applyRank(d) {
           items.value = d.items || [];
+          sources.value = Array.isArray(d.sources) ? d.sources : [];
           emptyHint.value = d.empty_hint || "";
           if (typeof d.age === "number") age.value = d.age;
           refreshedAt.value = 0;
@@ -17651,8 +17660,8 @@ ${style}
                 })
               ])) : createCommentVNode("", true)
             ])) : createCommentVNode("", true),
-            createBaseVNode("div", { class: "rk-foot" }, [
-              _cache[5] || (_cache[5] = createTextVNode(" 榜单来自公开榜单页，后台每 30 分钟自动刷新 · ", -1)),
+            createBaseVNode("div", _hoisted_16$2, [
+              createTextVNode(toDisplayString(footLine.value) + " ", 1),
               createBaseVNode("button", {
                 class: "rk-link",
                 id: "ranksToLib",
@@ -17664,7 +17673,7 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-875a0654"]]);
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-c0328722"]]);
     const _hoisted_1$6 = ["src"];
     const _hoisted_2$6 = { class: "t" };
     const _hoisted_3$6 = { class: "a" };

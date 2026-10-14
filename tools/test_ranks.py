@@ -37,6 +37,16 @@ def read(name: str) -> str:
 def main() -> int:
     from app import ranks
 
+    # ⚠⚠ 先把缓存落盘路径挪到临时目录，再碰任何东西。
+    #   下面 F/L 段会调 `ranks.clear_cache()`，而它会 `_DB.unlink()` ——
+    #   不隔离的话这一跑就把**真实的 `cache/ranks.json` 删掉**：
+    #   本地服务的榜单白刷一轮，线上跑一次测试同样会清掉缓存。
+    #   不报错、不影响本次判定，所以一直没有被发现。
+    #   （test_ranks_stale.py 早就这么做了，那边写着"真实缓存绝不能被碰"；
+    #     这里漏了。）
+    import tempfile
+    ranks._DB = Path(tempfile.mkdtemp(prefix="ranks-test-")) / "ranks.json"
+
     fails: list[str] = []
 
     def check(label, cond):
@@ -134,7 +144,19 @@ def main() -> int:
     check("kind 唯一", len({k["kind"] for k in ks}) == len(ks))
     # 实测为空表的不能出现在目录里
     check("不含实测空表的 monthvisit", "monthvisit" not in {k["kind"] for k in ks})
-    check("不含实测空表的 weekvisit", "weekvisit" not in {k["kind"] for k in ks})
+    # ⚠ weekvisit 的态度在 2026-10-15 变了，这条断言跟着改了 —— 值得写清楚：
+    #   384g 的周榜**仍然是空表**，所以"有没有内容"这个判据不再是"这个 kind
+    #   能不能进目录"，而是"**有没有一个来源真做这类榜**"。
+    #   xbiquge.info 的 /top/week_0_1.html 是周榜且有内容 → 收进来。
+    #   下面两条把"来源"这个真正的判据钉住（而不是简单地把断言删掉）：
+    check("384g 不声明支持 weekvisit（它的周榜确实是空表）",
+          "384g" not in {s["key"] for s in ranks._SOURCES
+                         if "weekvisit" in s["kinds"]})
+    check("weekvisit 有别的来源兜着（xbiquge 周榜）",
+          "weekvisit" in {k["kind"] for k in ks}
+          and bool(ranks.sources_for("weekvisit")))
+    check("不含实测空表且无来源的 monthvisit（真没人做月榜）",
+          not ranks.sources_for("monthvisit"))
 
     # -----------------------------------------------------------------
     print()
@@ -168,6 +190,331 @@ def main() -> int:
     check("干净书名「永生诀」没被误伤", bool(clean))
     if clean:
         check("「永生诀」作者 = 姜蘑菇", clean[0]["author"] == "姜蘑菇")
+
+    # -----------------------------------------------------------------
+    print()
+    print("== H. xbqg5200 榜单解析（真实样本）==")
+    xq = ranks.parse_xbqg5200(read("xbqg5200_top.html"), "allvisit")
+    check(f"解析出条目（{len(xq)} 条）", len(xq) >= 10)
+    f3 = xq[0] if xq else {}
+    print(f"     第一条：{f3.get('title')} / {f3.get('author')} / 分类={f3.get('category')}")
+    check("第一条有书名", bool(f3.get("title")))
+    check("第一条有作者", bool(f3.get("author")))
+    check("URL 指向站点域", (f3.get("url") or "").startswith("https://www.xbqg5200.com/"))
+    # ⚠ 书名必须**不带** `[玄幻]` 这类分类前缀（前缀在 <a> 外面，取错位置就带上了）
+    check("书名不带 [分类] 前缀",
+          all(not i["title"].startswith("[") for i in xq))
+    check("分类被单独记下来了",
+          any(i.get("category") for i in xq))
+    # ⚠ 分类不能塞进 status —— 前端会把 status 当"连载/完结"显示
+    check("分类没有被塞进 status",
+          all(i.get("status") == "" for i in xq))
+    check("source/source_display 都写了",
+          all(i.get("source") == "xbqg5200" and i.get("source_display") for i in xq))
+    # ⚠ `li` 的 class 里有个站点生成的哈希后缀（`item-34e68100`）。
+    #   写全等匹配 `class="list-group-item item-34e68100"` 的话，**这个真实样本
+    #   照样能过** —— 站点换一次哈希整页就解析不出东西。所以这条判据必须拿
+    #   **改过哈希的** HTML 来验：真实样本验不出这个坑。
+    tweaked = read("xbqg5200_top.html").replace("item-34e68100", "item-9f00ab12")
+    check("class 哈希后缀变了也能认出来（包含匹配，不是全等）",
+          len(ranks.parse_xbqg5200(tweaked, "allvisit")) == len(xq))
+    check("哈希换掉后书名/作者还是对的",
+          [i["title"] for i in ranks.parse_xbqg5200(tweaked, "allvisit")] ==
+          [i["title"] for i in xq])
+
+    # -----------------------------------------------------------------
+    print()
+    print("== I. xbiquge.info 榜单解析（真实样本：总榜 / 周榜）==")
+    bi = ranks.parse_xbiquge(read("xbiquge_top.html"), "allvisit")
+    check(f"总榜解析出条目（{len(bi)} 条）", len(bi) >= 10)
+    f4 = bi[0] if bi else {}
+    print(f"     第一条：{f4.get('title')} / {f4.get('author')} / "
+          f"{f4.get('status')} / {f4.get('updated')}")
+    check("第一条有书名", bool(f4.get("title")))
+    check("第一条有作者", bool(f4.get("author")))
+    check("第一条有状态", bool(f4.get("status")))
+    check("第一条有更新时间", bool(f4.get("updated")))
+    check("URL 指向站点域", (f4.get("url") or "").startswith("https://www.xbiquge.info/"))
+    # ⚠ 这个站的书名带 [分类] 前缀（和 xbqg5200 不同：前缀写在 <a> 里面）
+    check("书名剥掉了 [分类] 前缀",
+          all(not i["title"].startswith("[") for i in bi))
+    check("分类被单独记下来了", any(i.get("category") for i in bi))
+    # ⚠ 一本书占 5 个 <dd>；"按 <dd> 逐条取"会把作者行当成一本书。
+    #   下面几条钉住"按书名块切"：作者不会是"作者："这种残缺串，书名不会带
+    #   "状态：""更新时间："这类标签残留。
+    check("作者里没有「作者：」这种标签残留",
+          all("：" not in i["author"] and ":" not in i["author"] for i in bi))
+    # ⚠ 判据要**只认字段标签**：书名里本来就可能带全角冒号
+    #   （实测「悠哉兽世：种种田，生生崽」），写 `"：" not in title` 会误红。
+    check("书名里没有串进下一行的字段标签",
+          all(not re.search(r"(状态|更新时间|作者|最新章节)\s*[：:]", i["title"])
+              for i in bi))
+    check("条数 = 页面上的书名块数（30 个 <dd><h3>）",
+          len(re.findall(r"<dd\s*>\s*<h3\s*>", read("xbiquge_top.html"))) == 30)
+
+    wk = ranks.parse_xbiquge(read("xbiquge_week.html"), "weekvisit")
+    check(f"周榜解析出条目（{len(wk)} 条）", len(wk) >= 10)
+    check("周榜首条是「过万重山」（实测）",
+          bool(wk) and wk[0]["title"] == "过万重山")
+    check("周榜 kind 传下去了", all(i["kind"] == "weekvisit" for i in wk))
+
+    # ⚠ 这个站**不是每个榜单页的书名都带 `[分类]` 前缀**：总榜/周榜带，
+    #   分类榜（/top/all_1_1.html）不带。用同一份解析器就要两边都对 ——
+    #   如果实现改成"必须匹配到 `[...]` 才算书名"，分类榜就会整页解析成空。
+    cat = ranks.parse_xbiquge(read("xbiquge_all_1.html"), "allvisit")
+    check(f"分类榜（书名不带前缀）也能解析（{len(cat)} 条）", len(cat) >= 10)
+    check("分类榜首条是「伏天氏」（实测，原文无 [分类] 前缀）",
+          bool(cat) and cat[0]["title"] == "伏天氏")
+    check("不带前缀时 category 是空串，而不是把整段当分类",
+          cat[0]["category"] == "" and cat[0]["title"] == "伏天氏")
+    check("分类榜的书名没有残留方括号",
+          all(not i["title"].startswith("[") and "]" not in i["title"] for i in cat))
+
+    # -----------------------------------------------------------------
+    print()
+    print("== J. 来源表契约 ==")
+    srcs = ranks._SOURCES
+    check(f"来源表非空（{len(srcs)} 项）", len(srcs) >= 4)
+    check("每项都有 key/display/url/parser/kinds",
+          all({"key", "display", "url", "parser", "kinds"} <= set(s) for s in srcs))
+    check("key 唯一", len({s["key"] for s in srcs}) == len(srcs))
+    check("url 是 http(s)", all(s["url"].startswith("https://") for s in srcs))
+    check("parser 可调用", all(callable(s["parser"]) for s in srcs))
+    check("kinds 都是目录里有的 kind",
+          all(s["kinds"] <= {k["kind"] for k in ks} for s in srcs))
+    # ⚠ 反向：**每一类目录里的榜单都必须至少有一个来源**。
+    #   漏了这个，就会出现"目录里有这个标签、点开永远是空的"——
+    #   而 SUPPORTED 是我们手写的，来源表也是手写的，两边很容易脱节。
+    nogot = [k["kind"] for k in ks if not ranks.sources_for(k["kind"])]
+    check(f"每类榜单都至少有一个来源（没有来源的：{nogot}）", not nogot)
+    check("总点击榜是综合多来源的（>=3 个站点）",
+          len(ranks.sources_for("allvisit")) >= 3)
+    check("总点击榜的展示名互不相同（否则用户看不出是多来源）",
+          len(set(ranks.sources_for("allvisit"))) == len(ranks.sources_for("allvisit")))
+
+    # -----------------------------------------------------------------
+    print()
+    print("== K. 交错合并 / 去重（纯函数 _interleave）==")
+    A = [{"title": f"A{i}"} for i in range(1, 6)]
+    B = [{"title": f"B{i}"} for i in range(1, 6)]
+    C = [{"title": f"C{i}"} for i in range(1, 3)]      # 只有 2 条
+    m = ranks._interleave([A, B, C], 100)
+    order = [i["title"] for i in m]
+    print(f"     交错结果：{order}")
+    check("按来源轮流取（前 3 条来自 3 个不同来源）",
+          order[:3] == ["A1", "B1", "C1"])
+    check("短的来源取完后，长的继续（不会整段跳过）",
+          order == ["A1", "B1", "C1", "A2", "B2", "C2", "A3", "B3", "A4", "B4", "A5", "B5"])
+    check("总条数 = 各来源之和", len(m) == 12)
+    # 去重：同一本书（带书名号/空格差异）只留一份，且留**先出现**的那个来源
+    d = ranks._interleave(
+        [[{"title": "斗破苍穹", "source": "x"}],
+         [{"title": "《斗破苍穹》", "source": "y"}, {"title": "别的一本", "source": "y"}]],
+        100,
+    )
+    check("跨来源同一本书去重（《》差异也算同一本）",
+          [i["title"] for i in d] == ["斗破苍穹", "别的一本"])
+    check("去重保留的是先出现的那个来源", d and d[0]["source"] == "x")
+    check("空书名不会互相顶掉", len(ranks._interleave([[{"title": ""}, {"title": ""}]], 100)) == 0)
+    check("限流生效", len(ranks._interleave([A, B], 3)) == 3)
+    # ⚠ 反证：这个性质**不是恒真**的 —— 换成"按来源顺序拼接"（旧写法）
+    #   前 3 条就全是同一个来源。所以上面那条断言是有牙的，不是摆设。
+    naive = (A + B + C)[:3]
+    check("反证：旧的「顺序拼接」写法过不了这条（前 3 条同源）",
+          len({i["title"][0] for i in naive}) == 1)
+
+    # -----------------------------------------------------------------
+    print()
+    print("== L. 端到端：多来源抓取 → 交错 → 去重 → 截断（假网络）==")
+    # 为什么必须有这一段：K 段测的是纯函数，**用不用它**是另一回事。
+    # 旧代码的 bug 正是"函数写得挺好但根本没被调用/调用完又被顺序拼接盖掉"。
+    real_fetch = ranks.fetch_text
+
+    # ⚠ 假网络必须**记账**，不能只靠"认不出就 raise"。
+    #   因为 `_fetch_source` 会吞掉异常（这是它对生产代码的正确行为）——
+    #   于是新增一个来源、假网络不认识它的地址时，测试**不会红**，
+    #   只是那个来源静默地空掉，而"实际出现 >= 4 个站点"照样过。
+    #   所以下面把 `unknown` 单独记下来，最后当成断言查一遍。
+    asked: list[str] = []
+    unknown: list[str] = []
+
+    def fake_fetch(url: str, **kw):
+        asked.append(url)
+        if "384g.com/paihang/allvisit" in url:
+            return read("384g_allvisit.html")
+        if "384g.com/paihang/size" in url:
+            return read("384g_size.html")
+        if "luoxiaks.net" in url:
+            return read("luoxiaks_top.html")
+        if "xbqg5200.com" in url:
+            return read("xbqg5200_top.html")
+        if "xbiquge.info/top/week" in url:
+            return read("xbiquge_week.html")
+        if "xbiquge.info" in url:
+            return read("xbiquge_top.html")
+        unknown.append(url)
+        raise AssertionError(f"假网络不认识这个地址：{url}")
+
+    def declared_urls(kind: str) -> list[str]:
+        return [s["url"].format(kind=kind) for s in ranks._SOURCES if kind in s["kinds"]]
+
+    ranks.fetch_text = fake_fetch
+    try:
+        ranks.clear_cache()
+        got = ranks._fetch_one("allvisit")
+        asked_allvisit = list(asked)
+    finally:
+        ranks.fetch_text = real_fetch
+
+    miss = [u for u in declared_urls("allvisit") if u not in asked_allvisit]
+    check(f"声明的每个来源都被真的请求过（缺：{miss}）", not miss)
+    check(f"假网络认识每一个被请求的地址（不认识：{unknown}）", not unknown)
+
+    shown = []
+    for i in got:
+        s = i.get("source_display") or i.get("source")
+        if s not in shown:
+            shown.append(s)
+    print(f"     前 6 条：{[(i['title'][:6], i.get('source')) for i in got[:6]]}")
+    print(f"     出现过的来源：{shown}")
+    check(f"总条数不超过上限（{len(got)} <= {ranks.MAX_ITEMS}）", len(got) <= ranks.MAX_ITEMS)
+    check(f"实际出现 >= 4 个不同站点（{len(shown)}）", len(shown) >= 4)
+    # ⚠ 这条是整段的核心：**交错**的意思就是"前 N 条里就能看全所有来源"。
+    #   旧写法（主源全在前）会让前 20 条只有一个来源 —— 那正是用户说的
+    #   "榜单都是一个网站来的，太单薄"。
+    first4 = {i.get("source") for i in got[:4]}
+    check(f"前 4 条已覆盖 >= 4 个来源（{first4}）", len(first4) >= 4)
+    keys = [ranks._norm_title(i["title"]) for i in got]
+    check("没有重复书名（跨来源去重生效）", len(keys) == len(set(keys)))
+    check("每条都带 source_display", all(i.get("source_display") for i in got))
+
+    # 单来源的榜单：不能因为"多来源"改造而抓不到东西
+    ranks.fetch_text = fake_fetch
+    try:
+        ranks.clear_cache()
+        wk2 = ranks._fetch_one("weekvisit")
+        sz = ranks._fetch_one("size")
+    finally:
+        ranks.fetch_text = real_fetch
+    check(f"weekvisit 只从 xbiquge 周榜抓（{len(wk2)} 条）", len(wk2) >= 10)
+    check("weekvisit 的来源就是 xbiquge",
+          {i.get("source") for i in wk2} == {"xbiquge"})
+    check(f"size 仍是 384g 单源（{len(sz)} 条）", len(sz) >= 10)
+    check("size 的来源就是 384g", {i.get("source") for i in sz} == {"384g"})
+    check("没有来源的 kind → 空列表（不抛异常）",
+          ranks._fetch_one("monthvisit") == [])
+
+    # 一源失败不拖垮整体
+    def broken_384g(url: str, **kw):
+        if "384g.com" in url:
+            raise RuntimeError("站点 503")
+        return fake_fetch(url, **kw)
+
+    ranks.fetch_text = broken_384g
+    try:
+        ranks.clear_cache()
+        partial = ranks._fetch_one("allvisit")
+    finally:
+        ranks.fetch_text = real_fetch
+    pshown = {i.get("source") for i in partial}
+    check(f"384g 挂了，另外 3 个来源照常出结果（{pshown}）",
+          len(pshown) >= 3 and "384g" not in pshown)
+    check("降级后仍然没有重复书名",
+          len([ranks._norm_title(i["title"]) for i in partial])
+          == len({ranks._norm_title(i["title"]) for i in partial}))
+
+    # -----------------------------------------------------------------
+    print()
+    print("== M. 前端两侧的榜单色相表必须一致（Vue + 降级 JS）==")
+    # 为什么值得一条测试：`app/static/js/ranks.js` 是 Vue 没挂上时的降级实现，
+    # 两份 HUE 各写一份。加了新 kind 只改一处的话，同一类榜单在两条路径下
+    # 颜色不同 —— 不报错，看起来就像"页面抽风"。
+    import re as _re
+
+    def hue_keys(path: str) -> dict[str, int]:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        m = _re.search(r"HUE\s*=\s*\{([^}]*)\}", src, _re.S)
+        if not m:
+            return {}
+        out: dict[str, int] = {}
+        for km, vm in _re.findall(r"(\w+)\s*:\s*(\d+)", m.group(1)):
+            out[km] = int(vm)
+        return out
+
+    hue_vue = hue_keys("frontend/src/components/RanksPanel.vue")
+    hue_js = hue_keys("app/static/js/ranks.js")
+    print(f"     Vue: {hue_vue}")
+    print(f"     JS : {hue_js}")
+    check(f"两处色相表都解析出来了（{len(hue_vue)} / {len(hue_js)} 项）",
+          bool(hue_vue) and bool(hue_js))
+    check("两处色相表逐项相同", hue_vue == hue_js)
+    # 反向：目录里每一个 kind 都得有配色，否则新加的标签全挤在默认色上
+    # （`HUE[k] ?? 22` 会让它看起来"跟总点击榜一个色"）。
+    miss = sorted({k["kind"] for k in ks} - set(hue_vue))
+    check(f"目录里的每个 kind 都有配色（缺：{miss}）", not miss)
+
+    # -----------------------------------------------------------------
+    print()
+    print("== N. /api/ranks 接口契约（离线，假网络）==")
+    # 为什么要到接口这一层：`sources` 是新加的字段，而它是**页脚那句
+    # "综合 N 个站点"唯一的来源**。只测 ranks 模块测不到它 ——
+    # 字段漏传/传空的话，界面上表现为"页脚退回老文案"，不报错。
+    api_fetch = ranks.fetch_text
+    ranks.fetch_text = fake_fetch
+    try:
+        ranks.clear_cache()
+        from fastapi.testclient import TestClient
+
+        from app import main as _main
+
+        cli = TestClient(_main.app)
+        r = cli.get("/api/ranks?kind=allvisit")
+        check(f"GET /api/ranks 返回 200（{r.status_code}）", r.status_code == 200)
+        d = r.json()
+        check("ok=true", d.get("ok") is True)
+        check(f"返回的不是空列表（{d.get('count')} 条）", (d.get("count") or 0) >= 10)
+        check(f"sources 声明了 >=3 个站点（{d.get('sources')}）",
+              isinstance(d.get("sources"), list) and len(d["sources"]) >= 3)
+        check("items 里真的出现了多个站点",
+              len({i.get("source_display") for i in d["items"] if i.get("source_display")}) >= 4)
+        check("label/desc 都在（标签与说明靠它们）",
+              bool(d.get("label")) and bool(d.get("desc")))
+        check("age/fresh 字段还在（界面靠它说『x 分钟前更新』）",
+              "age" in d and "fresh" in d)
+        r2 = cli.get("/api/ranks?kind=nonexistent_xyz")
+        check(f"未知 kind → 400（{r2.status_code}）", r2.status_code == 400)
+        r3 = cli.get("/api/ranks/kinds")
+        check("GET /api/ranks/kinds 200", r3.status_code == 200)
+        check(f"kinds 7 类（{len(r3.json().get('kinds', []))}）",
+              len(r3.json().get("kinds", [])) == len(ks))
+        # 状态接口里要能看到"声明来源"与"实际抓到的来源"
+        r4 = cli.get("/api/ranks/status")
+        kst = (r4.json().get("cache", {}).get("kinds", {}) or {}).get("allvisit", {})
+        check("status 里带了 sources（声明）",
+              isinstance(kst.get("sources"), list) and len(kst["sources"]) >= 3)
+        check("status 里带了 got（实际抓到的来源）",
+              isinstance(kst.get("got"), list) and len(kst["got"]) >= 4)
+    finally:
+        ranks.fetch_text = api_fetch
+        ranks.clear_cache()
+
+    # -----------------------------------------------------------------
+    print()
+    print("== O. 前端接线（静态检查：页脚那句『综合 N 个站点』）==")
+    # ⚠ 这一段是**静态检查**，不是行为验证 —— 它只能证明"那几行还在"。
+    #   真正的行为验证在 tools/test_ranks_ui.py（真机跑，断言页脚文本）。
+    #   留这一段是因为：`sources` 从接口到页脚要经过三处（ref / applyRank /
+    #   模板），漏掉任何一处都只是"页脚少半句话"，谁都不会注意。
+    vue = (ROOT / "frontend/src/components/RanksPanel.vue").read_text(encoding="utf-8")
+    check("Vue 里有 sources 状态", "const sources = ref([])" in vue)
+    check("applyRank 把接口的 sources 落进状态",
+          "sources.value = Array.isArray(d.sources) ? d.sources : [];" in vue)
+    check("模板用的是 footLine", "{{ footLine }}" in vue)
+    check("footLine 读 sources.value", "const n = sources.value.length;" in vue)
+    check("页脚仍然提到『公开榜单页』与『30 分钟』（界面测试的验收词）",
+          "公开榜单页" in vue and "30 分钟" in vue)
+    # 降级路径：老后端不带 sources 时，页脚不能变成空白
+    check("没有 sources 时页脚有兜底文案", 'n === 1 ?' in vue and '"榜单来自公开榜单页"' in vue)
 
     print()
     if fails:

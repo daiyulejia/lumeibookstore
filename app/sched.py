@@ -97,7 +97,7 @@ class _Scheduler:
                 # ⚠ refresh() 内部**吞掉**了单类异常（它把失败的类计数进
                 # `failed`），所以这里不会抛 —— 如果不主动把「全灭」翻成
                 # last_error，运维看到的就是「跑过了、错误字段空着」，
-                # 明明 6 类一个都没抓到却像一切正常。这是实测踩出来的。
+                # 明明一类都没抓到却像一切正常。这是实测踩出来的。
                 total = rep.get("ok", 0) + rep.get("failed", 0)
                 if total and rep.get("ok", 0) == 0:
                     self.last_error = f"全部 {rep['failed']} 类都没抓到（站点可能都挂了）"

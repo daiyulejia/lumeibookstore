@@ -23,9 +23,12 @@ const RK = {
   shelfPromise: null,    // 取书架的进行中 promise（并发去重）
 };
 
-/* 每条榜单配一个色，纯为了视觉区分 —— 不承载任何语义 */
+/* 每条榜单配一个色，纯为了视觉区分 —— 不承载任何语义。
+   ⚠ 与 frontend/src/components/RanksPanel.vue 的 HUE **必须逐项一致**：
+   这里是 Vue 没挂上时的降级实现，同一类榜单在两条路径下颜色不同，
+   看起来就像"页面坏了"。加 kind 时两份一起加。 */
 const HUE = {
-  allvisit: 22, allvote: 350, goodnum: 268,
+  allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268,
   size: 200, postdate: 145, lastupdate: 40,
 };
 

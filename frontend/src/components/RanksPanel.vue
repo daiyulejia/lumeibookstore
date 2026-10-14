@@ -114,9 +114,15 @@
     </div>
 
     <!-- 底部：说明来源 + 回书架的入口（榜单看完想回自己存的书，是自然的下一步）
-         id 同样是契约（test_ranks_ui 的「有回书架入口」）。 -->
+         id 同样是契约（test_ranks_ui 的「有回书架入口」）。
+
+         ⚠ 「综合 N 个站点」这句话是**多来源功能唯一的可见证据**。
+         后端每一条榜单都带 `source_display`（右侧那列小字），但用户不会
+         逐个去数；不在这里说一句，多来源改造在界面上等于不存在。
+         `footLine` 用的是接口返回的 `sources`（= 声明要去哪几个站），
+         不是从 items 里数的 —— 见 app/main.py 里那段注释。 -->
     <div class="rk-foot">
-      榜单来自公开榜单页，后台每 30 分钟自动刷新 ·
+      {{ footLine }}
       <button class="rk-link" id="ranksToLib" type="button" @click="toShelf">去看我的书架 ›</button>
     </div>
   </div>
@@ -145,12 +151,16 @@ const RefreshIcon = {
     <path d="M16 10a6 6 0 1 1-1.8-4.3"/><path d="M16 3v3h-3"/></svg>`,
 };
 
-/* 每条榜单一个色相，纯视觉区分，不承载语义（沿用旧值） */
-const HUE = { allvisit: 22, allvote: 350, goodnum: 268, size: 200, postdate: 145, lastupdate: 40 };
+/* 每条榜单一个色相，纯视觉区分，不承载语义（沿用旧值）。
+   ⚠ 和 app/static/js/ranks.js 里那份**必须一致** —— 那边是 Vue 挂载失败时的
+   降级实现，两份色相不同的话，"同一类榜单换个环境变个颜色"会显得像个 bug。
+   （weekvisit 是 2026-10-15 新增的，两份都补了。） */
+const HUE = { allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268, size: 200, postdate: 145, lastupdate: 40 };
 
 const kinds = ref([]);
 const cur = ref("allvisit");
 const items = ref([]);
+const sources = ref([]);
 const loading = ref(false);
 const error = ref("");
 const emptyHint = ref("");
@@ -183,6 +193,21 @@ function metaOf(it) {
 }
 
 const curDesc = computed(() => kinds.value.find((k) => k.kind === cur.value)?.desc || "");
+
+/** 页脚那句话：把"这份榜单是几个站在供数据"说出来。
+ *
+ * ⚠ 接口没给 sources（旧版后端）时退回原来那句 —— 不能因为一个新字段
+ *   缺失就把页脚变成空白。这里刻意保留"公开榜单页""30 分钟"两个词：
+ *   tools/test_ranks_ui.py 就是按这两个词验收"底部说明了数据来源与刷新节奏"的。
+ */
+const footLine = computed(() => {
+  const n = sources.value.length;
+  const names = sources.value.join(" · ");
+  const head = n > 1
+    ? `榜单综合 ${n} 个公开榜单页（${names}）`
+    : (n === 1 ? `榜单来自 1 个公开榜单页（${names}）` : "榜单来自公开榜单页");
+  return `${head}，后台每 30 分钟自动刷新 ·`;
+});
 
 const freshness = computed(() => {
   if (age.value == null && !refreshedAt.value) return "";
@@ -277,6 +302,10 @@ async function loadRanks(kind) {
  */
 function applyRank(d) {
   items.value = d.items || [];
+  // ⚠ sources 必须**跟着 items 一起换**。分开赋值的话，切标签时会出现
+  //   "列表已经是周榜（1 个站）了，页脚还写着综合 4 个站" —— 页脚是
+  //   多来源唯一的可见证据，写错了比不写更糟。
+  sources.value = Array.isArray(d.sources) ? d.sources : [];
   emptyHint.value = d.empty_hint || "";
   if (typeof d.age === "number") age.value = d.age;
   refreshedAt.value = 0;

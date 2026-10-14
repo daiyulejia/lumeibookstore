@@ -817,12 +817,20 @@ async def ranks_get(kind: str = "allvisit"):
     label = next((d["label"] for d in _rk.kinds() if d["kind"] == kind), kind)
     desc = next((d["desc"] for d in _rk.kinds() if d["kind"] == kind), "")
     st = _rk.cache_status().get("kinds", {}).get(kind, {})
+    # 这一类榜单**声明**要去哪几个站点抓。给界面说"综合 N 个站点"用。
+    #
+    # ⚠ 用声明而不是"从 items 里数 distinct(source)"：某站今天抽风没抓到，
+    #   数出来会变成"来自 3 个站点" —— 那是降级，不是设计，界面上说出来
+    #   等于把故障当卖点。真实抓到的几个站，items 里每条都带着 source_display，
+    #   用户自己就能看见。
+    srcs = _rk.sources_for(kind)
     return {
         "ok": True,
         "kind": kind,
         "label": label,
         "desc": desc,
         "count": len(items),
+        "sources": srcs,
         "items": items,
         # 缓存新鲜度：界面据此刻画「x 分钟前更新」，比假装实时诚实。
         "age": st.get("age"),
@@ -849,7 +857,7 @@ async def ranks_status():
 
 @app.post("/api/ranks/refresh")
 async def ranks_refresh(kind: str = "", force: bool = True):
-    """立刻刷新榜单（默认全部 6 类）。定时任务和界面「立即刷新」都打这里。
+    """立刻刷新榜单（默认全部类目）。定时任务和界面「立即刷新」都打这里。
 
     抓取是同步阻塞的，所以放线程池 —— 刷新期间别把读小说的请求卡住。
     """

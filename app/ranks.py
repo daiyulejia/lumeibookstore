@@ -5,24 +5,41 @@
 「发现」页原本只能靠书名去搜 —— 你得先知道想读什么。但很多时候人
 只是想「看看有什么好看的」。榜单正好填这个空缺：别人已经替你筛过一遍了。
 
-数据源怎么选的（2026-10-11 实测）
----------------------------------
+数据源怎么选的（2026-10-11 首次、2026-10-15 扩到多源）
+------------------------------------------------------
 来源库里当时有 9 个站点，逐个探过：
 
-  ✅ **384g.com**（新笔趣阁）—— 榜单数据最全：
-     `<table id="rankinglist">` 是干净的结构化表格，
-     字段有 书名 / 最新章节 / 作者 / 字数 / 更新时间 / 连载状态，
+  ✅ **384g.com** —— 榜单数据最全：`<table id="rankinglist">` 是干净的结构化
+     表格，字段有 书名 / 最新章节 / 作者 / 字数 / 更新时间 / 连载状态，
      而且 10 类榜单（总点击 / 月点击 / 总推荐 / 总收藏 / 总字数…）
      **排名各不相同** —— 是真榜单，不是同一张列表换个标题。
-     站点健康度 25 成功 / 0 失败。唯一要注意的是编码是 **GBK**。
+     唯一要注意的是编码是 **GBK**。
 
-  ✅ **luoxiaks.net**（落霞读书）—— 备选，作第二来源：
-     `<li class="hot-book2">` 里带书名和作者，还有 /rank/monthvisit/ 等分类。
+  ✅ **xbqg5200.com** —— `/top.html`，`li.list-group-item` 列表：
+     书名（`a[title]`，书名前带 `[玄幻]` 分类）+ 作者。54 条（6 个分类各 9 条）。
+
+  ✅ **xbiquge.info** —— `/top/`（总榜）、`/top/week_0_1.html`（周榜）…
+     每本是一个 `<dd><h3>` 块 + 若干 `<dd class="book_other">` 行，
+     带 作者 / 状态 / 更新时间 / 最新章节。**周榜 384g 上是空的，这里有人做。**
+
+  ✅ **luoxiaks.net**（落霞读书）—— `<li class="hot-book2">` 里带书名和作者。
      字段比 384g 少（没有字数、状态），但能在 384g 抽风时兜底。
 
   ❌ 29zw / tadu / qidian —— 没有稳定的榜单页，或首页是 JS 渲染（HTML 抓不到东西）
-  ❌ 月/周点击榜在 384g 上是**空表**（站点自己没数据，不是解析问题）——
-     所以下面 SUPPORTED 里只留下确实有内容的那些
+  ❌ wyshu / kunnu8 —— 主页上"榜"字只出现在书名里，没有榜单页
+  ❌ 月点击榜（monthvisit）—— 三家都没有，别硬凑
+
+⚠ **单一来源 = 只有一家站的书。** 这正是最初版本的毛病：所有标签看着
+  不一样，点开全是 384g 那一份 —— 用户翻到底也只看过一家站。所以现在
+  每类榜单可以挂**多个来源**（`_SOURCES` 表里按 kind 声明），并且必须
+  **按来源交错**（round-robin）合并，见 `_interleave()`。
+
+⚠ **为什么必须交错、不能"主源在前、辅源接在后面"**（这是真踩过的坑）：
+  旧写法是 `items.extend(384g)` 然后 `items.extend(luoxiaks)`，最后
+  `items[:MAX_ITEMS]`。而 384g 一源就出满 20 条 —— 截断之后**辅源一条都
+  看不见**，`cache/ranks.json` 里 allvisit 的 source 集合永远是 `{'384g'}`。
+  不报错、不报警，只是"多来源"这个功能**从未生效过**。交错之后
+  4 个来源在第 4 条就能全部露脸。
 
 设计取舍
 --------
@@ -30,8 +47,11 @@
   更重要的是：别把人家站点当 CDN 刷 —— 这是免费的公开资源，
   高频拉取既不礼貌也容易被封。30 分钟对「看看有什么好书」完全够。
 * **一站点失败不能拖垮整体**。每个来源独立 try，返回一部分也比全空好。
+* **只抓每个来源的第 1 页**。翻页收益低、请求多，先不做。
 * **抓不到就降级**，不留空白页 —— 见 main.py 里 /api/ranks 的 fallback。
-* **只抓首页那一页**（第 1 页）。翻页收益低、请求多，先不做。
+* **`source_display` 用域名，不用站点自称的名字。** 三个站都管自己叫
+  「新笔趣阁」—— 一律显示"新笔趣阁"的话，用户根本看不出这是**四个不同
+  的站**，"综合多来源"就白做了。域名是来源唯一诚实的标识。
 """
 from __future__ import annotations
 
@@ -58,11 +78,15 @@ _DB = Path(os.environ.get("NOVEL_RANKS") or (_ROOT / "cache" / "ranks.json"))
 # ---------------------------------------------------------------------------
 # 榜单定义
 # ---------------------------------------------------------------------------
-# 只列出**实测有内容**的。384g 的 monthvisit / weekvisit / monthvote /
-# weekvote 经实测返回的是空表（站点自己没数据），所以不放进来 ——
-# 放进来只会让用户点开看到一片空白，还以为是程序坏了。
+# 只列出**真能抓到内容**的。384g 的 monthvisit / weekvisit 实测是空表
+# （站点自己没数据），所以不放进来 —— 放进来只会让用户点开看到一片空白，
+# 还以为是程序坏了。
+#
+# ⚠ weekvisit 后来加回来了：384g 没有，但 **xbiquge.info 的周榜是有内容的**。
+#   「哪一类榜单」和「哪个站有这一类」是两件事，别混。见下面 _SOURCES。
 SUPPORTED: list[dict[str, str]] = [
-    {"kind": "allvisit",   "label": "总点击榜", "desc": "历来被点开最多的"},
+    {"kind": "allvisit",   "label": "总点击榜", "desc": "各个站点里被点开最多的"},
+    {"kind": "weekvisit",  "label": "本周热读", "desc": "这周读者点开最多的"},
     {"kind": "allvote",    "label": "总推荐榜", "desc": "读者主动推荐最多的"},
     {"kind": "goodnum",    "label": "总收藏榜", "desc": "被收藏最多的"},
     {"kind": "size",       "label": "总字数榜", "desc": "篇幅最长的（适合想追长篇的）"},
@@ -71,12 +95,17 @@ SUPPORTED: list[dict[str, str]] = [
 ]
 _KINDS = {d["kind"] for d in SUPPORTED}
 
-_384G = "https://www.384g.com/paihang/{kind}_1.html"
-_LUOXI = "https://www.luoxiaks.net/top.html"
+# ---------------------------------------------------------------------------
+# 来源表
+# ---------------------------------------------------------------------------
+# ⚠ 定义在文件**后面**（`_SOURCES`），因为它的每一项都要指向一个解析函数。
+# 那里的注释说明了"为什么按来源写、不按榜单写"。
 
-# 每类榜单取前多少条。表格本来就是约 20 行，全取也行；
-# 但 20 条已经足够「翻一翻」，多取只会让手机端页面变长。
-MAX_ITEMS = 20
+# 每类榜单最终给多少条。
+# 原先 20 —— 那是"只有一个来源"时代的数字。现在一个标签后面可能有 4 个来源，
+# 20 条会让每个来源只露 5 条、末尾来源被截掉；30 条大约每源 7~8 条，
+# 既"选择更多"又不至于把手机页面拉太长。
+MAX_ITEMS = 30
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +117,22 @@ def _clean(s: str) -> str:
     s = (s.replace("&nbsp;", " ").replace("&amp;", "&")
           .replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"'))
     return re.sub(r"\s+", " ", s).strip()
+
+
+def _norm_title(s: str) -> str:
+    """书名归一化，**只用于去重比较**，不写回数据。
+
+    ⚠ 必须和前端 `RanksPanel.vue::normTitle()` 用同一套规则。
+    那边用它判断"这本书是不是已在你书架里"，这边用它判断
+    "两个来源给的是不是同一本书"。两边不一致的后果是：
+    榜单上同一本书出现两次（一次标着 384g、一次标着 xbqg5200），
+    或者用户明明收了这本书、榜单却还写着"找这本 ›"。
+
+    去掉的是"同一本书在不同站写法不同"的那些差异：书名号、间隔号、
+    各种标点、空白，以及大小写。
+    """
+    s = re.sub(r'[《》「」【】\s·・.。、,，:：!！?？\'"“”‘’()（）\[\]\-—_~～]', "", s or "")
+    return s.lower()
 
 
 def parse_384g(html: str, kind: str) -> list[dict[str, Any]]:
@@ -187,7 +232,9 @@ def parse_384g(html: str, kind: str) -> list[dict[str, Any]]:
             "author": author,
             "url": url,
             "source": "384g",
-            "source_display": "新笔趣阁",
+            # ⚠ 显示名用**域名**而不是"新笔趣阁"。三个来源站都自称"新笔趣阁"，
+            #   一律显示中文名的话，用户看到的还是"一个网站"——多来源就白做了。
+            "source_display": "384g.com",
             "words": words,
             "updated": updated,
             "status": status,
@@ -240,6 +287,194 @@ def parse_luoxiaks(html: str, kind: str = "hot") -> list[dict[str, Any]]:
         if len(out) >= MAX_ITEMS:
             break
     return out
+
+
+def parse_xbqg5200(html: str, kind: str = "allvisit") -> list[dict[str, Any]]:
+    """解析 xbqg5200.com 的 `/top.html`。
+
+    结构（实测）:
+        <li class="list-group-item item-34e68100">
+          <span class="name">[玄幻] <a href="/2/2201/" title="玩家请上车">玩家请上车</a></span>
+          <span class="author">海晏山</span>
+        </li>
+
+    ⚠ 两处要留神：
+
+    1. **书名去 `<a>` 的 `title` 属性，不去它的文字。** 页面里
+       `[玄幻]` 这个分类前缀写在 `<span class="name">` 里、`<a>` 外面，
+       取文字是对的；但有些行的 `[分类]` 会跟着钻进 `<a>` 里
+       （站点模板不统一）。`title` 属性永远是干净书名，优先用它，
+       取不到再退回文字 + 剥前缀。
+    2. `li` 的 class 里有个随机后缀（`item-34e68100`）—— 只能**包含匹配**
+       `list-group-item`，不能全等匹配，否则站点一改哈希就整页解析不出来。
+    """
+    out: list[dict[str, Any]] = []
+    for m in re.finditer(
+        r'<li[^>]*class="[^"]*\blist-group-item\b[^"]*"[^>]*>([\s\S]*?)</li>', html
+    ):
+        block = m.group(1)
+
+        a_tag = re.search(r"<a\b[^>]*>", block)
+        if not a_tag:
+            continue
+        tag = a_tag.group(0)
+        href = (re.search(r'href="([^"]+)"', tag) or [None, ""])[1]
+        if not href:
+            continue
+
+        t_attr = re.search(r'title="([^"]{1,60})"', tag)
+        if t_attr:
+            title = _clean(t_attr.group(1))
+        else:
+            inner = re.search(r"<a\b[^>]*>([^<]{1,60})</a>", block)
+            title = _clean(inner.group(1)) if inner else ""
+            # 兜底路径：文字里可能带着 `[玄幻]` 前缀，剥掉
+            title = re.sub(r"^\[[^\]]{1,6}\]\s*", "", title)
+        if not title:
+            continue
+
+        cat_m = re.search(r"\[([^\]]{1,6})\]\s*<a\b", block)
+        author_m = re.search(r'<span[^>]*class="[^"]*\bauthor\b[^"]*"[^>]*>([^<]{0,40})</span>', block)
+
+        out.append({
+            "title": title,
+            "author": _clean(author_m.group(1)) if author_m else "",
+            "url": "https://www.xbqg5200.com" + href if href.startswith("/") else href,
+            "source": "xbqg5200",
+            "source_display": "xbqg5200.com",
+            # 分类放 category，**不要塞进 status** —— status 在前端会和
+            # 「连载中/已完结」混在一起显示，把分类塞进去会让用户以为
+            # 那是更新状态。categories 也可能被别的来源填，先留着备用。
+            "category": cat_m.group(1) if cat_m else "",
+            "words": "",
+            "updated": "",
+            "status": "",
+            "kind": kind,
+        })
+        if len(out) >= MAX_ITEMS:
+            break
+    return out
+
+
+def parse_xbiquge(html: str, kind: str = "allvisit") -> list[dict[str, Any]]:
+    r"""解析 xbiquge.info 的榜单页（`/top/` 总榜、`/top/week_0_1.html` 周榜…）。
+
+    结构（实测）:
+        <dd><h3><a href="/11/11913/">[其他]夫人每天都在线打脸</a></h3></dd>
+        <dd class="book_other">作者：<span><a href="/search.php?q=…">南之情</a></span></dd>
+        <dd class="book_other">状态：完本</dd>
+        <dd class="book_other">更新时间：09-08 15:50:59</dd>
+        <dd class="book_other">最新章节：<a href="…">第1105章 …</a></dd>
+
+    做法是**按 `<dd><h3>` 切块**：一块 = 一本书。块内的字段用中文标签定位。
+
+    ⚠ 为什么不用 `re.findall(r'<dd>([\s\S]*?)</dd>')` 逐 `<dd>` 取：
+    一本书占 5 个 `<dd>`，逐条取会得到"只有书名的一行"和"只有作者的一行"，
+    还得再按顺序拼回去 —— 那个拼法在"某本书缺了状态行"时会整体错位。
+    按书名块切天然不会有这个问题（字段缺失就只是缺失）。
+
+    ⚠ 书名前的 `[分类]` 前缀写在 `<h3>` 文字里（**在 `<a>` 里面**，
+    和 xbqg5200 不一样），所以必须主动剥掉；分类本身保留在 category。
+    """
+    out: list[dict[str, Any]] = []
+    # 第一段是页头（`<dd><h3>` 之前的所有内容），丢掉
+    for chunk in re.split(r"<dd\s*>\s*<h3\s*>", html)[1:]:
+        link = re.search(r'<a\b[^>]*href="([^"]+)"[^>]*>([^<]{1,80})</a>', chunk)
+        if not link:
+            continue
+        href, raw = link.group(1), _clean(link.group(2))
+
+        cat_m = re.match(r"^\[([^\]]{1,6})\]\s*(.*)$", raw)
+        if cat_m:
+            cat, title = cat_m.group(1), cat_m.group(2).strip()
+        else:
+            cat, title = "", raw
+        if not title:
+            continue
+
+        # 作者：`作者：<span><a …>名字</a></span>`；有的页直接把名字写在冒号后
+        author = ""
+        a_m = re.search(r"作者[：:]\s*(?:<[^>]+>\s*)*<a\b[^>]*>([^<]{1,40})</a>", chunk)
+        if a_m:
+            author = _clean(a_m.group(1))
+        else:
+            a_m = re.search(r"作者[：:]\s*([^<]{1,40})", chunk)
+            if a_m:
+                author = _clean(a_m.group(1))
+
+        st = re.search(r"状态[：:]\s*([^<]{1,10})", chunk)
+        up = re.search(r"更新时间[：:]\s*([^<]{1,20})", chunk)
+
+        out.append({
+            "title": title,
+            "author": author,
+            "url": "https://www.xbiquge.info" + href if href.startswith("/") else href,
+            "source": "xbiquge",
+            "source_display": "xbiquge.info",
+            "category": cat,
+            "words": "",
+            "updated": _clean(up.group(1)) if up else "",
+            "status": _clean(st.group(1)) if st else "",
+            "kind": kind,
+        })
+        if len(out) >= MAX_ITEMS:
+            break
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 来源表（定义在这里，因为每一项要指向上面这些解析函数）
+# ---------------------------------------------------------------------------
+# 每一项 = 一个**榜单页**。同一个站点有几种榜就写几项 —— 比如 xbiquge.info
+# 的总榜和周榜是两个不同 URL，就是两条（`key` 也不能重）。
+#
+# 为什么按「来源 → 它能供哪几类榜单」写，而不是「榜单 → 它有哪些来源」：
+#   前者的约束是"这个页面上到底排的是什么"，站点写什么就是什么；
+#   后者写着写着就会变成"我这类榜单缺数据，把它的总榜塞进去吧" —— 那是**编数据**。
+#
+# `url` 里的 `{kind}` 只有 384g 用得上（它是 `/paihang/{kind}_1.html`）。
+_SOURCES: list[dict[str, Any]] = [
+    {
+        "key": "384g", "display": "384g.com",
+        "url": "https://www.384g.com/paihang/{kind}_1.html",
+        "parser": parse_384g,
+        "kinds": {"allvisit", "allvote", "goodnum", "size", "postdate", "lastupdate"},
+    },
+    {
+        "key": "luoxiaks", "display": "落霞读书",
+        "url": "https://www.luoxiaks.net/top.html",
+        "parser": parse_luoxiaks,
+        "kinds": {"allvisit"},
+    },
+    {
+        "key": "xbqg5200", "display": "xbqg5200.com",
+        "url": "https://www.xbqg5200.com/top.html",
+        "parser": parse_xbqg5200,
+        "kinds": {"allvisit"},
+    },
+    {
+        "key": "xbiquge", "display": "xbiquge.info",
+        "url": "https://www.xbiquge.info/top/",
+        "parser": parse_xbiquge,
+        "kinds": {"allvisit"},
+    },
+    {
+        "key": "xbiquge-week", "display": "xbiquge.info",
+        "url": "https://www.xbiquge.info/top/week_0_1.html",
+        "parser": parse_xbiquge,
+        "kinds": {"weekvisit"},
+    },
+]
+
+
+def sources_for(kind: str) -> list[str]:
+    """某一类榜单会去哪些站点抓（返回**展示名**，给界面用）。
+
+    界面上「综合 N 个站点」这句话就是靠它算的 —— 而且必须是**声明**
+    而不是"从结果里数"：结果里数出来的话，某站今天抽风没抓到，
+    界面就会说"来自 3 个站点"，但那其实是**降级**，不是设计。
+    """
+    return [s["display"] for s in _SOURCES if kind in s["kinds"]]
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +537,17 @@ def cache_status() -> dict[str, Any]:
     for d in SUPPORTED:
         k = d["kind"]
         hit = _CACHE.get(k)
+        # `sources` 是**声明**（该去哪几个站），`got` 是**实际抓到的来源数**
+        # （从 items 里去重数出来的）。两个都留着 —— 数量对不上就说明
+        # 有站点在抽风，而这个差别在界面上表现为"榜单条目变少了"，
+        # 不主动记下来根本发现不了。
+        srcs = sources_for(k)
+        got: list[str] = []
+        if hit:
+            for it in hit[1]:
+                s = it.get("source_display") or it.get("source") or ""
+                if s and s not in got:
+                    got.append(s)
         if hit:
             age = now - hit[0]
             out["kinds"][k] = {
@@ -309,9 +555,12 @@ def cache_status() -> dict[str, Any]:
                 "age": int(age),
                 "fresh": age < _TTL,
                 "updated_at": int(hit[0]),
+                "sources": srcs,
+                "got": got,
             }
         else:
-            out["kinds"][k] = {"count": 0, "age": None, "fresh": False, "updated_at": None}
+            out["kinds"][k] = {"count": 0, "age": None, "fresh": False,
+                               "updated_at": None, "sources": srcs, "got": []}
     ages = [v["age"] for v in out["kinds"].values() if v["age"] is not None]
     out["stale_count"] = sum(1 for v in out["kinds"].values() if not v["fresh"])
     out["oldest_age"] = max(ages) if ages else None
@@ -319,34 +568,93 @@ def cache_status() -> dict[str, Any]:
     return out
 
 
-def _fetch_one(kind: str) -> list[dict[str, Any]]:
-    """抓某一类榜单。两个来源都试，合并去重。
+def _fetch_source(src: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    """抓单个来源。**吞掉异常**并打印 —— 返回 [] 而不是往上抛。
 
-    单源失败不抛 —— 返回另一边的结果，或者空列表。
+    为什么吞：一个站抽风不该让整类榜单变空。调用方拿到的是"其他来源的并集"，
+    少一家总比一条都没有强。
     """
-    items: list[dict[str, Any]] = []
-
-    # 1) 主源 384g
     try:
-        html = fetch_text(_384G.format(kind=kind))
-        items.extend(parse_384g(html, kind))
+        html = fetch_text(src["url"].format(kind=kind))
     except Exception as e:  # noqa: BLE001
-        print(f"  [ranks] 384g {kind} 抓取失败：{e}", flush=True)
+        print(f"  [ranks] {src['key']} {kind} 抓取失败：{e}", flush=True)
+        return []
+    try:
+        items = src["parser"](html, kind)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [ranks] {src['key']} {kind} 解析失败：{e}", flush=True)
+        return []
+    if not items:
+        print(f"  [ranks] {src['key']} {kind} 解析出 0 条（站点改版？）", flush=True)
+    return items
 
-    # 2) 备选源 luoxiaks（只有一个总榜页，所以只在「总点击」时补）
-    if kind == "allvisit":
-        try:
-            html = fetch_text(_LUOXI)
-            extra = parse_luoxiaks(html, kind)
-            seen = {i["title"] for i in items}
-            for it in extra:
-                if it["title"] not in seen:
-                    items.append(it)
-                    seen.add(it["title"])
-        except Exception as e:  # noqa: BLE001
-            print(f"  [ranks] luoxiaks 抓取失败：{e}", flush=True)
 
-    return items[:MAX_ITEMS]
+def _interleave(buckets: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    """把多个来源的结果**按来源轮流取一条**，合并去重后截断。
+
+    ⚠ 这里是整个多来源功能的命门，改成"按来源顺序一段一段拼"就退化回
+    单一来源了（`items[:20]` 会把后面的来源全切掉，且**不报任何错**）。
+    所以 tools/test_ranks.py 和 tools/mutate.py 都盯着"交错"这个性质。
+
+    顺序：A1 B1 C1 D1 A2 B2 C2 D2 …（A/B/C/D 是来源）
+    去重：按 `_norm_title(title)`（书名归一化，见上），保留**先出现**的那条
+      —— 先出现 = 排名更靠前的那个来源，它的 author/字数等字段也更全。
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    if not buckets:
+        return out
+
+    depth = max(len(b) for b in buckets)
+    for i in range(depth):
+        for b in buckets:
+            if i >= len(b):
+                continue
+            it = b[i]
+            title = it.get("title") or ""
+            key = _norm_title(title)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(it)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _fetch_one(kind: str) -> list[dict[str, Any]]:
+    """抓某一类榜单：把 `_SOURCES` 里声明支持它的来源**并行**跑一遍，
+    交错合并去重，截到 MAX_ITEMS。
+
+    * 并行：不同域名，`utils.fetch_text` 的同域限速互不影响，所以并行是安全的；
+      串行的话 4 个源排在一条线上，最慢的那个决定总耗时（实测能到十几秒）。
+    * 单源失败不抛 —— 见 `_fetch_source`。
+    * 未知 kind / 没有来源支持 → 空列表（不是异常）。
+    """
+    srcs = [s for s in _SOURCES if kind in s["kinds"]]
+    if not srcs:
+        return []
+
+    buckets: list[list[dict[str, Any]]] = []
+    if len(srcs) == 1:
+        # 一个来源就别起线程池了，纯属开销
+        buckets.append(_fetch_source(srcs[0], kind))
+    else:
+        # 按**声明顺序**收结果（as_completed 的完成顺序不可预测，
+        # 用它会导致"谁是第一个来源"在两次刷新之间跳来跳去，
+        # 交错出来的次序也跟着乱 —— 排行榜最忌讳名次随机变）。
+        with ThreadPoolExecutor(max_workers=min(4, len(srcs))) as ex:
+            futs = {ex.submit(_fetch_source, s, kind): idx for idx, s in enumerate(srcs)}
+            got: dict[int, list[dict[str, Any]]] = {}
+            for f in as_completed(futs):
+                try:
+                    got[futs[f]] = f.result()
+                except Exception as e:  # noqa: BLE001
+                    print(f"  [ranks] 来源 {futs[f]} {kind} 异常：{e}", flush=True)
+                    got[futs[f]] = []
+            buckets = [got.get(i, []) for i in range(len(srcs))]
+
+    return _interleave(buckets, MAX_ITEMS)
 
 
 def get_rank(kind: str) -> list[dict[str, Any]]:

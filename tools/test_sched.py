@@ -155,18 +155,22 @@ def main() -> int:
     check("调度线程起来了", ok is True)
     check("状态显示 running", sched.status()["running"] is True)
 
+    # ⚠ 这里的"一轮"必须**从 SUPPORTED 推**，不能写死 6。
+    #   加一类榜单（2026-10-12 加了 weekvisit）时写死的 6 不会报红 ——
+    #   它只是从"一轮 = 全部"悄悄变成"一轮 ≥ 6"，判据就废了。
+    N = len(ranks.SUPPORTED)
     deadline = time.time() + 6
-    while time.time() < deadline and len(ticks) < 12:   # 6 类 × 2 轮
+    while time.time() < deadline and len(ticks) < N * 2:
         time.sleep(0.1)
-    check(f"自动跑过至少一轮（抓了 {len(ticks)} 次）", len(ticks) >= 6)
-    check("一轮 = 全部 6 类", len(ticks) >= 6)
+    check(f"自动跑过至少一轮（抓了 {len(ticks)} 次）", len(ticks) >= N)
+    check(f"一轮 = 全部 {N} 类", len(ticks) >= N)
 
     before = len(ticks)
     sched.wake()                       # 手动叫醒，应立刻再来一轮
     deadline = time.time() + 4
-    while time.time() < deadline and len(ticks) < before + 6:
+    while time.time() < deadline and len(ticks) < before + N:
         time.sleep(0.1)
-    check(f"wake() 能催出下一轮（{before} → {len(ticks)}）", len(ticks) >= before + 6)
+    check(f"wake() 能催出下一轮（{before} → {len(ticks)}）", len(ticks) >= before + N)
 
     st = sched.status()
     check("status 里有 runs 计数", st["runs"] >= 2)
