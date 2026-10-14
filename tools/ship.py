@@ -123,6 +123,10 @@ STATIC_SUITES = [
     # 谁下次随手写回 `--remote-debugging-port=9344`，这条就拦住他。
     # 见 tools/test_browser_launch.py 的注释。
     ("test_browser_launch.py", "Chrome 启动器纪律"),
+    # ⚠ 2026-10-14 真事故：Chrome 升到 155 后启动器会 detach（exit=0），
+    #   而 launch_chrome 把"启动器退出"当成致命错误 → 18 套真机一起红，
+    #   看着像产品崩了。这个套件用假进程 + 本地假 DevTools 把判据钉死。
+    ("test_chrome_launcher.py", "Chrome 启动判据（detach）"),
     # 搜索历史：同一本书搜两次不能新增条目（否则热词榜全是重复）、
     # 空白必须折叠归一、**搜不到的词要标出来**（那是书库缺口的证据）。
     # 它"绝不能影响搜索本身"，所以出问题会**静默降级**，
@@ -163,6 +167,25 @@ STATIC_SUITES = [
     # 测试内建反证：同步版必须真的会等，否则判据无牙。
     # 见 tools/test_discover_async.py 与 app/discovery._learn_later() 的注释。
     ("test_discover_async.py", "联网发现不被学站阻塞"),
+    # 「目录/正文读不全」是一整类**静默**故障：不报错、界面还显示得很正常。
+    # 线上实测 www.zxs8.net（17mb/black/bqg 模板家族）一本书叠了六个坑：
+    #   JS 造章节链接（`onclick` 无 href）、完整目录还分页、正文用 base64
+    #   `document.writeln` 写出来、生僻字顶替常用字（的→葶）、适配向导
+    #   要求填首页而用户粘的是书页、`rstrip("/")` 把 200 变 404。
+    # 全打在这批真机抓下来的 fixture 上，且每条都配**反证**（把机制破掉必须报红）
+    # —— 这类判据最容易写成恒真的假测试（本项目已抓到 7 条）。
+    # 见 tools/test_toc_full.py 的注释。
+    ("test_toc_full.py", "目录/正文完整性"),
+    # sites.json 是**站点配置**（不是缓存）：它坏了 = 内置来源 + 用户自己加过的
+    # 站一起消失。原实现有两条路会毁掉它：直接 write_text（先清空再写，
+    # 中途被杀留半截）、读失败时照样写（把整份配置改写成一条）。
+    # 见 tools/test_adapt_save.py。
+    ("test_adapt_save.py", "站点配置落盘安全"),
+    # ⚠ 反证（突变）**必须排在最后**：它会临时替换源码再还原。
+    #   放中间的话，后面那些套件可能读到被破坏的产物 → 假红。
+    #   它自己会先确认"改动前的基线是绿的"，再把每条断言逐个打破；
+    #   存活 = 断言没牙，脱节 = 测试与代码已经对不上。见 tools/mutate.py。
+    ("mutate.py", "反证（突变）"),
 ]
 
 # 真机检查（需要本地服务 + Chrome）

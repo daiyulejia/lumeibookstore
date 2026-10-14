@@ -18279,6 +18279,9 @@ ${style}
           if (s.available === false) return { cls: "bad", text: `✕ ${s.note || "打不开"}` };
           return { cls: "mute", text: "未验证" };
         }
+        function tocNote(s) {
+          return s && s.chapter_note ? { cls: "warn", text: `⚠ ${s.chapter_note}` } : null;
+        }
         function tagsOf(b) {
           const out = [];
           const sampledBad = (b.sources || []).some((s) => s.sample_ok === false);
@@ -18447,7 +18450,7 @@ ${style}
                   key: i,
                   class: "skl"
                 }, [..._cache[8] || (_cache[8] = [
-                  createStaticVNode('<div class="b cv" data-v-b2643a52></div><div class="col" data-v-b2643a52><div class="b ln" style="width:52%;" data-v-b2643a52></div><div class="b ln" style="width:32%;height:10px;" data-v-b2643a52></div><div class="b ln" style="width:92%;height:10px;" data-v-b2643a52></div><div class="b ln" style="width:70%;height:10px;" data-v-b2643a52></div></div>', 2)
+                  createStaticVNode('<div class="b cv" data-v-b72df0d9></div><div class="col" data-v-b72df0d9><div class="b ln" style="width:52%;" data-v-b72df0d9></div><div class="b ln" style="width:32%;height:10px;" data-v-b72df0d9></div><div class="b ln" style="width:92%;height:10px;" data-v-b72df0d9></div><div class="b ln" style="width:70%;height:10px;" data-v-b72df0d9></div></div>', 2)
                 ])]);
               }), 64)) : list.value.length ? (openBlock(), createElementBlock(Fragment, { key: 1 }, [
                 byAuthor.value ? (openBlock(), createElementBlock("div", _hoisted_13$1, [
@@ -18541,10 +18544,14 @@ ${style}
                           createBaseVNode("span", {
                             class: normalizeClass(["pill", srcPill(s).cls])
                           }, toDisplayString(srcPill(s).text), 3),
+                          tocNote(s) ? (openBlock(), createElementBlock("span", {
+                            key: 0,
+                            class: normalizeClass(["pill", tocNote(s).cls])
+                          }, toDisplayString(tocNote(s).text), 3)) : createCommentVNode("", true),
                           _cache[13] || (_cache[13] = createBaseVNode("span", { class: "grow" }, null, -1)),
                           createBaseVNode("span", _hoisted_27, toDisplayString(s.probe_ms ? s.probe_ms + "ms" : ""), 1),
                           s.readable || s.available ? (openBlock(), createElementBlock("button", {
-                            key: 0,
+                            key: 1,
                             class: "mini pri",
                             "data-act": "read",
                             "data-u": uOf(s),
@@ -18582,7 +18589,7 @@ ${style}
         };
       }
     };
-    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-b2643a52"]]);
+    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-b72df0d9"]]);
     const _hoisted_1$2 = { class: "rd-top" };
     const _hoisted_2$2 = { class: "ttl" };
     const _hoisted_3$2 = { id: "rdTitle" };

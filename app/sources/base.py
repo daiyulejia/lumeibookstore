@@ -333,14 +333,22 @@ def strip_page_mark(text: str) -> str:
 
 
 def page_url(url: str, n: int) -> Optional[str]:
-    """按常见模板推出第 n 页的地址：xxx.html → xxx_2.html。
+    """按常见模板推出第 n 页的地址：xxx.html / xxx_1.html → xxx_2.html。
+
+    ⚠ 必须把**已有的** `_N` 一起吃掉再叠（2026-10-14 踩到）：旧写法
+      `^(.*?)(\\.html?)$` 从续页 `817762_1.html` 出发会生成
+      `817762_1_2.html`，而真实续页是 `817762_2.html` —— **永远对不上**。
+      更坏的是它不报错：读到的就是"一章只有前一页"的残缺正文。
+      这一点和 `webfetch._page_variant` 是同一条纪律（那边有反证钉住）。
+      这里**不能**直接调 webfetch 的实现：`base.py` 是被 webfetch 依赖的
+      底层，反向依赖会把模块拖成环。
 
     只处理最普遍的那种；推不出来就返回 None，宁可不拼也不要拼错。
     """
-    m = re.match(r"^(.*?)(\.html?)$", url or "", re.I)
+    m = re.match(r"^([\s\S]*?)(?:_(\d+))?(\.[a-z]+)$", url or "", re.I)
     if not m:
         return None
-    return f"{m.group(1)}_{n}{m.group(2)}"
+    return f"{m.group(1)}_{n}{m.group(3)}"
 
 
 def _norm_line(s: str) -> str:
@@ -419,6 +427,18 @@ _BANNER_START_RE = re.compile(
     re.I,
 )
 
+# 「整句式」站点提示 —— 站点把一句完整的话直接插进正文里。
+# 实测 zxs8 每章结尾都挂着：
+#   请勿开启浏览器阅读模式，否则将导致章节内容缺失及无法阅读下一章。
+# 它比上面两类 banner 长得多（30 多字，所以 `_BANNER_START_RE` 的 18 字上限
+# 和"必须在行首"两条都挡不住），但特征词唯一，伤不到正文。
+# 上限 60 字：正常叙述段落远长于此，而这类提示句在任何站都不会超 60。
+_SENTENCE_BANNER_RE = re.compile(
+    r"浏览器阅读模式|开启阅读模式|使用阅读模式|"
+    r"阅读模式[^，。；]{0,8}(缺失|无法阅读|乱码)",
+    re.I,
+)
+
 # 纯符号垃圾行：形如 `：。：`、`。。。`。真实段落不会由标点单独构成。
 # 保留含 * ※ × 的行 —— 那是作者用的分节符，读者需要它。
 _SYMBOL_ONLY_RE = re.compile(
@@ -427,6 +447,8 @@ _SYMBOL_ONLY_RE = re.compile(
 
 
 def _is_boiler(s: str) -> bool:
+    if len(s) <= 60 and _SENTENCE_BANNER_RE.search(s):
+        return True
     if len(s) <= 32 and _BOILER_RE.search(s):
         return True
     if len(s) <= 18 and _BANNER_START_RE.search(s):
@@ -475,13 +497,53 @@ _OBFUSC_RE = re.compile(r"([\u4e00-\u9fff])[『「]([^『』「」\s，。！？
 _OBFUSC_LOOSE_RE = re.compile(r"[『「]([^『』「」\s，。！？；：、,\.!?;:]{1,3})[』」]")
 
 
-def deobfuscate(text: str) -> str:
-    """还原站方的『』反爬混淆：`回『荡』` → `回荡`。
+# ---------------------------------------------------------------------------
+# 「生僻字顶替常用字」反爬
+# ---------------------------------------------------------------------------
+# 实测 `www.zxs8.net`（「17mb / black / bqg」模板家族，大量笔趣阁克隆都在跑）：
+# **整本书的正文里，「的」被换成了生僻字「葶」**：
+#     真实正文「密闭的肮脏塑料袋」→ 站点输出「密闭葶肮脏塑料袋」
+#     真实正文「白猫的根据地」    → 站点输出「白猫葶根据地」
+# 和 『』 是同一类反爬（让按词匹配的爬虫失效），但隐蔽得多 ——
+# 人读起来只是"个别字怪怪的"，很容易被当成噪声放过。
+#
+# 映射是**实测**出来的，不是猜的：
+#   · 同一章里 `的` = 14 次（全在导航/UI 文字里）、`葶` = 43 次（全在正文里），
+#     把 43 处 葶 逐一代入 的，**每一句都通顺**
+#   · 四个不同章节（跨全书）用的都是同一个字，说明是**服务端在正文渲染时
+#     统一替换**，不是每次请求随机
+#   · 最强旁证：同一页的 `<meta description>` 里是**正常的「的」** ——
+#     只有书籍正文那条渲染链路被替换过
+# 门槛用「本段出现 ≥3 次」：生僻字偶然出现一两次是可能的
+# （「葶苈」是药材名，个别书里真会写到），出现几十次就只可能是替换。
+_subst_chars = {"葶": "的"}
+_subst_min = 3
 
-    只做「去括号留字」，绝不删字。判据收紧到「括号内 ≤4 字且不含标点」，
-    避免误伤真正当引号用的『』。
+
+def fix_subst(text: str) -> str:
+    """把「生僻字顶替常用字」还原回来（见上面实测说明）。"""
+    s = text or ""
+    for bad, good in _subst_chars.items():
+        if s.count(bad) >= _subst_min:
+            s = s.replace(bad, good)
+    return s
+
+
+def deobfuscate(text: str) -> str:
+    """还原站方的反爬混淆。
+
+    两类：
+      · **生僻字顶替常用字** —— 实测 `的` → `葶`（见 `fix_subst`）
+      · **『』包裹单词** —— `回『荡』` → `回荡`
+    只做「去括号留字 / 换回本字」，绝不删字。
+    ⚠ 入参是 None / 空串时**原样返回**，不做 `or ""` 归一 ——
+      调用方拿它当"没有正文"的哨兵值比较（`is None`），归一成 `""`
+      就把哨兵弄丢了。这里踩过一次，别改回去。
     """
-    if not text or ("『" not in text and "「" not in text):
+    if not text:
+        return text
+    text = fix_subst(text)
+    if "『" not in text and "「" not in text:
         return text
 
     # 第一遍：汉字 + 『x』 (+汉字) → 直接拼接

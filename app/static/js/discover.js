@@ -445,6 +445,16 @@ function srcPill(s) {
   return `<span class="pill mute">未验证</span>`;
 }
 
+// 「目录可能不全」的提示 —— 后端 `webfetch.toc_completeness` 算出来的。
+// 为什么必须显示（2026-10-14）：实测 zxs8 的详情页只挂 12 条「最新章节」，
+// 而《我们猫猫不能听这些》全书 119 章。界面上「✓ 可读 · 12 章」和
+// 「这本书就是 12 章」长得**一模一样**，用户下完才发现是零头 ——
+// 这是最坏的一种失败：**他以为拿到了**。
+function tocNote(s) {
+  if (!s.chapter_note) return "";
+  return `<span class="pill warn">⚠ ${esc(s.chapter_note)}</span>`;
+}
+
 export function visibleBooks() {
   return M.onlyOk ? M.books.filter(b => (b.sources || []).some(s => s.readable || s.available)) : M.books;
 }
@@ -557,7 +567,7 @@ function bookHTML(b, i) {
   const rows = b.sources.map(s => `
     <div class="srow">
       <span class="nm">${esc(s.source_display || s.source)}</span>
-      ${srcPill(s)}
+      ${srcPill(s)}${tocNote(s)}
       <span class="grow"></span>
       <span class="n">${s.probe_ms ? s.probe_ms + "ms" : ""}</span>
       ${s.readable || s.available

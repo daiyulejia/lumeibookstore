@@ -148,6 +148,7 @@
             <div v-for="(s, si) in b.sources" :key="si" class="srow">
               <span class="nm">{{ s.source_display || s.source }}</span>
               <span class="pill" :class="srcPill(s).cls">{{ srcPill(s).text }}</span>
+              <span v-if="tocNote(s)" class="pill" :class="tocNote(s).cls">{{ tocNote(s).text }}</span>
               <span class="grow"></span>
               <span class="n">{{ s.probe_ms ? s.probe_ms + "ms" : "" }}</span>
               <button
@@ -280,6 +281,13 @@ function srcPill(s) {
   if (s.available) return { cls: "mute", text: `目录 ${s.chapter_count} 章 · 正文未验证` };
   if (s.available === false) return { cls: "bad", text: `✕ ${s.note || "打不开"}` };
   return { cls: "mute", text: "未验证" };
+}
+
+/* 「目录可能不全」—— 后端 `webfetch.toc_completeness` 算出来的。
+   必须显示：界面上的「12 章」和「这本书就是 12 章」长得一模一样，
+   用户下完才发现是零头 —— 最坏的一种失败是「他以为拿到了」。 */
+function tocNote(s) {
+  return s && s.chapter_note ? { cls: "warn", text: `⚠ ${s.chapter_note}` } : null;
 }
 
 /* 书籍级标签：与旧 bookHTML() 一致。 */

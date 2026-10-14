@@ -186,6 +186,10 @@ def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
     r.available = True
     r.chapter_count = len(toc)
     r.note = f"来自 {site_name or real_host}"
+    # 目录可能只是「最新章节」片段（站点把完整目录放在另一个页面）。
+    # 必须**如实带出去** —— 界面把「12 章」当全书，用户下完才发现只有零头。
+    if data.get("chapter_note"):
+        r.chapter_note = str(data["chapter_note"])
 
     registry.note_site(real_host, ok=True, **({"name": site_name} if site_name else {}))
     registry.note_book(real_url, title=r.title, author=r.author, host=real_host,

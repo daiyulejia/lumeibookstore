@@ -40,6 +40,8 @@ Cloudflare 拦得死死的，但它的详情页 / 目录 / 正文全是敞开的
 """
 from __future__ import annotations
 
+import base64
+import logging
 import re
 from typing import Callable, Optional
 from urllib.parse import urljoin, urlparse
@@ -47,9 +49,17 @@ from urllib.parse import urljoin, urlparse
 from . import registry
 from .utils import fetch_text, host_of
 
+logger = logging.getLogger("novel.webfetch")
+
 # 常见正文容器命名（命中了就不用走启发式，快很多也准很多）
-_CONTENT_HINTS = ("htmlcontent", "chaptercontent", "readcontent", "content",
-                  "booktext", "textcontent", "showtxt", "article", "txt")
+# ⚠ 顺序即优先级。「最内层」的规律让靠前的名字能压住外层包装。
+#
+# `word_read` 是实测加的（2026-10-14，`www.zxs8.net`）：「17mb / black / bqg」
+# 那套模板（大量笔趣阁克隆都在跑）正文容器就叫这个。不加的后果很具体 ——
+# 它的外层 `<div class="container">` 字更多，密度打分会把整页导航一起选中，
+# 每章正文开头都挂着面包屑和「上一章 章节目录 保存书签 下一章」。
+_CONTENT_HINTS = ("htmlcontent", "chaptercontent", "readcontent", "word_read",
+                  "content", "booktext", "textcontent", "showtxt", "article", "txt")
 
 # ---------------------------------------------------------------------------
 # 视频站否决
@@ -79,6 +89,235 @@ _EPISODE_TEXT_RE = re.compile(r"第\s*[0-9零一二三四五六七八九十百]{
 _VIDEO_NAME_RE = re.compile(r"影视|电影|影院|剧场|视频|TV|电视|播放|追剧|综艺|动漫", re.I)
 
 _A_RE = re.compile(r"""<a\s[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]{0,80}?)</a>""", re.I)
+
+# ---------------------------------------------------------------------------
+# 「章节链接是 JS 造的」这一类站
+# ---------------------------------------------------------------------------
+# 实测 `www.zxs8.net`（以及它用的那套「17mb / black / bqg」模板 —— 网上有
+# 大量笔趣阁克隆都在跑同一份代码）：
+#
+#     <ul class="section-list fix ycxsid">
+#       <li><a onclick="idm(816445);">第1章 喵</a></li>      ← 没有 href！
+#       <li><a onclick="idm(816458);">第2章 喵喵</a></li>
+#       ...
+#
+# 而页面底部自己把「章节地址长什么样」写在了一行内联脚本里：
+#
+#     var read_aid='3316'; var read_bid='3';
+#     var read_rewrite='/{bid}_{aid}/{cid}.html';
+#     function idm(id){ … read_rewrite.replace(/{cid}/,id) … window.open(…); }
+#
+# 于是整本书 119 章，我们只能读到 `<a href>` 的那 12 条（详情页的「最新章节」），
+# 界面上显示「12 章」，用户下完才发现只有零头。
+#
+# **不猜**：模板是页面自己声明的，我们只做「填值 + 交叉验证」——
+# 把模板里能由同名变量填上的槽位填掉，剩下**恰好一个**槽位就认为是章节号；
+# 填出来的地址，其形状必须和页面上**真实存在的 href** 一致才采纳。
+_A_TAG_RE = re.compile(r"""<a\s((?:[^>"']|"[^"]*"|'[^']*')*)>([\s\S]{0,120}?)</a>""", re.I)
+_ONCLICK_CALL_RE = re.compile(
+    r"""onclick\s*=\s*["'][^"']*?\([^()]*?(\d+)[^()]*?\)""", re.I)
+_SCRIPT_RE = re.compile(r"<script\b(?![^>]*\bsrc\s*=)[^>]*>([\s\S]*?)</script>", re.I)
+_JS_VAR_RE = re.compile(
+    r"""(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=\s*["']([^"'\r\n]*)["']""")
+_JS_SLOT_RE = re.compile(r"\{([A-Za-z_$][\w$]*)\}")
+#: 模板里那个「由链接自己决定」的槽位，替换成一个不会出现在 URL 里的哨兵。
+_SLOT_SENTINEL = "\x00"
+
+# ---------------------------------------------------------------------------
+# 正文是 base64 写出来的那一类站
+# ---------------------------------------------------------------------------
+# 实测 `www.zxs8.net`（「17mb / black / bqg」那套模板 —— 大量笔趣阁克隆
+# 都在跑同一份代码）的章节页：
+#
+#     <div class="word_read">
+#       <script>document.writeln(kyvsbt.vz('PHA+54yr5ZKq55So5ZOB5bqX44CCPC9wPg=='));</script>
+#       <script>document.writeln(kyvsbt.vz('PHA+5L2c5Li65a+55a6i5Lq66LSt5Lmw5aSn6YeP…'));</script>
+#       …
+#
+# 也就是说**整页 HTML 里一个正文字符都没有** —— 正文是每一段单独 base64
+# 之后由 JS 写进 DOM 的。任何「按文本密度找正文容器」的启发式都会失败，
+# 我们只能抓到页脚那点「热门小说推荐」，然后判成「抓不到正文」。
+#
+# 这不是加密也不是反爬（base64 谁都会解），只是这种模板的默认写法 ——
+# **该适配的是我们**。不解的话，整个模板家族的站都只能"看得到目录、读不到字"。
+_WRITELN_RE = re.compile(
+    r"""document\s*\.\s*write(?:ln)?\s*\(\s*"""
+    r"""[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*\(\s*"""
+    r"""["']([A-Za-z0-9+/=\s]{16,})["']\s*\)+\s*;?""",
+    re.I)
+_SCRIPT_BLOCK_RE = re.compile(r"<script\b[^>]*>([\s\S]*?)</script\s*>", re.I)
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+#: `xxx.html` → `xxx_2.html` 用的（阅读页续页地址）
+# 阅读页页码后缀。⚠ 必须把**已有的** `_N` 一起吃掉（2026-10-14 踩到）：
+#   旧写法 `^(.*?)(\.html?)$` 从第 2 页 `817762_1.html` 出发会生成
+#   `817762_1_2.html`，而页面上声明的真实续页是 `817762_2.html` —— 永远对不上。
+_PAGE_SUFFIX_RE = re.compile(r"^(.*?)(?:_(\d+))?(\.[a-z]+)$", re.I)
+
+
+def _b64_text(s: str) -> Optional[str]:
+    """base64 → 文本。解出来不像正文（没有汉字也没有标签）就返回 None。"""
+    t = re.sub(r"[^A-Za-z0-9+/=]", "", s or "")
+    if len(t) < 16:
+        return None
+    t += "=" * (-len(t) % 4)
+    try:
+        raw = base64.b64decode(t)
+    except Exception:  # noqa: BLE001
+        return None
+    for enc in ("utf-8", "gbk"):
+        try:
+            txt = raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        if txt and ("<" in txt or _HAN_RE.search(txt)):
+            return txt
+    return None
+
+
+def _decode_writeln_script(body: str) -> Optional[str]:
+    """`<script>` 里除了 `document.write(...)` 什么都没写时，返回它写出来的 HTML。
+
+    有别的语句就返回 None（那是一个正常脚本，不能碰）。
+    """
+    pos, out = 0, []
+    for m in _WRITELN_RE.finditer(body or ""):
+        if body[pos:m.start()].strip():
+            return None
+        txt = _b64_text(m.group(1))
+        if txt is None:
+            return None
+        out.append(txt)
+        pos = m.end()
+    if (body or "")[pos:].strip():
+        return None
+    return "".join(out) if out else None
+
+
+def unwrap_writeln(html: str) -> str:
+    """把 `document.write(解码器('BASE64'))` 还原成它真正会写出来的 HTML。
+
+    只替换**解得开、且解出来像文本**的那些；解不开就原样留着 ——
+    宁可少还原，也不能把页面改坏（后面的正则会拿这份 HTML 继续干活）。
+
+    ⚠ 必须**连 `<script>` 标签一起去掉**。第一版只换了调用本身，于是变成
+      `<script><p>猫咪用品店。</p></script>` —— 而 `_prep()` 会把
+      `<script>` 整段删掉（那是它对"脚本"的一贯处理），正文又被扔了。
+      实测表现：正文只捞出 282 字导航文字，页面里明明有 2212 个汉字。
+    """
+    s = html or ""
+    if "document.write" not in s:
+        return s
+    hits = 0
+
+    def _whole_script(m: re.Match) -> str:
+        nonlocal hits
+        txt = _decode_writeln_script(m.group(1))
+        if txt is None:
+            return m.group(0)
+        hits += 1
+        return txt
+
+    out = _SCRIPT_BLOCK_RE.sub(_whole_script, s)
+
+    # 脚本块里混着别的语句（没被上面整块换掉）时的兜底：只换那个调用。
+    def _call(m: re.Match) -> str:
+        nonlocal hits
+        txt = _b64_text(m.group(1))
+        if txt is None:
+            return m.group(0)
+        hits += 1
+        return txt
+
+    out = _WRITELN_RE.sub(_call, out)
+    if hits:
+        logger.info("正文混淆：解开 %d 段 document.writeln(base64)", hits)
+    return out
+
+
+def _page_variant(url: str, n: int) -> Optional[str]:
+    """`xxx.html` / `xxx_3.html` → `xxx_{n}.html`。推不出来返回 None。
+
+    ⚠ **先把已有的 `_N` 剥掉再叠**，否则会 `_1_2` 这样套娃（见
+      `_PAGE_SUFFIX_RE` 上面的注释）。这也让函数**幂等**：
+      `_page_variant(_page_variant(u, 1), 1) == _page_variant(u, 1)`。
+    """
+    m = _PAGE_SUFFIX_RE.match(url or "")
+    if not m:
+        return None
+    return f"{m.group(1)}_{n}{m.group(3)}"
+
+
+def reading_next_url(html: str, base_url: str) -> Optional[str]:
+    """阅读页自己声明的「**同一章的下一页**」地址。
+
+    实测 zxs8：章节页用一行 JS 声明下一页 ——
+        var hhekgv = '/3_3316/817762_1.html';
+    这一个变量有两种含义，得靠地址区分：
+      · `{本章地址}_N.html` → **本章的第 N+1 页**（要拼起来）
+      · `{另一章}.html`     → 下一章的第一页（不需要，我们按目录逐章走）
+
+    所以判据是「**它正好等于本章地址的 `_N` 变体**」，和变量叫什么都不相干。
+    不这样收口的话，把「下一章」也当续页拼进来，就会出现每章尾部挂着
+    下一章开头的怪书。
+
+    ⚠ 只认**页码更大**的变体（无后缀 ≡ 第 1 页，即 `cur_n = 0`）。这一条同时
+      排除两件事：**声明自己**（自循环，把同一页拼 N 遍）、**声明的"上一页"**
+      （往回拼，同样只得到重复内容）。少了它，一章 3 页以上时第 3 页会拼不上，
+      而界面上看不出来 —— 又是一次静默不完整。
+    """
+    m0 = _PAGE_SUFFIX_RE.match((base_url or "").split("#")[0])
+    if not m0:
+        return None
+    cur_n = int(m0.group(2)) if m0.group(2) else 0
+    want: dict[str, str] = {}
+    for k in range(cur_n + 1, cur_n + 7):
+        v = _page_variant(base_url, k)
+        if v:
+            want[v.rstrip("/")] = v
+    for raw in [v for _n, v in _JS_VAR_RE.findall(html or "")]:
+        u = urljoin(base_url, raw.strip()).split("#")[0].rstrip("/")
+        if u in want:
+            return want[u]
+    return None
+
+
+def fetch_reading_pages(
+    url: str,
+    fetch_one: Callable[[str], tuple[str, str]],
+    *,
+    max_pages: int = 6,
+) -> str:
+    """把「一章被拆成多页」的续页全都抓回来拼成一份正文。
+
+    fetch_one(url) -> (正文, 该页 HTML)：正文怎么抽由调用方决定
+    （配置来源用 `content_re`，联网发现用通用启发式）—— 拼接逻辑只写这一份。
+
+    为什么必须拼（实测 zxs8 的 `第108章`）：
+      第 1 页 2212 个汉字，续页还有 1760 个 —— **不拼就少了 44%**，
+      而界面上一切正常，用户读完以为章节就是这么短。**静默的不完整
+      比报错坏得多。**
+    """
+    body, html = fetch_one(url)
+    parts = [body] if (body or "").strip() else []
+    seen = {(body or "").strip()}
+    cur_url, cur_html = url, html or ""
+    for _ in range(max(0, max_pages - 1)):
+        nxt = reading_next_url(cur_html, cur_url)
+        if not nxt:
+            break
+        try:
+            nb, nh = fetch_one(nxt)
+        except Exception:  # noqa: BLE001
+            break
+        key = (nb or "").strip()
+        # 页码越界时很多站会把上一页原样返回 —— 靠「内容没变」判断到底，
+        # 不然就会把同一页拼 N 遍（实测 `_2.html` 就是返回第 1 页的内容）。
+        if not key or key in seen:
+            break
+        seen.add(key)
+        parts.append(nb)
+        cur_url, cur_html = nxt, nh or ""
+    return "\n\n".join(p for p in parts if p.strip())
 _TAG_RE = re.compile(r"<[^>]+>")
 _HIDDEN_RE = re.compile(r"<(script|style|noscript|template)\b[^>]*>[\s\S]*?</\1\s*>", re.I)
 _COMMENT_RE = re.compile(r"<!--[\s\S]*?-->")
@@ -104,6 +343,8 @@ _VOID_TAGS = frozenset((
 ))
 
 _DIV_TAGS = frozenset(("div",))
+#: 适配器的正文容器候选标签（见 `container_blocks`）。
+_CONTAINER_TAGS = frozenset(("div", "section", "article", "td", "main"))
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +512,465 @@ def toc_quality(chapters: list[dict]) -> tuple[float, str]:
     return min(0.3, ratio * 0.4), "看起来不是章节列表"
 
 
+# ---------------------------------------------------------------------------
+# 目录完整性 / 完整目录页
+# ---------------------------------------------------------------------------
+# 「最新更新 / 最新章节」这类说法后面跟着的章号 —— **页面自己说出的**"全书到第几章"。
+# 只在页面上真有这种句子时才用；没有就不猜（见 toc_completeness 的第三条判据）。
+_LATEST_CHAPTER_RES = (
+    re.compile(r"(?:最近更新|最新更新|最新章节|最后更新|更新时间)[^第\n]{0,24}?"
+               r"第\s*(\d{1,5})\s*[章节]"),
+    re.compile(r"第\s*(\d{1,5})\s*[章节][^第\n]{0,16}?(?:已完结|已全本|完本|大结局)"),
+    # ⚠ **章号在前**的写法也认（2026-10-14 实测 zxs8 才发现的漏洞）：
+    #   那个站的详情页写的是「第119章 喵喵最新章节试读」—— 上面两条都要求
+    #   关键词在前，于是**判据 C 在实际站点上从来没生效过**，而它是唯一能
+    #   抓到「站点只收录了前一半」的判据。只因判据 A 先命中（目录从第 108 章
+    #   开始）才没暴露；一旦目录恰好从第 1 章开始、又缺后半段，就完全失明。
+    re.compile(r"第\s*(\d{1,5})\s*[章节][^第\n]{0,16}?(?:最新章节|最新更新)"),
+)
+
+#: 「去看完整目录」这类入口的链接文字。
+#: ⚠ 必须**严格**。刻意**不收**「开始阅读 / 阅读全文 / 继续阅读」——
+#:   它们常常直接指向**第一章**，跟进去会得到一个只有 1 条的"目录"，
+#:   比原来的片段更坏（实测 zxs8 详情页上「开始阅读」「阅读全文」的 href
+#:   一半指向 /mulu/、一半指向最新章节页，靠文字根本分不出来，宁可不收）。
+_TOC_ENTRY_RE = re.compile(r"(完整目录|全部目录|全部章节|章节目录|目录)")
+
+
+_CN_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+              "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+
+#: 章号藏在标题里。三种写法：阿拉伯数字、中文数字、以及「1. 标题」这种序号。
+_CHAPTER_NUM_RES = (
+    re.compile(r"第\s*(\d{1,5})\s*[章节回卷篇]"),
+    re.compile(r"第\s*([零〇一二三四五六七八九十百千万两]{1,7})\s*[章节回卷篇]"),
+    re.compile(r"^\s*(\d{1,5})\s*[.、]\s*\S"),
+)
+
+
+def _cn_to_int(s: str) -> Optional[int]:
+    """中文数字 → int（「一百零三」→ 103）。认不出来返回 None。
+
+    章节标题里中文数字很常见（「第十章」「第一百零三章」），
+    不认它就会有整整一类站判不了目录齐不齐。
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    total = section = number = 0
+    for ch in s:
+        if ch in _CN_DIGITS:
+            number = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            unit = _CN_UNITS[ch]
+            if unit == 10000:
+                section = (section + number) * unit
+                total += section
+                section = number = 0
+            else:
+                section += (number or 1) * unit
+                number = 0
+        else:
+            return None
+    return total + section + number
+
+
+def _chapter_num_of(title: str) -> Optional[int]:
+    """从标题里读出章号（「第108章 喵喵」→ 108）。"""
+    t = title or ""
+    for i, rx in enumerate(_CHAPTER_NUM_RES):
+        m = rx.search(t)
+        if not m:
+            continue
+        v = _cn_to_int(m.group(1)) if i == 1 else None
+        if v is None:
+            try:
+                v = int(m.group(1))
+            except (TypeError, ValueError):
+                v = None
+        if v:
+            return v
+    return None
+
+
+def chapter_numbers(chapters: list[dict]) -> list[int]:
+    """目录条目对应的章节号 —— **优先看标题**，标题认不出来就不判（返回空）。
+
+    为什么不能拿 URL 里的数字当章号（2026-10-14 踩到）：
+      很多站的章节地址长这样 —— `www.zxs8.net/3_3316/816445.html`。
+      那串数字是**章节 id**，不是章号。拿它去判「目录齐不齐」，
+      会得出「目录从第 816445 章开始，前面应该还有」这种**胡话**；
+      更糟的是**一份完整的目录也会被判成片段**（假警报），
+      于是白白去跟一次「完整目录」入口，可能把好目录换坏。
+      标题里的「第108章」才是页面**自己说出来的**章号，只认它。
+
+    标题里认不出章号（多数条目标题长得不像章节）就返回空列表 ——
+    **宁可漏报，不可乱报**（判不了的事不说，见 toc_completeness）。
+    """
+    if not chapters:
+        return []
+    out: list[int] = []
+    miss = 0
+    for c in chapters:
+        v = _chapter_num_of(str(c.get("title") or ""))
+        if v is None:
+            miss += 1
+            if miss > max(1, int(len(chapters) * 0.3)):
+                return []        # 缺得太多，这一列章号不可信 → 不判
+            continue
+        out.append(v)
+    return out if len(out) >= 3 else []
+
+
+def toc_completeness(chapters: list[dict], html: str = "") -> tuple[bool, str]:
+    """这个目录看起来**是不是只有一部分**？返回 (partial, 人话说明)。
+
+    为什么必须有它（2026-10-14 线上实测踩到）：
+      很多站的**详情页只挂「最新章节」十几条**，完整目录在另一个页面上。
+      而 `toc_quality()` 拿这十几条去算会得到 **1.0** —— 它判的是
+      "这像不像一串章节链接"，**不判"齐不齐"**。于是界面上显示"12 章"
+      当作全书，用户下载完才发现只有零头。
+      **这比"找不到"更坏：用户以为拿到了。**
+      （实测 `www.zxs8.net/3_3316/`：《我们猫猫不能听这些》**全书 119 章**，
+        详情页只列第 108–119 章共 12 条，而页面上明明挂着 `/3_3316/mulu/1.html`
+        「章节目录」的入口 —— 我们从来没去点过。）
+
+    判据三条，**判不了就不说**（宁可漏报，不能乱报）：
+      A. 首项章号 > 1         → 这个列表不是从头开始的
+      B. 章号跨度远大于条目数  → 中间缺了一大段（如 1, 101..109）
+      C. 页面自己写了「最新章节为第 N 章」，而 N 大于目录里的最大章号
+    C 是唯一能抓到「站点只收录了前一半」的判据（前两条都看不出来）。
+    """
+    nums = chapter_numbers(chapters)
+    if len(chapters) >= 3 and not nums:
+        return False, ""        # 标题不是「第N章」格式 → 判不了，不乱说
+    top = 0
+    if nums:
+        lo, hi = min(nums), max(nums)
+        top = hi
+        # A 必须看**第一条自己的**章号，不能看 min(nums) ——
+        # 中间某条标题认不出章号时 min 会被跳过，判据就跑到别的条目上去了。
+        first = _chapter_num_of(str(chapters[0].get("title") or ""))
+        if first and first > 1:
+            return True, f"目录从第 {first} 章开始，前面应该还有"
+        if hi - lo + 1 > len(nums) * 1.3:
+            return True, f"只有第 {lo}–{hi} 章中的 {len(nums)} 章，中间有缺章"
+    if html and top:
+        for rx in _LATEST_CHAPTER_RES:
+            m = rx.search(html)
+            if not m:
+                continue
+            try:
+                latest = int(m.group(1))
+            except ValueError:
+                break
+            if latest > top:
+                return True, f"站点显示最新章节是第 {latest} 章，这里只列到第 {top} 章"
+            break
+    return False, ""
+
+
+def toc_entry_links(html: str, base_url: str, *, limit: int = 2) -> list[str]:
+    """页面上「去看完整目录」的入口 —— **只收页面里真实存在的链接**。
+
+    ⚠ 绝不猜地址（`/all.html`、`/dir/1_2.html` 这种）。实测教训：
+      猜出来的地址返回 404，而**很多站的 404 页也长得像目录** ——
+      实测某个 404 页面 `extract_toc` 吐出了 20 条假章节。
+      一旦跟错，就会把一份干净的片段目录换成更脏的东西。
+    """
+    cur = base_url.rstrip("/")
+    same_host = (urlparse(base_url).hostname or "").lower()
+    out: list[str] = []
+    for url, txt in _abs_links(_prep(html), base_url):
+        if (urlparse(url).hostname or "").lower() != same_host:
+            continue
+        if url.rstrip("/") == cur:
+            continue
+        if not _TOC_ENTRY_RE.search(txt or ""):
+            continue
+        if url in out:
+            continue
+        out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
+#: 「下一页」的链接文字。**只认这些**，不认「开始阅读 / 阅读全文」——
+#: 后者在详情页上一半指向目录、一半指向最新章节，跟错了会拿到更差的目录。
+_NEXT_TEXT_RE = re.compile(r"(下一页|下页|后一页|下一章|»|›|&gt;|＞)")
+_PREV_TEXT_RE = re.compile(r"(上一页|上页|前一页|首页|«|‹|&lt;|＜)")
+
+
+def _next_page_url(html: str, base_url: str) -> Optional[str]:
+    """页面上的「下一页」—— 只认**和当前页同一路径形状**的兄弟页。
+
+    为什么必须限定形状：`/3_3316/mulu/1.html` 的「下一页」是
+    `/3_3316/mulu/2.html`（`_template` 数字归一化后一致），
+    而正文页底部的「下一页」指向下一章、形状也一样 ——
+    所以还要求文字必须是「下一页」这几个词，且**很短**。
+    """
+    cur = base_url.rstrip("/")
+    want = _template(base_url)
+    for url, txt in _abs_links(_prep(html), base_url):
+        if _template(url) != want:
+            continue
+        if url.rstrip("/") == cur:
+            continue
+        t = (txt or "").strip()
+        if not t or len(t) > 6:
+            continue
+        if _PREV_TEXT_RE.search(t):
+            continue
+        if _NEXT_TEXT_RE.search(t):
+            return url
+    return None
+
+
+def _order_chapters(chapters: list[dict]) -> list[dict]:
+    """按章号重排（章号认不出来就保持原序 —— 至少顺序是页面给的）。"""
+    nums = chapter_numbers(chapters)
+    if len(nums) < 3 or len(nums) < len(chapters) * 0.7:
+        return chapters
+    # 章号只覆盖了一部分条目（中间有认不出的），那就别强行对齐索引
+    if len(nums) != len(chapters):
+        return chapters
+    order = sorted(range(len(chapters)), key=lambda i: nums[i])
+    if order == list(range(len(chapters))):
+        return chapters
+    return [chapters[i] for i in order]
+
+
+def _merge_paged(
+    toc: list[dict], html: str, base: str, *, budget: int = 5
+) -> tuple[list[dict], str, int, bool]:
+    """分页目录：跟着页面上的「下一页」把后面的页拼起来。
+
+    返回 (目录, 落地地址, 新增条数, 还有没跟到的页)。
+
+    为什么不能只跳一跳就完事（实测 zxs8）：
+      「完整目录」`/3_3316/mulu/1.html` 只列第 1–100 章，
+      第 101–119 章在 `/mulu/2.html`。只跳一跳的话，
+      我们拿到的是「看起来完整、实际缺 19 章」的目录 ——
+      **静默的不完整**，正是要消灭的那种错。
+    所以：一直跟到「下一页」没了、或再也没有新章节为止（有上限，不会跑飞）。
+
+    ⚠ 最后那个 `pending` 很关键：**页面上明明有「下一页」，但抓不到/抓回来
+      是空的** —— 这时候必须让上层知道"可能还缺"，而不是假装完整。
+      少这一位，"跟页失败"和"本来就是最后一页"就分不开了。
+    """
+    if not toc:
+        return toc, base, 0, False
+    want_tpl = toc[0].get("_tpl") or ""
+    seen = {c.get("url") for c in toc if c.get("url")}
+    merged = list(toc)
+    cur_html, cur_base, got, pages, pending = html, base, 0, 0, False
+    for _ in range(max(0, budget)):
+        nxt = _next_page_url(cur_html, cur_base)
+        if not nxt:
+            break
+        try:
+            n_html, n_url = fetch_text(nxt, with_url=True)
+        except Exception:  # noqa: BLE001
+            pending = True
+            break
+        # min_items 放低到 3：最后一页常常只有两三章，不能被"至少 8 条"挡掉。
+        n_toc = extract_toc(n_html, n_url, min_items=3)
+        # 必须和已有目录**同一套地址模板** —— 否则就是把别的东西（推荐位、
+        # 其它书）拼进来了。这是比数量更硬的判据。
+        if want_tpl and n_toc and (n_toc[0].get("_tpl") or "") != want_tpl:
+            break
+        fresh = [c for c in n_toc if c.get("url") and c["url"] not in seen]
+        if not fresh:
+            break
+        for c in fresh:
+            seen.add(c["url"])
+            merged.append(c)
+        got += len(fresh)
+        pages += 1
+        cur_html, cur_base = n_html, n_url
+    # 撞到预算上限、而页面上**还有**「下一页」→ 是我们自己停下，不是目录到头了。
+    # 必须如实标"可能不全"，不能静默截断（>500 章的书曾经就这样少给）。
+    if pages >= budget and _next_page_url(cur_html, cur_base):
+        pending = True
+        logger.info("目录分页：已达 %d 页上限，后面还有「下一页」，如实标注可能不全", budget)
+    if got:
+        merged = _order_chapters(merged)
+        logger.info("目录分页：往后跟了 %d 页，合并后 %d 章", pages, len(merged))
+    return merged, cur_base, got, pending
+
+
+def upgrade_toc(toc: list[dict], html: str, base: str) -> tuple[list[dict], str, str]:
+    """目录像"只有一部分"时：先跟一次「完整目录」入口，再把分页目录拼齐。
+
+    返回 (目录, 落地地址, 提示)——提示非空表示"这份目录可能不全，为什么"。
+
+    只做**一跳**到完整目录页、只认真实存在的链接、且**必须严格更完整**才替换。
+    任何一步不确定就原样返回 —— 宁可少拿，也不能把好目录换坏。
+    （反例：详情页上「开始阅读」「阅读全文」也指向 `/mulu/1.html`，
+      但我们刻意不认这两个词，见 `_TOC_ENTRY_RE`。）
+    """
+    if not toc:
+        return toc, base, ""
+
+    partial, why = toc_completeness(toc, html)
+    judge_html, page_html = html, html
+
+    if partial:
+        logger.info("目录可能不完整（%s）：%s", why, base)
+        for cand in toc_entry_links(html, base):
+            try:
+                c_html, c_url = fetch_text(cand, with_url=True)
+            except Exception:  # noqa: BLE001
+                continue
+            c_toc = extract_toc(c_html, c_url)
+            # 门槛：条目数至少翻倍（够多才配叫"完整目录"）、
+            #       自身质量过硬（挡住"404 页 / 推荐列表"那种假目录）、
+            #       并且自己不能再是片段。
+            if len(c_toc) < max(8, len(toc) * 2):
+                continue
+            q, _ = toc_quality(c_toc)
+            if q < 0.8:
+                continue
+            if toc_completeness(c_toc, c_html)[0]:
+                continue
+            logger.info("目录增强：%s 跟到完整目录页 %s（%d → %d 章）",
+                        base, c_url, len(toc), len(c_toc))
+            toc, base, page_html = c_toc, c_url, c_html
+            break
+
+    # 分页拼齐。**即便没跟到新页面也要试** —— 因为分页的第 1 页看起来
+    # 完全"正常"（第 1–100 章，首项就是第 1 章），判据 A/B/C 都发现不了
+    # 它背后还有 19 章。这是"静默不完整"最隐蔽的一种。
+    merged, m_url, got, pending = _merge_paged(toc, page_html, base)
+    if got:
+        m_partial, m_why = toc_completeness(merged, judge_html)
+        # ⚠ 只要**真的多拿到了章节**，就必须用更全的那份，哪怕它仍被判定为
+        #   片段 —— 曾经这里在 `m_partial` 时返回旧目录（把 101 章换成 12 章），
+        #   等于"因为还没拼齐，所以连拼到的都不要了"。多的一定比少的好，
+        #   不完整这件事靠 `m_why` 如实告诉用户，不靠少给章节来表达。
+        toc, base = merged, m_url
+        # ⚠ `pending` 也必须算"不全"：那是**我们自己的页数上限**把它停下的，
+        #   不是目录到头了。只看 `m_partial` 的话，一本 600 章的书会被当成
+        #   "目录完整"交付（又一处静默截断）。
+        if pending:
+            return toc, base, m_why or "这个站的目录分了页，还有几页没跟完，可能只含部分章节"
+        if not m_partial:
+            return toc, base, ""
+        logger.info("目录分页：拼接后仍像片段（%s），保留更全的一份并如实提示", m_why)
+        return toc, base, m_why
+    if pending:
+        # 有「下一页」却没跟到 → 如实说，别让用户以为这就是全书
+        return toc, base, "这个站的目录分了页，后面几页没抓到，可能只含部分章节"
+    # 走到这里：完整目录入口没跟到、分页也没跟到。目录**仍然**像片段的话
+    # 必须把理由说出来 —— 沉默等于让界面把「12 条最新章节」显示成「全书」。
+    still, why2 = toc_completeness(toc, judge_html)
+    if still or partial:
+        return toc, base, why2 or why or "这份目录可能不完整，只含部分章节"
+    return toc, base, ""
+
+
+def home_link(html: str, base_url: str) -> Optional[str]:
+    """页面里回**站点首页**的入口（只在文字明确时采纳）。
+
+    为什么要它：适配向导上写的是"填网站首页"，用户粘的却是某一本书的页面。
+    **该适配的是我们**，不是让用户去理解这个约定 —— 书页上一定有回首页的
+    入口（logo / 「首页」），跟着它回去就行。
+    """
+    same = (urlparse(base_url).hostname or "").lower()
+    for url, txt in _abs_links(_prep(html), base_url):
+        if (urlparse(url).hostname or "").lower() != same:
+            continue
+        # ⚠ 文字里可能有空格：「首  页」（实测 zxs8 就是两个空格）
+        t = re.sub(r"\s+", "", txt or "")
+        if t in ("首页", "主页", "网站首页", "回到首页", "返回首页", "小说首页"):
+            return url
+    return None
+
+
+def _declared_url_rule(
+    html: str, base_url: str, real_urls: list[str]
+) -> Optional[str]:
+    """页面自己在内联 JS 里声明的「章节地址模板」→ 带一个槽位的绝对 URL 模板。
+
+    返回值形如 ``https://www.zxs8.net/3_3316/\\x00.html``，
+    其中 `\\x00` 由链接自带的数字填进去。
+
+    判据（全部满足才认，认不出就返回 None —— 不猜）：
+      1. 模板字符串里带 `{xxx}` 槽位，且至少**能由一个同名变量填掉一个**
+         （如 `{aid}` ← `read_aid='3316'`；同名按「变量名以 `_槽位名` 结尾」匹配）
+      2. 填完之后**恰好剩一个**槽位 —— 那个就是链接自己带的章节号
+      3. 把哨兵换成任意数字，得到的 URL **形状**必须和页面上某个真实
+         `<a href>` 一致（`_template()` 数字归一化后相等）。
+         这条是命门：没有它，一段无关的 JS 字符串就能被当成模板用。
+    """
+    scripts = "\n".join(_SCRIPT_RE.findall(html or ""))
+    if "{" not in scripts:
+        return None
+    vals = {n: v for n, v in _JS_VAR_RE.findall(scripts)}
+    if not vals:
+        return None
+    real_tpls = {_template(u) for u in real_urls}
+    if not real_tpls:
+        return None
+
+    for value in vals.values():
+        slots = list(dict.fromkeys(_JS_SLOT_RE.findall(value)))
+        if not slots:
+            continue
+        filled, left = value, []
+        for s in slots:
+            got = _var_for_slot(vals, s)
+            if got is None:
+                left.append(s)
+            else:
+                filled = filled.replace("{" + s + "}", got)
+        if len(left) != 1:
+            continue
+        cand = filled.replace("{" + left[0] + "}", _SLOT_SENTINEL)
+        probe = urljoin(base_url, cand.replace(_SLOT_SENTINEL, "1"))
+        if not probe.startswith("http"):
+            continue
+        if _template(probe) not in real_tpls:
+            continue
+        logger.info("章节地址模板：页面自报 %r → %s", value, cand)
+        return urljoin(base_url, cand)
+    return None
+
+
+def _var_for_slot(vals: dict[str, str], slot: str) -> Optional[str]:
+    """找一个变量来填 `{slot}` —— 名字对得上、且值是个纯数字。"""
+    want = slot.lower()
+    for name, val in vals.items():
+        n = name.lower()
+        if (n == want or n.endswith("_" + want)) and val.isdigit():
+            return val
+    return None
+
+
+def _onclick_links(html: str, base_url: str, rule: str) -> list[tuple[str, str]]:
+    """把 `onclick="idm(816445)"` 这种章节锚点还原成真实 URL。
+
+    只处理**没有 href** 的锚点 —— 有 href 的已经由 `_abs_links` 收过了，
+    再来一次只会重复。
+    """
+    out: list[tuple[str, str]] = []
+    for attrs, inner in _A_TAG_RE.findall(html or ""):
+        if re.search(r"\bhref\s*=", attrs, re.I):
+            continue
+        m = _ONCLICK_CALL_RE.search(attrs)
+        if not m:
+            continue
+        url = urljoin(base_url, rule.replace(_SLOT_SENTINEL, m.group(1)))
+        if not url.startswith("http"):
+            continue
+        out.append((url, re.sub(r"\s+", " ", _text_of(inner))))
+    return out
+
+
 def extract_toc(
     html: str,
     base_url: str,
@@ -289,8 +989,19 @@ def extract_toc(
     tpl_hint: 上次在这个站认出来的模板（存在来源库里）。命中就优先用它 ——
               同一个站第二次抓，不用再重新猜哪一组才是目录。
     """
-    doc = _prep(html)
+    doc = _prep(unwrap_writeln(html))
     links = _abs_links(doc, base_url)
+    # 章节链接是 JS 造的（`onclick="idm(816445)"`）时，把页面**自己声明**的
+    # 地址模板拿来补回这批链接。见 _declared_url_rule 的注释 ——
+    # 不补的话，zxs8 那种站整本书只能读到 12 条「最新章节」。
+    # ⚠ 模板要从**原始 html** 里读（脚本已经被 _prep 删掉了）。
+    rule = _declared_url_rule(html, base_url, [u for u, _ in links])
+    if rule:
+        extra = _onclick_links(doc, base_url, rule)
+        if extra:
+            logger.info("目录来源：onclick 章节链接 +%d 条（%s）",
+                        len(extra), extra[0][0])
+            links = links + extra
     if not links:
         return []
 
@@ -359,13 +1070,21 @@ def _build_chapters(items: list[tuple[str, str]]) -> list[dict]:
         order = sorted(range(len(items)), key=lambda i: keys[i])
         items = [items[i] for i in order]
 
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     chapters: list[dict] = []
     for url, txt in items:
+        title = _clean_chapter_title(txt)
         if url in seen:
+            # 同一个地址出现两次时**留下标题更好的那条**。
+            # 实测 zxs8 的目录页：第一条是「开始阅读」按钮（href 指向第 1 章），
+            # 而第 1 章自己那条在 onclick 里、标题是真的「第1章 喵」。
+            # 谁先谁后取决于链接在页面里的位置，不能靠"先到先得"。
+            i = seen[url]
+            if _is_nav_title(chapters[i]["title"]) and not _is_nav_title(title):
+                chapters[i]["title"] = title
             continue
-        seen.add(url)
-        chapters.append({"url": url, "title": _clean_chapter_title(txt)})
+        seen[url] = len(chapters)
+        chapters.append({"url": url, "title": title})
 
     # 没有任何可用的数字列时，退回「看标题里的第N章是不是递减」
     if not ordered_by_key:
@@ -390,18 +1109,20 @@ def _build_chapters(items: list[tuple[str, str]]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # 正文提取
 # ---------------------------------------------------------------------------
-def _div_blocks(html: str) -> list[tuple[str, str]]:
-    """切出所有 `<div …>…</div>`，返回 (开标签, 内容)。
+def _div_blocks(
+    html: str, tags: frozenset[str] = _DIV_TAGS
+) -> list[tuple[str, str]]:
+    """切出所有 `<tag …>…</tag>`，返回 (开标签, 内容)。
 
     用一遍扫描 + 栈配对，而不是对每个 div 重跑正则 ——
     详情页动辄 50 万字符、上万个 div，逐层重扫会慢一个数量级。
     """
-    doc = _prep(html)
+    doc = _drop_link_paras(_prep(html))
     stack: list[list] = []
     out: list[tuple[str, str]] = []
     for m in _ANY_BLOCK.finditer(doc):
         closing, tag, _attrs, selfclose = m.group(1), m.group(2).lower(), m.group(3), m.group(4)
-        if tag not in _DIV_TAGS or selfclose or tag in _VOID_TAGS:
+        if tag not in tags or selfclose or tag in _VOID_TAGS:
             continue
         if not closing:
             stack.append([tag, m.group(0), m.end()])
@@ -411,6 +1132,59 @@ def _div_blocks(html: str) -> list[tuple[str, str]]:
                 _t, open_tag, oend = stack.pop(i)
                 out.append((open_tag, doc[oend:m.start()]))
                 break
+    return out
+
+
+def container_blocks(html: str) -> list[tuple[str, str]]:
+    """正文容器扫描：div / section / article / td / main，**支持任意嵌套**。
+
+    为什么要单列一个（2026-10-14）：适配器里原先用
+    `<div[^>]*>([\\s\\S]{200,80000}?)</div>` 这种**非贪婪**正则扫容器，
+    一旦容器里还套着 div（`word_read` 里就套着 `read_btn`），
+    它只会取到**第一个 `</div>` 之前**的一小截 —— 正文全被截掉，
+    于是"推导正文正则"永远失败。栈式扫描不存在这个问题。
+    """
+    return _div_blocks(html, _CONTAINER_TAGS)
+
+
+#: 站点的「相邻推荐 / 猜你喜欢」—— 一整段只有书名链接。
+#: 实测 zxs8 的原文长这样（而且就写在**正文容器里面**）：
+#:     <p style="font-size:12px;">相邻推荐:<a href="/3_3314/">都市之超能警探</a>
+#:     &nbsp;<a …>穿成总裁蚊子血[穿书]</a>&nbsp;…（一共 20 条）</p>
+#: 不删的话，正文尾巴上会挂着 20 个别的书名 —— 用户读着读着就串了书。
+_A_FULL_RE = re.compile(r"<a\b[^>]*>[\s\S]{0,60}?</a>", re.I)
+_PARA_RE = re.compile(r"<p\b[^>]*>([\s\S]{0,6000}?)</p>", re.I)
+
+
+def _drop_link_paras(html: str) -> str:
+    """丢掉「整段只有一个书名列表」的 `<p>`。
+
+    判据：段内链接 ≥3 个，**且**除掉这些链接之后几乎没有自由文字
+    （≤8 字 —— 正好容下「相邻推荐:」这种标签词）。
+
+    ⚠ **只认 `<p>`**：目录站大量用 `<div>` / `<li>` 逐条列章节
+      （`<li><a href=…>第1章</a></li>`），一旦把"只含链接的块"当推荐删掉，
+      整本书的目录会被清空。而且这个函数只服务于**正文**链路
+      （`_div_blocks` → `extract_content` / `container_blocks`），
+      不经手 `extract_toc`。
+    """
+    dropped = 0
+
+    def repl(m: re.Match) -> str:
+        nonlocal dropped
+        inner = m.group(1)
+        if len(_A_RE.findall(inner)) < 3:
+            return m.group(0)
+        rest = re.sub(r"<[^>]+>", "", _A_FULL_RE.sub("", inner))
+        rest = re.sub(r"[\s\u3000]+", "", rest.replace("&nbsp;", ""))
+        if len(rest) > 8:
+            return m.group(0)
+        dropped += 1
+        return ""
+
+    out = _PARA_RE.sub(repl, html or "")
+    if dropped:
+        logger.info("正文清洗：丢掉 %d 段「只有书名链接」的推荐位", dropped)
     return out
 
 
@@ -426,6 +1200,9 @@ def _visible(s: str) -> str:
 
 def extract_content(html: str, *, hint: str = "", min_chars: int = 200) -> str:
     """找出正文。hint 是上次在这个站学到的容器名。"""
+    # 正文可能是 base64 + document.writeln 写出来的（见 unwrap_writeln）——
+    # 必须先还原，否则整页 HTML 里一个正文字符都没有。
+    html = unwrap_writeln(html)
     blocks = _div_blocks(html)
     if not blocks:
         return ""
@@ -473,6 +1250,7 @@ def extract_content_hint(html: str, *, min_chars: int = 200) -> str:
 
     返回形如 `id="htmlcontent"` 里那个 `htmlcontent`，学不到就空串。
     """
+    html = unwrap_writeln(html)
     blocks = _div_blocks(html)
     best_tag, best_len = "", 0
     for open_tag, inner in blocks:
@@ -785,7 +1563,8 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
     返回::
 
         {"kind": "toc", "url":…, "final_url":…, "title":…, "author":…,
-         "intro":…, "toc":[...], "quality": 0~1}
+         "intro":…, "toc":[...], "quality": 0~1,
+         "partial": bool, "chapter_note": str}   ← 目录是不是只有一部分、为什么
         {"kind": "chapter", "url":…, "final_url":…, "title":…, "content":…}
         {"kind": "unknown", "url":…, "final_url":…}
 
@@ -802,6 +1581,10 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
     site = registry.known_site(host)
 
     toc = extract_toc(html, base, tpl_hint=site.get("toc_tpl") or "")
+    # 详情页常常只挂「最新章节」十几条 —— 目录像"只有一部分"时，
+    # 去点一次页面上「完整目录」的入口，并把分页目录拼齐。
+    # 见 upgrade_toc 的注释。
+    toc, base, toc_note = upgrade_toc(toc, html, base)
     meta = extract_meta(html)
     # 封面只在这里取一次，随 analyze 的返回值一起带出去 ——
     # 前端列表卡直接用，不必再为每本书单独打一次详情页。
@@ -838,12 +1621,18 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
                                **({"toc_tpl": tpl} if tpl else {}))
             for c in toc:
                 c.pop("_tpl", None)
+            # 目录"看起来不完整"时要**如实说出来**（见 toc_completeness）：
+            # 否则界面把「12 章」当全书，用户下完才发现只有零头 —— 那比搜不到更坏。
+            partial, chapter_note = toc_completeness(toc, html)
+            if toc_note and not chapter_note:
+                partial, chapter_note = True, toc_note
             return {
                 "kind": "toc", "url": url, "final_url": base, "host": host,
                 "site_name": sname,
                 "title": meta["title"], "author": meta["author"], "intro": meta["intro"],
                 "cover": cover,
                 "toc": toc, "quality": quality, "size": len(html),
+                "partial": partial, "chapter_note": chapter_note,
             }
         registry.note_site(host, ok=False, name=sname, why=registry.FAIL_SHAPE)
         return {

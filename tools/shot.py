@@ -25,9 +25,11 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -175,12 +177,21 @@ def launch_chrome(
 
     # 读 DevToolsActivePort：第一行端口、第二行 ws 路径。
     # 文件是 Chrome **起完才写**的，所以要轮询（不能一次读不到就当失败）。
+    #
+    # ⚠⚠ 「启动器退出」**不等于**「浏览器没起来」（2026-10-14 Chrome 155 实测）：
+    #   新版 Windows 上 `chrome.exe` 会把自己**移交(detach)**给真正的浏览器进程，
+    #   启动器随即 `exit=0`，而浏览器还在跑、DevTools 端口也正常回话。
+    #   旧代码一看到 `proc.poll() is not None` 就判「Chrome 起来就退了」——
+    #   于是**全部真机套件一起红**，看着像产品崩了，其实是判据错了。
+    #   现在唯一的成功判据是「DevToolsActivePort 出现且内容完整」：
+    #   启动前我们已经把它删掉，所以它出现 = 就是**本次**实例写的。
+    #   启动器退出只作为「再等一小会儿就该有文件了」的提示，不直接判死。
+    GRACE = 6.0
     deadline = time.time() + ready_timeout
     port = 0
     ws_path = ""
+    exited_at = 0.0
     while time.time() < deadline:
-        if proc.poll() is not None:
-            raise SystemExit(f"Chrome 起来就退了（exit={proc.returncode}）")
         try:
             with open(port_file, "r", encoding="utf-8") as f:
                 lines = [ln.strip() for ln in f if ln.strip()]
@@ -190,9 +201,19 @@ def launch_chrome(
                 break
         except Exception:
             pass
+        if proc.poll() is not None:
+            exited_at = exited_at or time.time()
+            if time.time() - exited_at > GRACE:
+                raise SystemExit(
+                    f"Chrome 启动器已退出（exit={proc.returncode}），且 {GRACE:.0f} 秒内"
+                    "没写出 DevToolsActivePort —— 多半是参数被拒 / 被安全软件拦了"
+                )
         time.sleep(0.15)
     if not port:
-        raise SystemExit("Chrome 没写出 DevToolsActivePort（没起来）")
+        raise SystemExit(
+            "Chrome 没写出 DevToolsActivePort（没起来；启动器"
+            f"{'已退出' if exited_at else '仍在跑'}）"
+        )
 
     browser_ws = f"ws://127.0.0.1:{port}{ws_path}"
 
@@ -206,12 +227,94 @@ def launch_chrome(
                     f"http://127.0.0.1:{port}/json/version", timeout=1) as r:
                 got = json.load(r).get("webSocketDebuggerUrl", "")
             if got.rstrip("/") == browser_ws.rstrip("/"):
+                # 登记进来：启动器 detach 之后 `proc.terminate()` 关不掉它，
+                # 得靠 DevTools/精确杀进程来收尾（见 close_chrome）。
+                _LIVE.append((port, browser_ws, proc, profile_dir))
                 return proc, port, browser_ws, profile_dir
         except Exception:
             pass
         time.sleep(0.15)
     proc.terminate()
     raise SystemExit("DevTools 回话的实例不是自己起的（端口被人抢了）")
+
+
+#: 本进程起过的实例。`atexit` 兜底关掉 —— 不然跑几轮真机就攒一堆僵尸 Chrome。
+_LIVE: list[tuple[int, str, object, str]] = []
+
+
+def _kill_by_profile(profile: str) -> None:
+    """按命令行里的 `--user-data-dir` **精确**杀掉属于我们的残留 Chrome。
+
+    只在 Windows 上做，而且只认我们那个唯一 profile 目录 —— 绝不能误杀
+    用户自己开着的浏览器。
+    """
+    if os.name != "nt" or not profile:
+        return
+    key = profile.replace("/", "\\").lower()
+    try:
+        out = subprocess.run(
+            ["wmic", "process", "where", "name='chrome.exe'",
+             "get", "ProcessId,CommandLine"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout or ""
+    except Exception:  # noqa: BLE001  wmic 在 Win11 上可能已被移除
+        return
+    for line in out.splitlines():
+        if key not in line.replace("/", "\\").lower():
+            continue
+        m = re.search(r"(\d+)\s*$", line.strip())
+        if m:
+            try:
+                subprocess.run(["taskkill", "/F", "/PID", m.group(1)],
+                               capture_output=True, timeout=10)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def close_chrome(port: int = 0, browser_ws: str = "", proc=None,
+                 profile: str = "") -> None:
+    """把 `launch_chrome()` 起的实例**真的关掉**。
+
+    为什么不能只 `proc.terminate()`（2026-10-14 实测 Chrome 155）：
+      新版 Windows 上启动器会 **detach**，`proc` 早就 exit=0 了 —— 
+      `terminate()` 是空操作，浏览器进程会一直留着。跑一轮真机（十几套）
+      就攒出十几个僵尸 Chrome，最后把机器拖死、还会干扰下一轮的启动。
+
+    所以先礼后兵：
+      1) 走 DevTools 的 `Browser.close`（优雅、精准，不用猜 PID）；
+      2) 兜底按 `--user-data-dir=<我们那个唯一目录>` 精确杀残留；
+      3) 删掉 profile 目录。
+    """
+    if browser_ws:
+        try:
+            ws = websocket.create_connection(browser_ws, timeout=5)
+            ws.send(json.dumps({"id": 1, "method": "Browser.close"}))
+            try:
+                ws.recv()
+            except Exception:  # noqa: BLE001  关掉时连接会断，属正常
+                pass
+            ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+    if proc is not None:
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+    if profile:
+        _kill_by_profile(profile)
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+def close_all_chrome() -> None:
+    """关掉本进程起过的所有实例（`atexit` 注册）。"""
+    for port, ws, proc, prof in list(_LIVE):
+        close_chrome(port, ws, proc, prof)
+    _LIVE.clear()
+
+
+atexit.register(close_all_chrome)
 
 
 def page_ws(port: int, *, prefer: str = "about:", timeout: float = 20.0) -> str:

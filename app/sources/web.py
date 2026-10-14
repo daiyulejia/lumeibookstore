@@ -67,6 +67,10 @@ class DiscoveredSource(Source):
             result.author = data["author"]
         if data.get("intro") and not result.intro:
             result.intro = data["intro"]
+        # 目录片段提示要一路带下去（首次发现时由 discovery._verify 带上，
+        # 这里再兜一次：来源库命中那条路径不会经过 _verify）。
+        if data.get("chapter_note") and not result.chapter_note:
+            result.chapter_note = str(data["chapter_note"])
 
         toc = data.get("toc") or []
         return [Chapter(index=i, title=c["title"], url=c["url"])
@@ -81,23 +85,32 @@ class DiscoveredSource(Source):
         这里**不走** `analyze()` 的页面类型判定 —— 正文页上常常也挂着
         「推荐阅读」之类的同模板链接，够多的话会被误判成目录页。
         直接按正文容器抽，更稳。
+
+        「一章被拆成多页」由 `webfetch.fetch_reading_pages` 统一处理：
+        有的站用页眉的「第(1/3)页」，有的站只在 JS 里声明
+        `var hhekgv='/3_3316/817762_1.html'`（实测 zxs8）——
+        不拼的话每章只有前一半，而界面上完全看不出来。
         """
         url = chapter.url
         host = host_of(url)
-        try:
-            html = fetch_text(url)
-        except Exception:  # noqa: BLE001
-            registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
-            raise
+        last: dict[str, str] = {}
 
-        site = registry.known_site(host)
-        body = webfetch.clean_body(
-            webfetch.extract_content(html, hint=site.get("content_hint") or ""))
+        def one(u: str) -> tuple[str, str]:
+            try:
+                html = fetch_text(u)
+            except Exception:  # noqa: BLE001
+                registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
+                raise
+            last["html"] = html
+            site = registry.known_site(host_of(u))
+            body = webfetch.clean_body(
+                webfetch.extract_content(html, hint=site.get("content_hint") or ""))
+            if len(body) < 60:
+                # 学到的容器名过期了（站点改版）→ 放低门槛再试一次
+                body = webfetch.clean_body(webfetch.extract_content(html, min_chars=0))
+            return body, html
 
-        if len(body) < 60:
-            # 学到的容器名过期了（站点改版）→ 放低门槛再试一次
-            body = webfetch.clean_body(webfetch.extract_content(html, min_chars=0))
-
+        body = webfetch.fetch_reading_pages(url, one)
         body = tidy_content(body, chapter.title)
         ok, why = check_content_quality(body)
         if not ok:
@@ -109,7 +122,7 @@ class DiscoveredSource(Source):
             return ""
 
         # 学一手：这次命中的是什么容器，下次直接用
-        hint = webfetch.extract_content_hint(html)
+        hint = webfetch.extract_content_hint(last.get("html") or "")
         registry.note_site(host, ok=True, **({"content_hint": hint} if hint else {}))
         return body
 

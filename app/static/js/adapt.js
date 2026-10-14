@@ -16,6 +16,7 @@ import { $, $$, esc, api, toast, openDrawer } from "./util.js";
 /* 步骤名 → 人话。后端也会给一份（以服务端为准），这里只是兜底。 */
 const FALLBACK = {
   "打开首页":        { t: "打开这个网站的首页", w: "先确认站还活着、是中文小说站，顺便看出它用什么建站系统" },
+  "回到站点首页":    { t: "回到这个网站的首页", w: "你给的是某一本书的页面，我顺着页面上「首页」的链接自己回到了站首页" },
   "找搜索接口":      { t: "找出它的搜索怎么用", w: "知道搜索地址，才能用书名去这个站里找书" },
   "打开搜索页":      { t: "试着搜一本书", w: "用一个真实书名试搜，看它返回什么" },
   "推导搜索条目":    { t: "看懂搜索结果长什么样", w: "从搜索结果里认出「哪一条是书」" },
@@ -24,6 +25,7 @@ const FALLBACK = {
   "打开章节页":      { t: "打开其中一章", w: "验证真的能读到正文，而不是只有标题" },
   "推导正文正则":    { t: "把正文抠出来", w: "从整页 HTML 里分出「哪些字是小说的」" },
   "发现章节分页":    { t: "发现这站一章分了好几页", w: "有些站一章拆成 2~3 页，不拼起来会缺一半" },
+  "保存配置":        { t: "把这个网站记下来", w: "写进站点列表之后，以后用书名搜索就能用到它" },
   "完成":            { t: "适配完成", w: "配置已保存，可以像内置来源一样搜书了" },
 };
 
@@ -51,12 +53,12 @@ export function openAdapt() {
         </div>
 
         <div class="field">
-          <label>① 网站首页地址</label>
+          <label>① 网站地址</label>
           <input id="adaptUrl" type="text" placeholder="https://www.example.com" autocomplete="off" spellcheck="false"/>
           <div class="help">
-            就是网站的<b>首页</b>，不是某一本书的页面。浏览器地址栏里直接复制过来就行。<br>
-            比如 <code>https://www.xbiquge.info</code>。
-            不确定的话，在浏览器里打开那个站，复制最上面那一行。
+            <b>首页、某一本书的页面、正在读的那一章 —— 给哪个都行。</b><br>
+            你要是不小心粘了书页，我会自己顺着页面上的「首页」回到站首页，<b>不用你改</b>。
+            浏览器地址栏里直接复制过来就行，比如 <code>https://www.xbiquge.info</code>。
           </div>
         </div>
 
@@ -101,9 +103,14 @@ function stepHTML(name, state, detail, server) {
 }
 
 /** 还没跑到的步骤，先摆出灰的占位，让用户知道总共有几步。 */
-function pendingHTML() {
-  const order = ["打开首页", "找搜索接口", "推导搜索条目", "推导目录正则", "推导正文正则"];
-  return order.map(n => {
+// 还没走到的步骤（灰条）。
+// ⚠ 必须**排除已经走过的**：用户粘的是某本书的页面时，后端会直接拿它当详情页、
+//   跳过搜索那两步（见 adapter._detail_via_page）—— 不过滤的话它们会永远
+//   挂在灰条里，看起来像"卡住了"。
+function pendingHTML(done) {
+  const have = new Set(done || []);
+  const order = ["回到站点首页", "打开首页", "找搜索接口", "推导搜索条目", "推导目录正则", "推导正文正则"];
+  return order.filter(n => !have.has(n)).map(n => {
     const m = stepOf(n);
     return `<div class="step"><span class="si">·</span>
       <span class="st"><b style="color:var(--t-3)">${esc(m.t)}</b></span></div>`;
@@ -161,7 +168,7 @@ async function runAdapt() {
           const box = stepsBox();
           if (box) {
             box.innerHTML = rendered.map(s => stepHTML(s.step, s.ok ? "yes" : "no", s.detail, s)).join("")
-              + (ev.ok ? pendingHTML() : "");
+              + (ev.ok ? pendingHTML(rendered.map(s => s.step)) : "");
           }
         } else if (ev.type === "done") {
           final = ev;

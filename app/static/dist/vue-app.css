@@ -247,9 +247,9 @@ to { opacity: 1; transform: none;
 /* 组件级样式。基础视觉都在 app.css / lumei.css 里（那些是通用层，
    按类名作用于任何元素，包括 Vue 渲染的 —— 这是设计如此）。
    这里只补 app.css 没有、而 Vue 模板需要的少量东西。 */
-.lu-discover[data-v-b2643a52] { display: block;
+.lu-discover[data-v-b72df0d9] { display: block;
 }
-.vline[data-v-b2643a52] {
+.vline[data-v-b72df0d9] {
   width: 1px;
   height: 15px;
   background: var(--s-line);
@@ -258,7 +258,7 @@ to { opacity: 1; transform: none;
    迁移后由一个类控制（`.on` 才转）。基线样式在 app.css 里。 */
 
 /* 空态插画：div 没内在尺寸，要自己撑出 480×360。 */
-.empty-art[data-v-b2643a52] {
+.empty-art[data-v-b72df0d9] {
   aspect-ratio: 480 / 360;
   background-image: url("/static/img/lumei/empty_wait@480.webp");
   background-size: cover;

@@ -22,6 +22,12 @@ class BookResult:
     note: str = ""                  # 探测备注（不可用原因等）
     probe_ms: int = 0               # 探测耗时
 
+    # 目录"看起来只有一部分"时的说明（如「站点显示最新章节是第 109 章，
+    # 这里只列到第 50 章」）。为什么必须单独一个字段而不是塞进 note：
+    # note 只在 available=False 时才显示，而**这个警告恰恰出现在可用的书上** ——
+    # 塞进去等于永远看不见。见 webfetch.toc_completeness()。
+    chapter_note: str = ""
+
     # —— 深度校验（抽样正文）——
     # 目录能打开不等于正文能看：有的站目录是静态页，正文要登录；
     # 有的站被限流后返回一页广告。must 抽一章真读一下才算数。
@@ -100,6 +106,7 @@ class BookResult:
             "available": self.available,
             "chapter_count": self.chapter_count,
             "note": self.note,
+            "chapter_note": self.chapter_note,
             "probe_ms": self.probe_ms,
             "sample_ok": self.sample_ok,
             "sample_chars": self.sample_chars,

@@ -10,17 +10,24 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, urljoin
 
+from .. import webfetch
 from ..models import Book, BookResult, Chapter
 from ..utils import fetch_text, clean_text, normalize_title, cached
 from .base import Source, page_mark, page_url, strip_page_mark, tidy_content
 
+logger = logging.getLogger("novel.configured")
+
 CONFIG_FILE = Path(__file__).resolve().parent / "sites.json"
 TOC_TTL = 600
+
+#: 目录少于这个条数就认为是"没吃饱"，值得退回通用启发式再试一次。
+MIN_TOC = 8
 
 # 从「第123章」「123.」「123、」里抠出章节序号
 _CH_NUM_RE = re.compile(r"第\s*(\d{1,5})\s*[章节回]|^\s*(\d{1,5})\s*[.、,，:：)]")
@@ -181,6 +188,20 @@ class ConfiguredSource(Source):
 
     def _load_detail(self, result: BookResult) -> dict:
         html = fetch_text(result.url, encoding=self.encoding)
+        chapters = self._chapters_by_regex(html, result.url)
+        chapters = self._repair_toc(chapters, html, result.url)
+        title = ""
+        author = ""
+        if self.cfg.get("book_title_re"):
+            t = self._extract(self.cfg["book_title_re"], html)
+            if t:
+                title = clean_text(t)
+        if self.cfg.get("book_author_re"):
+            author = clean_text(self._extract(self.cfg["book_author_re"], html) or "")
+        return {"title": title, "author": author, "chapters": chapters}
+
+    def _chapters_by_regex(self, html: str, base: str) -> list[Chapter]:
+        """按学到的 `chapter_re` 抽目录（纯静态、不发网络请求）。"""
         ch_re = self.cfg.get("chapter_re", "")
         raw: list[dict] = []
         if ch_re:
@@ -196,7 +217,7 @@ class ConfiguredSource(Source):
             if not title or not href:
                 continue
             chapters.append(
-                Chapter(index=len(chapters) + 1, title=title, url=urljoin(result.url, href))
+                Chapter(index=len(chapters) + 1, title=title, url=urljoin(base, href))
             )
         # 有的站目录是「最新章节在最上面」，不翻过来的话用户从第 1 章开始读
         # 读到的是结局。这里统一按升序修正，并重编 index。
@@ -204,15 +225,42 @@ class ConfiguredSource(Source):
             chapters.reverse()
             for i, c in enumerate(chapters, 1):
                 c.index = i
-        title = ""
-        author = ""
-        if self.cfg.get("book_title_re"):
-            t = self._extract(self.cfg["book_title_re"], html)
-            if t:
-                title = clean_text(t)
-        if self.cfg.get("book_author_re"):
-            author = clean_text(self._extract(self.cfg["book_author_re"], html) or "")
-        return {"title": title, "author": author, "chapters": chapters}
+        return chapters
+
+    def _repair_toc(
+        self, chapters: list[Chapter], html: str, base: str
+    ) -> list[Chapter]:
+        """目录太少、或明显只有一部分时，退回**通用启发式**再取一次。
+
+        为什么非有这一步不可（2026-10-14 实测 `www.zxs8.net`）：
+          学到的 `chapter_re` 只认 `<a href>`，而这个站的整本目录是
+          `<a onclick="idm(816445);">第1章 喵</a>`（**没有 href**）——
+          详情页上能读到的只有「最新章节」那 12 条。
+          于是配置"适配成功"、界面显示"12 章"，用户下完才发现
+          《我们猫猫不能听这些》其实有 119 章。
+
+        **配置推导天生脆弱**：它只是对**一个页面**的快照，站方换个模板、
+        换套 JS，正则就残废了 —— 而且残废得**悄无声息**（能抽到东西，
+        只是抽不全）。所以兜底不能也交给正则，得交给不依赖任何正则的
+        通用启发式（`webfetch.extract_toc` + 真实链接驱动的完整性修补）。
+        """
+        like = [{"url": c.url, "title": c.title} for c in chapters]
+        partial, why = webfetch.toc_completeness(like, html)
+        if len(chapters) >= MIN_TOC and not partial:
+            return chapters
+
+        better = webfetch.extract_toc(html, base)
+        picked = better if len(better) > len(like) else like
+        picked, _url, _note = webfetch.upgrade_toc(picked, html, base)
+        if len(picked) <= len(chapters):
+            return chapters
+        logger.info(
+            "目录兜底：%s 正则只拿到 %d 章（%s），通用启发式拿到 %d 章",
+            base, len(chapters), why or "条数偏少", len(picked))
+        return [
+            Chapter(index=i, title=str(c.get("title") or ""), url=str(c.get("url") or ""))
+            for i, c in enumerate(picked, 1)
+        ]
 
     # ---------- 正文 ----------
     def fetch(self, result: BookResult, progress=None, limit=None, stop=None) -> Book:
@@ -225,47 +273,75 @@ class ConfiguredSource(Source):
 
     # ---------- 单章（预览用） ----------
     def fetch_chapter(self, chapter: Chapter) -> str:
-        text = self._fetch_page(chapter.url)
-        if not self.cfg.get("chapter_paged"):
-            return tidy_content(strip_page_mark(text), chapter.title)
+        # 非「第(x/y)页」式分页的站，也可能把一章拆成 `xxx_1.html` ——
+        # 那种续页是页面用 JS 声明出来的（见 webfetch.reading_next_url）。
+        # 统一走 fetch_reading_pages 拼接，逻辑只写一份。
+        if self.cfg.get("chapter_paged"):
+            return self._fetch_paged_chapter(chapter)
+        text = webfetch.fetch_reading_pages(chapter.url, self._page_pair)
+        return tidy_content(strip_page_mark(text), chapter.title)
 
-        # 一章被拆成多页（第(1/3)页）—— 必须把后续页也抓回来拼上，
-        # 否则「下载成功」的书每章只有前 1/3，而且用户完全看不出来。
-        mark = page_mark(text)
-        if not mark:
-            return tidy_content(strip_page_mark(text), chapter.title)
-        cur, total = mark
-        if total <= 1 or total > 30:
-            return tidy_content(strip_page_mark(text), chapter.title)
-
-        parts = [strip_page_mark(text)]
-        for n in range(cur + 1, total + 1):
-            u = page_url(chapter.url, n)
-            if not u:
-                break
-            try:
-                more = self._fetch_page(u)
-            except Exception:  # noqa: BLE001
-                break
-            body = strip_page_mark(more)
-            # 页面不存在时很多站会把上一页原样返回，靠「内容没变」判断到底
-            if not body.strip() or body.strip() == parts[-1].strip():
-                break
-            parts.append(body)
-        return tidy_content("\n\n".join(p for p in parts if p.strip()), chapter.title)
-
-    def _fetch_page(self, url: str) -> str:
-        try:
-            html = fetch_text(url, encoding=self.encoding)
+    def _page_pair(self, url: str) -> tuple[str, str]:
+        """抓一页 → (正文, 原始 HTML)。"""
+        html = fetch_text(url, encoding=self.encoding)
+        # 正文可能是 `document.writeln(base64)` 写出来的（实测 zxs8）——
+        # 不先解，`content_re` 在原始 HTML 上一个字也匹配不到。
+        html = webfetch.unwrap_writeln(html)
+        if self.cfg.get("content_re"):
             raw = self._extract(
-                self.cfg.get("content_re", ""),
+                self.cfg["content_re"],
                 html,
                 multi=self.cfg.get("content_multi", False),
                 filt=self.cfg.get("content_filter"),
             )
-            return clean_text(raw) if raw else ""
+            return (clean_text(raw) if raw else ""), html
+        # 适配器只学到了「正文容器叫什么」（如 `word_read`），没写得出正则 ——
+        # 那种容器里套着容器，非贪婪正则只能取到第一层 `</div>` 之前的一截。
+        # 交给通用抽取：它走栈式配对，不怕嵌套。见 adapter._synthesize_content_re。
+        return webfetch.extract_content(html, hint=self.cfg.get("content_hint") or ""), html
+
+    def _fetch_paged_chapter(self, chapter: Chapter) -> str:
+        """把一章的**所有页**抓齐。两种「一章拆多页」都要认：
+
+        ① 页面标了「第(1/3)页」—— 总页数明说了，按页码往后拼；
+        ② 页面没标页数，但内联 JS 声明了续页（`xxx_1.html`，实测 zxs8）。
+
+        只认其中一种就会**静默少给后半章**：界面一切正常，用户以为章节
+        本来就这么短。所以走一个循环、**每一步都先问页面自己**
+        （`reading_next_url`，站点换模板也跟得上），问不到再退回「按页码
+        模板拼」的通用推测（`page_url`）——声明式优先、模板式兜底。
+        """
+        try:
+            body, html = self._page_pair(chapter.url)
         except Exception:  # noqa: BLE001
             return ""
+        parts = [strip_page_mark(body)] if (body or "").strip() else []
+        seen = {(body or "").strip()}
+        mark = page_mark(body)
+        total = mark[1] if mark else 0
+        if total > 30:  # 这么离谱多半是页脚噪音，别当真
+            total = 0
+        # 有页数就按页数走；没有就靠声明式续页，给个上限防跑飞。
+        limit = total or 6
+        cur_url, cur_html = chapter.url, html or ""
+        for n in range(1, max(1, limit)):
+            u = webfetch.reading_next_url(cur_html, cur_url) or page_url(cur_url, n + 1)
+            if not u:
+                break
+            try:
+                nb, nh = self._page_pair(u)
+            except Exception:  # noqa: BLE001
+                break
+            seg = strip_page_mark(nb)
+            key = seg.strip()
+            # 页码越界时很多站把上一页原样返回 —— 靠「内容没变」判断到底，
+            # 不然会把同一页拼 N 遍。
+            if not key or key in seen:
+                break
+            seen.add(key)
+            parts.append(seg)
+            cur_url, cur_html = u, nh or ""
+        return tidy_content("\n\n".join(p for p in parts if p.strip()), chapter.title)
 
     @staticmethod
     def _extract(pattern: str, html: str, multi: bool = False, filt: Optional[str] = None) -> Optional[str]:
