@@ -323,8 +323,13 @@ def discover(
     log: Optional[LogFn] = None,
     limit: int = 12,
     budget: float = DISCOVER_BUDGET,
+    learn_async: bool = True,
 ) -> list[BookResult]:
-    """搜书名 → 找书页 → 核实 → 记进来源库。"""
+    """搜书名 → 找书页 → 核实 → 记进来源库。
+
+    ⚠ `learn_async=True`（默认）：结果好了就立刻返回，「学站」丢后台。
+      这不是优化，是**正确性** —— 见 `_learn_later()` 的注释。
+    """
     def say(title: str, detail: str = "", ok: bool = True) -> None:
         if not log:
             return
@@ -398,11 +403,66 @@ def discover(
     # 本次搜索的进度流里显示出来 —— 用户能直观看到「L 源又变大了」。
     if results:
         try:
-            learn_sites([host_of(r.url) for r in results], keyword=keyword, log=log)
+            _learn_later([host_of(r.url) for r in results], keyword=keyword,
+                         log=log, inline=not learn_async)
+        except Exception as e:  # noqa: BLE001
+            logger.info("站点学习启动失败（不影响本次结果）: %s", e)
+
+    return results
+
+
+# 后台「学站」线程：只为了能在测试里等它收尾。
+_learn_threads: list[threading.Thread] = []
+_learn_lock = threading.Lock()
+
+
+def _learn_later(hosts: list[str], *, keyword: str, log: Optional[LogFn],
+                 inline: bool) -> None:
+    """学站内搜索模板 —— **默认放后台，绝不挡在结果前面**。
+
+    ⚠ 为什么必须后台（2026-10-14 线上实测踩到，用户报「这本书找不到」）：
+      学站是 `learn_sites()` 干的，预算 `_LEARN_BUDGET = 14.0` 秒。
+      原先它**同步**写在 `discover()` 的结尾，于是实测时间线变成：
+
+          0.3s  Bing 搜到结果        1.5s  百度搜到结果
+          3.2s  ✓ 发现可用来源（结果其实**已经好了**）
+          3.2s  开始学站 …
+         17.2s  ← 函数才 return
+
+      而搜索的墙钟硬上限是 `engine.SEARCH_HARD_DEADLINE = 20s`。
+      留给「联网发现」的余量只剩 **不到 3 秒** —— 只要联网稍慢一点，
+      整轮就被收手，用户看到的是「没找到」。
+      真实事故：搜《我们猫猫不能听这些》，本地 7 个源零覆盖，
+      联网**其实已经找到**（实测命中 zxs8.net），却因为这一等被砍成 0 结果。
+
+      学站是**为下一次**服务的（把这次发现的站学成"下次能直接搜的源"），
+      跟本次结果毫无关系，没有任何理由挡在结果交付前面。
+
+    `inline=True` 只为测试保留（用来反证"同步版确实会阻塞"）。
+    """
+    def run() -> None:
+        try:
+            learn_sites(hosts, keyword=keyword, log=log)
         except Exception as e:  # noqa: BLE001
             logger.info("站点学习失败（不影响本次结果）: %s", e)
 
-    return results
+    if inline:
+        run()
+        return
+
+    t = threading.Thread(target=run, name="learn-sites", daemon=True)
+    with _learn_lock:
+        _learn_threads[:] = [x for x in _learn_threads if x.is_alive()]
+        _learn_threads.append(t)
+    t.start()
+
+
+def wait_learn(timeout: float = 30.0) -> None:
+    """等后台学站线程收尾（**只给测试用**，产品路径不需要等）。"""
+    with _learn_lock:
+        threads = list(_learn_threads)
+    for t in threads:
+        t.join(timeout)
 
 
 def health_check(*, log: Optional[LogFn] = None, limit: int = 0) -> dict:

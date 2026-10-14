@@ -24,7 +24,9 @@
 """
 from __future__ import annotations
 
+import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -32,6 +34,8 @@ from urllib.parse import quote, urljoin, urlparse
 
 from ..utils import clean_text, fetch_text, normalize_title
 from .base import check_content_quality, page_mark
+
+logger = logging.getLogger("novel.adapt")
 
 # ---------------------------------------------------------------------------
 # 编码
@@ -309,6 +313,16 @@ class Adaptation:
 
     def log(self, step: str, ok: bool, detail: str = "") -> None:
         self.steps.append((step, ok, detail))
+        # 每一步都落日志。这是「接入一个网址失败了，为什么」**唯一**的取证来源。
+        #
+        # ⚠ 为什么必须在这里（2026-10-14 补）：adapter 原先**一行日志都没有** ——
+        #   用户报「在接入网址里输了，不行」，去 app.log 里翻，只有一条
+        #   `path=/api/adapt/stream status=200`（连 URL 和关键词都没有），
+        #   完全无法判断是网址填错、站没搜索、还是正文抓不到。
+        #   而适配恰恰是**最需要可诊断**的一条路：它要用户手填网址，
+        #   失败面最大，且失败后除了界面上那句提示就再无痕迹。
+        logger.info("适配步骤 %-4s %-8s %s",
+                    "ok" if ok else "FAIL", step, detail[:160])
         if self.on_step is not None:
             try:
                 self.on_step(self._step_dict(step, ok, detail))
@@ -534,6 +548,34 @@ async def adapt(url: str, keyword: str = "斗破苍穹", *, save: bool = False) 
 
 
 def adapt_sync(
+    url: str,
+    keyword: str = "斗破苍穹",
+    *,
+    save: bool = False,
+    on_step: Optional[Callable[[dict], None]] = None,
+) -> Adaptation:
+    """完整适配流程（同步）—— 外面包一层，只负责**记日志**。
+
+    为什么拆成两层：`_adapt_impl` 里有十来个 `return ad`（每一步失败都会
+    提前返回），要保证「无论从哪个出口出去，都有一条结论落进日志」，
+    只能在外面套一层。少了它就会出现「界面上显示失败、日志里一片空白」。
+    """
+    logger.info("适配开始 url=%s 试搜关键词=%s 保存=%s", url, keyword, save)
+    t0 = time.time()
+    try:
+        ad = _adapt_impl(url, keyword, save=save, on_step=on_step)
+    except Exception:
+        logger.exception("适配异常 url=%s", url)
+        raise
+    last_step, last_ok, last_detail = ad.steps[-1] if ad.steps else ("", False, "")
+    logger.info(
+        "适配%s url=%s 耗时=%dms 卡在=%s 详情=%s",
+        "成功" if ad.ok else "失败", ad.url, int((time.time() - t0) * 1000),
+        last_step or "-", str(last_detail)[:120])
+    return ad
+
+
+def _adapt_impl(
     url: str,
     keyword: str = "斗破苍穹",
     *,
