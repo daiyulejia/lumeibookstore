@@ -44,6 +44,7 @@ SHOT = ROOT / "tools" / "shot.py"
 TOC_TEST = ROOT / "tools" / "test_toc_full.py"
 SAVE_TEST = ROOT / "tools" / "test_adapt_save.py"
 LAUNCH_TEST = ROOT / "tools" / "test_chrome_launcher.py"
+DIRECT_TEST = ROOT / "tools" / "test_adapt_direct.py"
 
 
 @dataclass
@@ -134,9 +135,11 @@ MUTATIONS: list[Mutation] = [
              TOC_TEST),
     Mutation("toc", "「目录可能不全」只写日志、不写进用户看得见的那一步",
              ADAP,
-             '               f"用你给的那一页（{len(d_html)} 字节 · {len(d_toc)} 章）"\n'
+             '               (f"用你给的那一页（{len(d_html)} 字节 · {len(d_toc)} 章）" if same_page\n'
+             '                else f"用你给的那一章的目录页（{len(d_html)} 字节 · {len(d_toc)} 章）")\n'
              '               + (f" —— {d_toc_note}" if d_toc_note else ""))',
-             '               f"用你给的那一页（{len(d_html)} 字节 · {len(d_toc)} 章）")',
+             '               (f"用你给的那一页（{len(d_html)} 字节 · {len(d_toc)} 章）" if same_page\n'
+             '                else f"用你给的那一章的目录页（{len(d_html)} 字节 · {len(d_toc)} 章）"))',
              TOC_TEST),
     Mutation("toc", "`upgrade_toc` 忽略 pending（把被自己停下当完整目录）",
              WEB,
@@ -203,6 +206,49 @@ MUTATIONS: list[Mutation] = [
              '    sites = [s for s in sites if not (isinstance(s, dict) and s.get("name") == cfg["name"])]',
              "    sites = list(sites)",
              SAVE_TEST),
+
+    # ---- 适配向导的「责任划分」：用户只管粘地址，剩下我来兜 ----
+    Mutation("direct", "用户给章节页时，先「就当它是书页」（把章节页认成书页）",
+             ADAP,
+             "        direct = (\n"
+             "            _detail_via_chapter(given_url, given_html, ad)\n"
+             "            or _detail_via_page(given_url, given_html)\n"
+             "        )",
+             "        direct = (\n"
+             "            _detail_via_page(given_url, given_html)\n"
+             "            or _detail_via_chapter(given_url, given_html, ad)\n"
+             "        )",
+             DIRECT_TEST),
+    Mutation("direct", "顺着「目录」入口跳时不再判『入口是我上一级』（书页也乱跳）",
+             ADAP,
+             "        if not _is_under(given_url, target):\n"
+             "            continue      # 入口不是我上一级 → 我多半本来就是书页，别乱跳",
+             "        if not target:\n"
+             "            continue",
+             DIRECT_TEST),
+    Mutation("direct", "样例/质量判定用未收口的原文（用户看到反爬生僻字）",
+             ADAP,
+             '    shown = tidy_content(strip_page_mark(text), probe_ch["title"])',
+             "    shown = strip_page_mark(text)",
+             DIRECT_TEST),
+    Mutation("direct", "直接路径不再顺手认搜索结果结构（来源等于没有搜索）",
+             ADAP,
+             "            s_pat, s_items = _pick_best_link_pattern(\n"
+             "                s_html, SEARCH_ITEM_PATTERNS, min_hits=5, chapterish=False\n"
+             "            )",
+             "            s_pat, s_items = \"\", []",
+             DIRECT_TEST),
+    Mutation("direct", "试搜一律用向导默认关键词（站里没那本书就判成『没搜索』）",
+             ADAP,
+             "    probe_kw = book_title or keyword",
+             "    probe_kw = keyword",
+             DIRECT_TEST),
+    Mutation("direct", "拿到试搜页后又重打一次搜索（白白多撞一次限速）",
+             ADAP,
+             "            if not _looks_like_search_result(s_html, keyword):\n"
+             "                s_html, _ = _search_fetch(s_url, s_data)",
+             "            s_html, _ = _search_fetch(s_url, s_data)",
+             DIRECT_TEST),
 ]
 
 

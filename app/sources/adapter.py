@@ -37,7 +37,7 @@ from urllib.parse import quote, urljoin, urlparse
 
 from ..utils import clean_text, fetch_text, normalize_title
 from .. import webfetch
-from .base import check_content_quality, page_mark
+from .base import check_content_quality, page_mark, strip_page_mark, tidy_content
 
 logger = logging.getLogger("novel.adapt")
 
@@ -414,6 +414,11 @@ STEP_HUMAN: dict[str, dict[str, str]] = {
         "w": "写进站点列表之后，以后直接用书名搜索就能用到它",
         "hint": "站点列表文件（sites.json）读不出来，为避免覆盖掉你已有的站点，这次没有保存。检查一下那个文件是不是坏了。",
     },
+    "找到书的目录": {
+        "t": "从你给的那一章找到这本书",
+        "w": "你给的是正在读的那一章，我顺着页面上的「目录」入口找到了这本书的页面",
+        "hint": "你给的那一页是某一章，而它上面的「目录」入口打不开。我会改用你给的那一页继续试。",
+    },
     "打开首页": {
         "t": "打开这个网站的首页",
         "w": "先确认站还活着、是中文小说站，顺便看出它用什么建站系统",
@@ -516,8 +521,17 @@ def _pick_best_link_pattern(
     return best[1], best[2]
 
 
-def _find_search_url(base: str, home_html: str, keyword: str) -> tuple[Optional[str], str]:
-    """找出这个站能用的搜索地址模板。返回 (模板, 说明)。"""
+def _find_search_url(
+    base: str, home_html: str, keyword: str
+) -> tuple[Optional[tuple[str, str, Optional[dict]]], str, str]:
+    """找出这个站能用的搜索地址模板。返回 ( (模板, 方法, 请求体) | None, 说明, 试搜页 HTML )。
+
+    ⚠ 第三个返回值是**试搜成功的那个搜索结果页**，必须带出来：
+      · 调用方要拿它推出「哪一条是书」（`search_item_re`）—— 少了这个字段，
+        存下来的来源只有地址、认不出结果条，等于"没有搜索"，用户按书名搜不到
+        自己刚加的站（而界面上刚写过"下次直接用书名搜索就能用到"）。
+      · 拿不出来的话调用方只能再打一次搜索请求，既慢又更容易撞上限速。
+    """
     cands: list[tuple[str, str]] = []
     # 1) 首页里的搜索表单
     for f in _FORM_RE.findall(home_html):
@@ -559,7 +573,7 @@ def _find_search_url(base: str, home_html: str, keyword: str) -> tuple[Optional[
     for (tpl, method, body), why in cands:
         for enc in ("utf-8", "gbk"):
             if attempts >= MAX_ATTEMPTS:
-                return None, "没找到可用的搜索接口（试了常见路径都不通）"
+                return None, "没找到可用的搜索接口（试了常见路径都不通）", ""
             kwv = quote(keyword, encoding=enc)
             if method == "post":
                 u = tpl
@@ -581,9 +595,26 @@ def _find_search_url(base: str, home_html: str, keyword: str) -> tuple[Optional[
             if _looks_like_search_result(html, keyword):
                 if method == "post":
                     # POST 的模板里没地方放 {kw}，用一次性的实际地址
-                    return (u, "post", body), why
-                return (tpl, "get", None), why
-    return None, "没找到可用的搜索接口"
+                    return (u, "post", body), why, html
+                return (tpl, "get", None), why, html
+    return None, "没找到可用的搜索接口", ""
+
+
+def _book_title_of(html: str) -> str:
+    """从页面里认出书名（认不出来返回空串）。
+
+    两处用得上：
+      · 配置里的 `book_title_re`（进详情页时要把书名抠出来）
+      · **试搜关键词** —— 见 `_adapt_impl` 里 `probe_kw` 那段注释：
+        拿默认的《斗破苍穹》去试，站里没这本书时会把"有搜索"误判成"没搜索"。
+    """
+    for p in TITLE_PATTERNS:
+        mm = re.search(p, html, re.S | re.I)
+        if mm:
+            cand = clean_text(mm.group(1))
+            if 1 < len(cand) <= 40:
+                return cand
+    return ""
 
 
 #: 站方限速的话术。踩过一次，别再删那个 `[】\]）)]?` —— 少写收括号时
@@ -716,6 +747,19 @@ def _to_site_home(url: str, html: str, enc: str, ad: "Adaptation") -> tuple[str,
     return target, h2, enc2
 
 
+def _same_page(a: str, b: str) -> bool:
+    """两个地址是不是同一页（只差结尾斜杠）。
+
+    ⚠ 单独抽出来的原因有两个，都不是形式问题：
+      1. 「去掉末尾斜杠」在这个项目里是**踩过的坑**（zxs8 的 `/3_3316/` 去掉
+         斜杠就变 404）。所以 `_adapt_impl` 里有一条"不许再出现 `rstrip("/")`"
+         的断言盯着 —— 比较用到的 rstrip 放进这里，那条断言才不会被稀释。
+      2. 判断"这一页是不是用户给的那一页"只在**比较**时该忽略斜杠，
+         绝不能拿出去改写要请求的地址。
+    """
+    return (a or "").rstrip("/") == (b or "").rstrip("/")
+
+
 def _detail_via_page(given_url: str, given_html: str) -> Optional[tuple[str, str]]:
     """用户给的那一页**本身就是一本书的详情页**吗？是就把 `(url, html)` 交出来。
 
@@ -741,6 +785,64 @@ def _detail_via_page(given_url: str, given_html: str) -> Optional[tuple[str, str
     except Exception:  # noqa: BLE001
         return None
     return given_url, given_html
+
+
+def _is_under(inner: str, outer: str) -> bool:
+    """`inner` 是不是在 `outer` **下面一层**（路径前缀关系）。
+
+    用来区分「用户给的是列表页」还是「用户给的是内页」：
+      `/3_3316/817762.html` 在 `/3_3316/` 之下 → 给的是**章节页**
+      `/3_3316/`             不在 `/3_3316/mulu/1.html` 之下 → 给的是**书页**
+    """
+    ip, op = urlparse(inner or "").path, urlparse(outer or "").path
+    if not op.endswith("/"):
+        op += "/"
+    return bool(ip) and ip != op and ip.startswith(op)
+
+
+def _detail_via_chapter(
+    given_url: str, given_html: str, ad: "Adaptation"
+) -> Optional[tuple[str, str]]:
+    """用户给的是**章节页**时，顺着「章节目录 / 完整目录」入口找到书页。
+
+    向导上写的是「首页 / 某一本书的页面 / 正在读的那一章，给哪个都行」，
+    可章节页确实**不该**按详情页处理：
+
+    ⚠ 为什么不能靠 `_detail_via_page` 兜住（2026-10-14 实测 zxs8 的章节页，
+      而且是**静默错**）：章节页底部挂着「已完结热门小说推荐」一屏 7 条
+      `/3_3300/` 别的书的链接，加上导航里的「章节目录」正好凑够 8 条，
+      两条判据全过 → **章节页被当成书页**，`extract_toc` 挑出来的"目录"
+      是那 7 本别的书（连章节都不是）。接下来推 `chapter_re` 又推不出来，
+      界面只丢一句「详情页只找到 0 条章节链接」—— 用户拿到的信息是
+      "这个站不能用"，而真相是"该跟一跳目录入口"。
+
+    所以先做**这一个动作**：页面上有「目录」入口、且那个入口是**我上一级**
+    （`/3_3316/817762.html` → `/3_3316/`），就先跟过去。
+    判"上一级"这一条是为了**不误伤书页**：书页的「完整目录」入口指向的是
+    它的下一层（`/3_3316/mulu/1.html`），那种情况原判据本来就是对的，
+    没必要多打一次请求。
+    跟不过去就返回 None，让原有逻辑继续兜（不制造新的失败点）。
+    """
+    try:
+        entries = webfetch.toc_entry_links(given_html, given_url)
+    except Exception:  # noqa: BLE001
+        return None
+    for link in entries:
+        target = urljoin(given_url, link or "")
+        if not target or _same_page(target, given_url):
+            continue
+        if not _is_under(given_url, target):
+            continue      # 入口不是我上一级 → 我多半本来就是书页，别乱跳
+        try:
+            h2, _e2 = _get(target)
+        except Exception:  # noqa: BLE001
+            continue
+        got = _detail_via_page(target, h2)
+        if got:
+            ad.log("找到书的目录", True,
+                   f"你给的是某一章，顺着页面上的「目录」入口找到了这本书的页面 {target}")
+            return got
+    return None
 
 
 def _adapt_impl(
@@ -806,20 +908,66 @@ def _adapt_impl(
     # 搜索接口是**纯解析**出来的（不发请求），所以无论走哪条路都先算出来：
     # 用户给的那一页如果本身就是详情页，我们连搜都不用搜。
     s_tpl, s_method, s_body, s_pat = "", "", None, ""
-    found, why = _find_search_url(url, home, keyword)
 
-    # 优先用**用户给的那一页**（见 `_detail_via_page`）：搜索既慢又爱被限速，
-    # 而"是哪本书"的答案就在我们手上，没有理由再去排队。
-    direct = _detail_via_page(given_url, given_html) if given_url != url else None
+    # 优先用**用户给的那一页**：搜索既慢又爱被限速，而"是哪本书"的答案
+    # 就在我们手上，没有理由再去排队。
+    #
+    # ⚠ 两步的**顺序不能反**（2026-10-14 实测 zxs8 的章节页）：
+    #   `_detail_via_page` 会被章节页**骗过**（见 `_detail_via_chapter` 的说明：
+    #   章节页底下的"热门推荐"7 条别的书 + 导航「章节目录」正好凑够 8 条），
+    #   于是章节页被当成书页、目录读成别的书、`chapter_re` 推不出来，
+    #   用户只看到"详情页只找到 0 条章节链接"。
+    #   先把"我给的是内页、目录入口就在上一级"这种情况摘出去，再谈"就当它是书页"。
+    direct = None
+    if given_url != url:
+        direct = (
+            _detail_via_chapter(given_url, given_html, ad)
+            or _detail_via_page(given_url, given_html)
+        )
+
+    # 试搜用哪个关键词？**能拿到真实书名就用真名。**
+    # 为什么不能一直用默认的《斗破苍穹》（2026-10-14 定位）：
+    #   `_looks_like_search_result` 要求结果页里出现关键词前两个字。站里没有
+    #   这本书时，搜索接口**明明存在**却会被判成"这个站没有搜索"，
+    #   于是存下来的来源搜不到任何书 —— 而界面上刚写着"下次直接用书名搜索
+    #   就能用到"。而我们这时已经握着这本书的详情页，书名就在里面。
+    book_title = _book_title_of(direct[1]) if direct else ""
+    probe_kw = book_title or keyword
+    found, why, s_html = _find_search_url(url, home, probe_kw)
+
     if direct:
         detail_url, d_html = direct
+        # 详情页是"用户原样给的那一页"，还是"我们顺着章节页找到的目录页"？
+        # 文案要说准 —— 用户对着步骤逐条核，说错了反而让人以为我们跑偏了。
+        same_page = _same_page(detail_url, given_url)
         if found:
+            s_tpl, s_method, s_body = found
             ad.log("找搜索接口", True, f"{s_method.upper()} {s_tpl}  （{why}）")
-        ad.log("打开搜索页", True, "跳过 —— 你给的这一页就是这本书的页面")
-        ad.log("推导搜索条目", True, "跳过（同上，不用再搜一遍）")
+            # ⚠ 顺手把「哪一条是书」也认出来（`search_item_re`）。
+            #   不认的话配置里只有地址、没有条目正则，`ConfiguredSource.search()`
+            #   直接返回空 —— 存下来的来源等于**没有搜索**，用户按书名搜不到
+            #   自己刚加的站，而界面上刚承诺过"下次直接用书名搜索就能用到"。
+            #   这里用的就是 `_find_search_url` 试搜时那张**真的结果页**，
+            #   不再多发一次请求（也少撞一次限速）。
+            s_pat, s_items = _pick_best_link_pattern(
+                s_html, SEARCH_ITEM_PATTERNS, min_hits=5, chapterish=False
+            )
+        # ⚠ 措辞别写"跳过"：这一步的目的是**找到这本书**，而"这本书是哪一本"
+        #   我们已经从用户给的那一页得到了 —— 不是没做事，是不需要靠搜索来做事。
+        ad.log("打开搜索页", True,
+               "不用搜 —— " + ("你给的那一页就是这本书的页面" if same_page
+                               else "已顺着你给的那一章找到了这本书的页面"))
+        ad.log("推导搜索条目", True,
+               (f"顺手认出了搜索结果的结构（{len(s_items)} 条）—— 以后能按书名搜到它"
+                if s_pat else "跳过（不用再搜一遍；这个来源先不带搜索）"))
         # 顺便把**完整目录**也跟一遍（详情页常常只挂「最新章节」十几条）。
         # 不跟的话第一屏写的是「12 章」，而全书 119 章 —— 那个数字看着
         # 完全正常，用户却会以为这本书就这么短。宁可多花一秒说真话。
+        # ⚠ 但**推 `chapter_re` 仍然要用详情页**（下面那一步），不能改用
+        #   `upgrade_toc` 交回的"完整目录页"：zxs8 那族的目录页里，章节链接是
+        #   JS 造的（`onclick="idm(...)"`，**没有 href**），`CHAPTER_PATTERNS`
+        #   一条都匹配不到 → 直接退化成"详情页只找到 0 条章节链接"。
+        #   实测过：改了反而全盘失败，所以这里只要目录，不要换基准页。
         d_toc = webfetch.extract_toc(d_html, detail_url)
         d_toc, _dtoc_url, d_toc_note = webfetch.upgrade_toc(d_toc, d_html, detail_url)
         if d_toc_note:
@@ -828,7 +976,8 @@ def _adapt_impl(
         #   第一屏写「12 章」而全书 119 章时，那个数字看起来完全正常，
         #   用户会以为这本书就这么短。而「搜不到 / 找不全」正是用户最常报的。
         ad.log("打开详情页", True,
-               f"用你给的那一页（{len(d_html)} 字节 · {len(d_toc)} 章）"
+               (f"用你给的那一页（{len(d_html)} 字节 · {len(d_toc)} 章）" if same_page
+                else f"用你给的那一章的目录页（{len(d_html)} 字节 · {len(d_toc)} 章）")
                + (f" —— {d_toc_note}" if d_toc_note else ""))
     else:
         if not found:
@@ -846,8 +995,14 @@ def _adapt_impl(
             if s_body
             else None
         )
+        # ⚠ `_find_search_url` 刚刚用**同一个关键词**试搜成功过，它交回来的
+        #   那张页面就是我们要的（而且它已经验过"确实是这本书的结果页"）。
+        #   这里再打一次纯属浪费，还白白多一次撞上站方限速的机会 —— 直接用。
+        #   顺带把"模板是照 utf-8 拼的、可上次成功可能走的是 gbk"这个隐患也
+        #   绕开了：那张页面本身就是成功产物，不依赖我们怎么拼 URL。
         try:
-            s_html, _ = _search_fetch(s_url, s_data)
+            if not _looks_like_search_result(s_html, keyword):
+                s_html, _ = _search_fetch(s_url, s_data)
         except Exception as e:  # noqa: BLE001
             ad.log("打开搜索页", False, str(e)[:60])
             return ad
@@ -907,14 +1062,7 @@ def _adapt_impl(
         return ad
     ad.log("推导目录正则", True, f"{len(c_items)} 章，例：{' / '.join(i['title'][:14] for i in c_items[:3])}")
 
-    book_title = ""
-    for p in TITLE_PATTERNS:
-        mm = re.search(p, d_html, re.S | re.I)
-        if mm:
-            cand = clean_text(mm.group(1))
-            if 1 < len(cand) <= 40:
-                book_title = cand
-                break
+    book_title = _book_title_of(d_html)
     book_author = ""
     for p in AUTHOR_PATTERNS:
         mm = re.search(p, d_html, re.S | re.I)
@@ -939,9 +1087,16 @@ def _adapt_impl(
         ad.log("推导正文正则", False,
                "这一章里读不出正文（多半是正文要 JS 渲染或要登录）")
         return ad
-    ok, note = check_content_quality(text)
-    ad.sample_chars = len(text)
-    ad.sample_preview = text[:120].replace("\n", " ")
+    # ⚠ 给用户看的样例、以及"抓到没抓到正文"的判定，都必须用**收口之后**的文本。
+    #   阅读/下载落盘的正文走 `tidy_content()`（含 `deobfuscate`：把反爬的生僻字
+    #   还原回常用字、拆掉 `『』`），这里若直接拿原始 HTML 抽出来的文本，
+    #   用户看到的就会是「密闭葶肮脏塑料袋」这种生字——而真正读到的书里是「的」。
+    #   2026-10-14 线上实测：样例里 6 处「葶」、落盘正文 0 处，就是这条。
+    #   用户正是靠这个样例判断"抓对没抓对"，给假坏样本等于把人往错的方向带。
+    shown = tidy_content(strip_page_mark(text), probe_ch["title"])
+    ok, note = check_content_quality(shown)
+    ad.sample_chars = len(shown)
+    ad.sample_preview = shown[:120].replace("\n", " ")
     if not ok:
         ad.log("推导正文正则", False, f"抓到了但内容不合格：{note}")
         return ad
@@ -950,7 +1105,7 @@ def _adapt_impl(
         True,
         (f"{content_pat[:40]}…" if content_pat
          else f"容器 {content_hint}（嵌套太深，用容器名定位）")
-        + f" 抽出 {len(text)} 字，样例：{ad.sample_preview[:50]}",
+        + f" 抽出 {len(shown)} 字，样例：{ad.sample_preview[:50]}",
     )
 
     # ---- 5. 组装配置 ----
@@ -971,7 +1126,7 @@ def _adapt_impl(
         "content_multi": False,
         "_adapted": True,
         "_engine": ad.engine,
-        "_verified": f"{len(text)} 字正文通过质量校验",
+        "_verified": f"{len(shown)} 字正文通过质量校验",
     }
     # 正文容器嵌套太深、正则复现不出来时，只留容器名 —— 运行时交给
     # `webfetch.extract_content(hint=…)`（栈式配对）。没有这一位，
