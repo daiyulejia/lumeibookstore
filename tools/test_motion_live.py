@@ -514,6 +514,51 @@ def main() -> int:
         else:
             bad("拿不到 --a-1/--a-2 —— 主题可能没挂上")
 
+        # 8e. 首页那句短句：真机上必须是**今天那一句**，而且样式真的生效
+        #
+        # 为什么必须真机验（静态检查只做到"池子存在、有人写它"）：
+        #   `rotateHeroArt()` 里 `heroLineFor()` 拿的是**本地日期**的 dayIndex。
+        #   静态检查看不出「js 抛异常 → 没走到赋值」「日期算成 UTC → 差一天」，
+        #   而这两种都只表现为"显示的还是 HTML 里那句"，看不出坏了。
+        # 判据用**外部固定值**（Python 自己算今天的序号），不能拿页面自报的数当基准。
+        import re as _re
+        art_txt = (ROOT / "app" / "static" / "js" / "art.js").read_text(encoding="utf-8")
+        pool = _re.findall(r'"([^"]*)"', _re.search(
+            r"HERO_LINES = \[([\s\S]*?)\];", art_txt).group(1))
+        # 与 art.js 的 dayIndex() 同一套算法：**本地时区**、按天取整。
+        # art.js: floor((d.getTime() - d.getTimezoneOffset()*60000) / 86400000)
+        #   · getTimezoneOffset() 是"加到本地时间上得到 UTC"的分钟数（UTC+8 → -480）
+        #   · 所以 `-getTimezoneOffset()*60` 就是本地的 UTC 偏移秒数
+        _off = -time.altzone if (time.daylight and time.localtime().tm_isdst) \
+            else -time.timezone
+        day_idx = int((time.time() + _off) // 86400)
+        expect = pool[day_idx % len(pool)]
+        say = json.loads(b.js("""
+          const el = document.querySelector('.lu-say');
+          if (!el) return JSON.stringify(null);
+          const cs = getComputedStyle(el);
+          return JSON.stringify({
+            text: el.textContent.trim(),
+            family: cs.fontFamily, size: cs.fontSize,
+            visible: !!(el.offsetWidth && el.offsetHeight),
+          });
+        """))
+        if not say:
+            bad("首页找不到 .lu-say —— 那句短句整块没了")
+        elif say["text"] != expect:
+            bad(f"气泡显示的是「{say['text']}」，而今天应该是「{expect}」\n"
+                f"      → 要么 JS 没跑到赋值，要么日期算错了（差一天）")
+        elif not say["visible"]:
+            bad(f"气泡文本对（「{expect}」）但**不可见**（宽高为 0）")
+        else:
+            ok(f"首页短句 = 今天那一句（「{expect}」，{say['size']}）")
+        # 衬线字体：短句要"优美"，这是设计决定，退化会静默变普通
+        if say and not _re.search(r"serif|Songti|SimSun|Georgia", say["family"]):
+            bad(f".lu-say 没有用衬线字体（实测 {say['family']}）—— "
+                f"短句的『摘录感』会静默退化")
+        elif say:
+            ok("短句用衬线字体（摘录感在）")
+
     finally:
         b.close()
 

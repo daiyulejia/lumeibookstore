@@ -142,23 +142,29 @@ html[data-theme="lumei-night"] .brand .mark img{
   50%{opacity:.7;transform:translate(-50%,-50%) scale(1.08)}
 }
 
-/* 对话气泡：噜噜的口头禅「没事就是呗」
+/* 对话气泡：每天一句短句（古诗短句 / 温柔的话，见 art.js 的 HERO_LINES）
    ⚠ 不要做成「淡入淡出」—— 截图和首屏常抓在隐藏相位，看起来像坏了。
-      改成默认常显、只在动画里轻微上浮。 */
+      改成默认常显、只在动画里轻微上浮。
+   ⚠ 用衬线字体（宋体族）+ 一点字距：短句要"优美"，衬线是最省事也最有效
+      的手段；而且这一块只在噜妹主题下存在，不会污染中性外观。
+      字号仍压到 13px —— 360px 手机上气泡最多两行，不能再大。 */
 .lu-say{
+  font-family:"Songti SC","Noto Serif SC","Source Han Serif SC",
+              Georgia,"SimSun",serif;
   font-size:13px;font-weight:600;color:var(--t-2);
-  background:var(--s-card);
+  letter-spacing:.05em;
+  background:color-mix(in srgb,var(--s-card) 86%,var(--a-1) 14%);
   border:1px solid var(--s-line);
-  padding:5px 13px;border-radius:var(--r-full);
+  padding:6px 14px;border-radius:var(--r-full);
   box-shadow:var(--sh-s);
   align-self:center;margin-left:2px;
   white-space:nowrap;
   animation:lu-say-bob 4.5s ease-in-out infinite;
 }
-/* 气泡左上角的小尖角，指向噜噜 */
-.lu-say::before{
-  content:"";position:absolute;
-}
+/* 给这句加直角引号，视觉上更像「摘录一句」而不是聊天输入框里的字。
+   content 用转义写（\300C / \300D）—— 直接在 CSS 里写「」容易被编码折腾。 */
+.lu-say::before{content:"\300C"}
+.lu-say::after{content:"\300D"}
 @keyframes lu-say-bob{
   0%,100%{transform:translateY(0)}
   50%{transform:translateY(-3px)}

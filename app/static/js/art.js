@@ -82,6 +82,55 @@ export const HTML_ONLY = new Set([
  */
 export const LUMEI_KEYS = new Set(["hero_lumei", "hero_lumei2", "hero_lumei3"]);
 
+/* ==========================================================================
+   首页 Hero 那句短句（图片右侧的对话气泡）
+   --------------------------------------------------------------------------
+   用户的诉求原话：
+     「搜索栏上面不只有图片右侧还有句话，可以用那种比较优美的诗句或者
+       话语不要太长来进行展示」
+
+   所以这里落一个**短句池**，按日期轮换 —— 和图片同一天里是**稳定**的
+   （同一个 dayIndex），不会刷新一次换一句、看久了像故障。
+
+   三条硬约束，由 `tools/test_motion.py` 逐条校验（不是写在注释里就算数）：
+     1. **每句 ≤ 10 字** —— "不要太长"必须变成可执行的门槛。否则下次有人
+        塞一句 30 字的进来，气泡在 360px 手机上会撑成三行、把首屏推下去，
+        而"文案变长"这件事**不会有任何报错**。
+     2. **不含标签 / 换行** —— 它是 `textContent` 赋值，写 `<br>` 会原样
+        显示成字面量（用户看到 <br> 四个字符）。
+     3. **至少 12 句** —— 太少的话"每天一句"会退化成"每周重复"。
+
+   内容口径：一半是**公版古诗词里的短句**（于谦 / 李清照 / 苏轼 / 王维…），
+   一半是贴合"找书 / 陪伴"的温柔短句。品牌是水豚陪着找书，不是书斋，
+   所以不堆生僻典故 —— 每句都得一眼读懂。
+   ========================================================================== */
+export const HERO_LINES = [
+  "书中自有草木香",
+  "一盏灯，一本书",
+  "枕上诗书闲处好",
+  "读书不觉已春深",
+  "且将新火试新茶",
+  "明月来相照",
+  "只在此山中",
+  "好风凭借力",
+  "一蓑烟雨任平生",
+  "书卷多情似故人",
+  "一盏茶，一章书",
+  "故事都在这",
+  "今天读点什么",
+  "慢慢读，不着急",
+  "翻一页就有去处",
+  "噜噜替你去翻书",
+  "夜里适合读故事",
+  "书页里藏着风",
+];
+
+/** 今天该显示哪一句（`day` 可注入，方便测试钉住"哪天是哪句"）。 */
+export function heroLineFor(day = dayIndex()) {
+  if (!HERO_LINES.length) return "";
+  return HERO_LINES[day % HERO_LINES.length];
+}
+
 /** 取某张状态的图片 URL（含 @240/@480 两档 srcset）。 */
 export function artUrl(key, size = 480) {
   const a = ART[key];
@@ -200,6 +249,15 @@ export function heroPairs(dup) {
 export function rotateHeroArt(root = null) {
   const dup = root || document.querySelector("[data-hero-pool]");
   if (!dup) return;
+
+  // ⚠ 短句**先设、且不受下面任何早退影响**：
+  //   图片池写坏（键不在 ART 里）时整块会退回 HTML 里的兜底图，
+  //   但"今天那句话"没有理由跟着坏 —— 它跟素材池没有耦合关系。
+  const say = dup.querySelector(".lu-say");
+  if (say) {
+    const line = heroLineFor();
+    if (line) say.textContent = line;
+  }
 
   const { pairs, dropped } = heroPairs(dup);
   if (dropped.length) {

@@ -543,6 +543,72 @@ def t_assets() -> None:
         else:
             ok(f"Hero 轮换池 ≥2 对（当前 {len(raw)} 对）")
 
+    # ---------------------------------------------------------------------
+    # Hero 每天那句短句（art.js 的 HERO_LINES）
+    #
+    # 用户的要求：「搜索栏上面不只有图片右侧还有句话，可以用那种比较优美的
+    #   诗句或者话语**不要太长**来进行展示」。
+    # "不要太长"必须落成**可执行的门槛** —— 否则下次有人塞一句 30 字的进来，
+    #   气泡会在 360px 手机上撑成三行、把首屏推下去，而文案变长**不会有任何报错**。
+    # 同样是"静默失效"高发区：池子加了、但 `rotateHeroArt` 没去写它，
+    #   于是它永远显示 HTML 里写死的那一句 —— 看不出坏了。所以下面
+    #   还要验"真的有人写它"。
+    # ---------------------------------------------------------------------
+    lines_m = re.search(r"HERO_LINES = \[([\s\S]*?)\];", art)
+    MAX_LINE = 10
+    if not lines_m:
+        bad("art.js 里找不到 HERO_LINES —— 首页那句短句就没法每天换")
+    else:
+        lines = re.findall(r'"([^"]*)"', lines_m.group(1))
+        if len(lines) < 12:
+            bad(f"HERO_LINES 只有 {len(lines)} 句 —— 起不到『每天一句』的作用"
+                f"（至少要 12 句，否则会变成每周重复）")
+        else:
+            ok(f"HERO_LINES {len(lines)} 句（每天一句，够轮）")
+
+        toolong = [x for x in lines if len(x) > MAX_LINE]
+        if toolong:
+            bad(f"HERO_LINES 里有 {len(toolong)} 句超过 {MAX_LINE} 字："
+                f"{' / '.join(toolong)}\n"
+                f"      → 用户明确说过『不要太长』。360px 手机上气泡会撑成三行，"
+                f"把搜索框挤出首屏，而且这件事**不报错**。")
+        else:
+            ok(f"HERO_LINES 每句都 ≤{MAX_LINE} 字（最长 "
+                f"{max((len(x) for x in lines), default=0)} 字）")
+
+        dirty = [x for x in lines
+                 if re.search(r"[<>]|\\n|\r|\t", x) or not x.strip()]
+        if dirty:
+            bad(f"HERO_LINES 里有带标签 / 换行 / 空白的句子：{dirty}\n"
+                f"      → 它是 `textContent` 赋值，`<br>` 会被用户**原样看到**。")
+        else:
+            ok("HERO_LINES 都是纯文本（没有标签 / 换行）")
+
+        dupes = {x for x in lines if lines.count(x) > 1}
+        if dupes:
+            bad(f"HERO_LINES 有重复句：{sorted(dupes)}")
+        else:
+            ok("HERO_LINES 没有重复")
+
+        # HTML 里的首屏兜底必须是**池子里的一句** —— 否则 JS 没跑起来时
+        # 看到的话和平时是两种气质（就是原来那句口头禅的问题）。
+        say_m = re.search(r'<span class="lu-say">([^<]*)</span>', html_txt)
+        if not say_m:
+            bad("index.html 里找不到 .lu-say 的兜底文案")
+        elif say_m.group(1) not in lines:
+            bad(f"index.html 的兜底短句「{say_m.group(1)}」不在 HERO_LINES 里 —— "
+                f"JS 没跑起来时看到的话和平时不一致")
+        else:
+            ok(f"index.html 兜底短句来自池子（「{say_m.group(1)}」）")
+
+        # 池子得**真的被写进去**：不然它永远是 HTML 里那一句。
+        if re.search(r'querySelector\(\s*"\.lu-say"\s*\)', art) and \
+           re.search(r'\.lu-say[\s\S]{0,200}?textContent\s*=', art):
+            ok("rotateHeroArt() 真的把那句话写进气泡")
+        else:
+            bad("rotateHeroArt() 没有把 HERO_LINES 写进 `.lu-say` —— "
+                "短句池等于死代码（首页永远显示 HTML 里写死的那句）")
+
     # read_pair / read_eat 走 CSS 背景，确认真的被引用了
     for f in ("read_pair", "read_eat"):
         if f"img/lumei/{f}" in css_txt:

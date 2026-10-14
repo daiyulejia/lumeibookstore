@@ -163,7 +163,12 @@
         <img class="lu-capy is-lumei" src="/static/img/lumei/hero_lumei@480.webp"
              srcset="/static/img/lumei/hero_lumei@240.webp 240w, /static/img/lumei/hero_lumei@480.webp 480w"
              width="480" height="300" alt="" decoding="async" data-hero-role="lumei">
-        <span class="lu-say">没事就是呗</span>
+        <!-- 右下角那句短句：**每天换一句**（art.js 的 HERO_LINES，按日期轮换）。
+             ⚠ 这里写死的是**首屏兜底**：JS 没跑起来时也有话可看，而且它
+               必须**是池子里的一句**（tools/test_motion.py 校验这条）——
+               否则兜底文案和平时显示的话是两种气质，看着像坏了。
+             历史：原来是固定口头禅「没事就是呗」，太单薄（用户要求"优美的诗句"）。 -->
+        <span class="lu-say">书中自有草木香</span>
       </div>
 
       <div class="searchbox">
