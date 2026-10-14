@@ -1131,7 +1131,20 @@ def _synthesize_content_re(html: str) -> tuple[Optional[str], str, str]:
 # ---------------------------------------------------------------------------
 # 落盘
 # ---------------------------------------------------------------------------
+#: **仓库内置**的来源配置。⚠ 它在 `app/` 里，部署时会被仓库版本**整个覆盖**，
+#: 所以运行时新增的来源**绝不能**写这里（写了下次部署就没了，而且悄无声息）。
 CONFIG_FILE = Path(__file__).resolve().parent / "sites.json"
+
+#: 运行时（向导）适配出来的来源写这里。
+#: 为什么是 `cache/`（2026-10-14，用户「我加网址也可不可以」）：
+#:   · 部署脚本**保留** `cache/`（`cache/*.json` 已有就不覆盖）；
+#:   · `cache/` 已 gitignore，不会把用户的数据混进代码库；
+#:   · history / ranks / visits / registry 全都这么做 —— 保持一致。
+#: `NOVEL_SITES` 允许测试/本地服务用另一份，别搅了生产（照 `NOVEL_RANKS` 的范式）。
+_ROOT = Path(__file__).resolve().parent.parent.parent
+LOCAL_SITES = Path(
+    os.environ.get("NOVEL_SITES") or (_ROOT / "cache" / "sites_local.json")
+)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -1154,31 +1167,35 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def save_adapted(cfg: dict) -> bool:
-    """把适配出的配置写进 sites.json（同名则覆盖）。返回是否写成功。
+    """把向导适配出的配置写进**运行时那份**（`cache/sites_local.json`），同名覆盖。
 
-    两个必须守住的点（2026-10-14 补，都是**数据丢失**级）：
+    返回是否写成功。三个必须守住的点（2026-10-14，全是**数据丢失**级）：
 
-    1. **原子写**。原实现是 `CONFIG_FILE.write_text(...)` —— 那是"先清空再写"，
+    1. **写 `cache/`，不写 `app/`**。`app/sources/sites.json` 在部署时会被
+       仓库版本整个覆盖 —— 用户加的站写进去，下次部署就没了，还不报错。
+       （用户原话：「我加网址也可不可以」。答案必须包含"加得进去、还留得住"。）
+
+    2. **原子写**。原实现是 `CONFIG_FILE.write_text(...)` —— 那是"先清空再写"，
        进程在中间被杀（部署重启、OOM、Ctrl-C）就留下**半截 JSON**。
-       sites.json 是**站点配置**，比 history/ranks 那些缓存重要得多：
-       它坏了等于内置来源 + 用户自己加过的站一起没了。
+       站点配置比 history/ranks 那些缓存重要得多：它坏了等于用户自己加过的站
+       全丢（内置来源还能从仓库恢复，用户加的恢复不了）。
 
-    2. **读不出来就不许写**。原实现在读失败时 `data = {"sites": []}`，然后
+    3. **读不出来就不许写**。原实现在读失败时 `data = {"sites": []}`，然后
        照样把整个文件**改写成只有一个条目** —— 一次暂时性的读失败（文件被
-       别的进程占、编码抖一下）就**静默抹掉全部内置站点**。
+       别的进程占、编码抖一下）就**静默抹掉全部已存来源**。
        现在：文件不存在 → 允许新建；文件存在但读不动 → 原样保留、返回 False，
        把"没保存成功"如实交给上层说出去，而不是把用户的数据换成我们自己
        造的空壳。
     """
     sites: list[dict] = []
-    if CONFIG_FILE.exists():
+    if LOCAL_SITES.exists():
         try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            data = json.loads(LOCAL_SITES.read_text(encoding="utf-8"))
         except Exception as e:  # noqa: BLE001
-            logger.warning("sites.json 读不出来，为免抹掉现有配置**放弃写入**：%s", e)
+            logger.warning("本地站点表读不出来，为免抹掉现有配置**放弃写入**：%s", e)
             return False
         if not isinstance(data, dict) or not isinstance(data.get("sites"), list):
-            logger.warning("sites.json 结构不对（不是 {sites: [...]}），放弃写入以免覆盖")
+            logger.warning("本地站点表结构不对（不是 {sites: [...]}），放弃写入以免覆盖")
             return False
         sites = list(data["sites"])
     else:
@@ -1189,9 +1206,10 @@ def save_adapted(cfg: dict) -> bool:
     data["sites"] = sites
     try:
         _atomic_write_text(
-            CONFIG_FILE, json.dumps(data, ensure_ascii=False, indent=2)
+            LOCAL_SITES, json.dumps(data, ensure_ascii=False, indent=2)
         )
     except Exception as e:  # noqa: BLE001
-        logger.warning("sites.json 写入失败：%s", e)
+        logger.warning("本地站点表写入失败：%s", e)
         return False
+    logger.info("站点已存到本地站点表（部署不会覆盖）：%s", LOCAL_SITES)
     return True

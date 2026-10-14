@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.sources import adapter as A                            # noqa: E402
+from app.sources import configured as C                         # noqa: E402
 
 _fail: list[str] = []
 _passed = 0
@@ -48,22 +49,31 @@ BUILTIN = [
 
 
 class _Case:
-    """把 CONFIG_FILE 指向临时目录，跑完还原。"""
+    """把「运行时站点表」指向临时目录，跑完还原。
+
+    ⚠ 指向的是 `LOCAL_SITES`（= `cache/sites_local.json`），不是仓库里那份
+      `app/sources/sites.json` —— 后者在部署时会被仓库版本覆盖，**绝不能**
+      拿来存用户加的站点（这正是本轮修的那个坑）。
+    """
 
     def __init__(self, raw: str | None = None):
         self.raw = raw
 
     def __enter__(self):
-        self._old = A.CONFIG_FILE
+        self._old = (A.LOCAL_SITES, A.CONFIG_FILE)
         self._dir = tempfile.TemporaryDirectory()
-        self.path = Path(self._dir.name) / "sites.json"
+        self.path = Path(self._dir.name) / "sites_local.json"
         if self.raw is not None:
             self.path.write_text(self.raw, encoding="utf-8")
-        A.CONFIG_FILE = self.path
+        A.LOCAL_SITES = self.path
+        # ⚠ **两个都隔离**：反证时会把产品代码改成写 CONFIG_FILE（复现旧行为），
+        #   如果只隔离 LOCAL_SITES，那一跑就会**真的改写仓库里的 sites.json**。
+        #   测试工具绝不能碰生产配置文件。
+        A.CONFIG_FILE = Path(self._dir.name) / "sites.json"
         return self
 
     def __exit__(self, *exc):
-        A.CONFIG_FILE = self._old
+        (A.LOCAL_SITES, A.CONFIG_FILE) = self._old
         self._dir.cleanup()
         return False
 
@@ -141,7 +151,45 @@ def main() -> int:
               str(c.names()))
         check("临时文件被清掉了，不留垃圾", c.leftovers() == [], str(c.leftovers()))
 
-    print("\n== G. 适配流程真的会把「没保存成功」说出来（不是只写日志）==")
+    print("\n== G. 用户加的站必须**留得住**：写 `cache/`，不是会被部署覆盖的 `app/` ==")
+    # 部署 = 用仓库版本覆盖整个 `app/`。运行时来源若写进 `app/sources/sites.json`，
+    # 下次部署就没了 —— 用户加了站、过一天发现站不见了，还不知道为什么。
+    check("运行时站点表落在 `cache/` 下（部署脚本保留 cache、且已 gitignore）",
+          A.LOCAL_SITES.parent.name == "cache"
+          and A.LOCAL_SITES.name == "sites_local.json",
+          str(A.LOCAL_SITES))
+    check("而且**不是**那个会被覆盖的 `app/sources/sites.json`",
+          A.LOCAL_SITES != A.CONFIG_FILE, str(A.LOCAL_SITES))
+    check("`save_adapted` 写的是本地那份（不是 CONFIG_FILE）",
+          "_atomic_write_text(\n            LOCAL_SITES" in
+          (ROOT / "app" / "sources" / "adapter.py").read_text(encoding="utf-8"))
+    check("支持 `NOVEL_SITES` 覆盖（照 `NOVEL_RANKS` 的范式，测试/本地服务可隔离）",
+          "NOVEL_SITES" in (ROOT / "app" / "sources" / "adapter.py").read_text(encoding="utf-8"))
+
+    print("\n== H. 加载端：内置 + 本地 **两处都读**，同名以本地为准 ==")
+    with tempfile.TemporaryDirectory() as d:
+        local = Path(d) / "sites_local.json"
+        local.write_text(json.dumps({"sites": [
+            {"name": "builtin_a", "display": "A站(用户改过)", "base_url": "https://a.test/"},
+            {"name": "user_added", "display": "用户加的站", "base_url": "https://u.test/"},
+        ]}, ensure_ascii=False), encoding="utf-8")
+        _old_local, _old_cfg = C.LOCAL_FILE, C.CONFIG_FILE
+        builtin = Path(d) / "sites.json"
+        builtin.write_text(json.dumps({"sites": BUILTIN}, ensure_ascii=False),
+                           encoding="utf-8")
+        C.LOCAL_FILE, C.CONFIG_FILE = local, builtin
+        try:
+            got = {s.name: s for s in C.load_configured_sources()}
+        finally:
+            C.LOCAL_FILE, C.CONFIG_FILE = _old_local, _old_cfg
+        check("内置的 3 条还在", {"builtin_a", "builtin_b", "builtin_c"} <= set(got),
+              str(sorted(got)))
+        check("用户加的站也读出来了", "user_added" in got, str(sorted(got)))
+        check("同名时**本地赢**（用户改过的不该被仓库旧版盖回去）",
+              got["builtin_a"].display == "A站(用户改过)",
+              got["builtin_a"].display if "builtin_a" in got else "丢了")
+
+    print("\n== I. 适配流程真的会把「没保存成功」说出来（不是只写日志）==")
     src = Path(ROOT / "app" / "sources" / "adapter.py").read_text(encoding="utf-8")
     check("`_adapt_impl` 里 save 的返回值有被使用（不是裸调用）",
           "if save_adapted(cfg):" in src)

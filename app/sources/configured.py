@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,9 @@ from .base import Source, page_mark, page_url, strip_page_mark, tidy_content
 
 logger = logging.getLogger("novel.configured")
 
+#: 项目根（`novel-downloader/`）—— 运行时数据都挂在它下面的 `cache/`。
+ROOT = Path(__file__).resolve().parent.parent.parent
+#: **仓库内置**的站点表。⚠ 部署会用仓库版本覆盖 `app/`，别往这里写运行时数据。
 CONFIG_FILE = Path(__file__).resolve().parent / "sites.json"
 TOC_TTL = 600
 
@@ -370,16 +374,41 @@ class ConfiguredSource(Source):
         return m.group(1) if m.groups() else m.group(0)
 
 
-def load_configured_sources() -> list[ConfiguredSource]:
-    """从 sites.json 读取所有启用的来源。"""
-    if not CONFIG_FILE.exists():
-        return []
+#: 运行时（向导）加进来的来源。见 `adapter.LOCAL_SITES` 的注释：
+#: 它必须在 `cache/` 里 —— `app/` 会被部署覆盖，`cache/` 不会，且已 gitignore。
+LOCAL_FILE = Path(
+    os.environ.get("NOVEL_SITES") or (ROOT / "cache" / "sites_local.json")
+)
+
+
+def _read_sites(path: Path) -> list[dict]:
+    """读一份站点表；坏了就当空 —— 绝不能因为一份文件坏了让来源全没了。"""
     try:
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return []
+    sites = data.get("sites") if isinstance(data, dict) else None
+    return [c for c in (sites or []) if isinstance(c, dict)]
+
+
+def load_configured_sources() -> list[ConfiguredSource]:
+    """读**两处**来源配置：仓库内置（`app/sources/sites.json`）+ 运行时的（`cache/`）。
+
+    ⚠ 为什么必须分成两个文件（2026-10-14）：`sites.json` 在 `app/` 里，而部署
+    是**用仓库版本覆盖整个 `app/`** —— 用户在向导里加过的站写进去，下次部署就
+    没了，而且悄无声息。运行时数据一律放 `cache/`（部署保留、已 gitignore），
+    这也是 history / ranks / visits 的既定做法。
+
+    同名以**本地那份**为准：用户刚在向导里改过的应该赢，而不是被仓库里的旧版
+    盖回去。
+    """
+    merged: dict[str, dict] = {}
+    for cfg in _read_sites(CONFIG_FILE) + _read_sites(LOCAL_FILE):
+        name = cfg.get("name")
+        if name:
+            merged[name] = cfg          # 同名覆盖（后读的本地那份赢）
     out = []
-    for cfg in data.get("sites", []):
+    for cfg in merged.values():
         if not cfg.get("enabled", True):
             continue
         try:

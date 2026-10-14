@@ -162,9 +162,9 @@ MUTATIONS: list[Mutation] = [
              LAUNCH_TEST),
 
     # ---------------- sites.json 落盘（tools/test_adapt_save.py）----------------
-    Mutation("save", "读不出 sites.json 也照写（把整份配置改写成一条）",
+    Mutation("save", "读不出本地站点表也照写（把整份配置改写成一条）",
              ADAP,
-             "    if CONFIG_FILE.exists():",
+             "    if LOCAL_SITES.exists():",
              "    if False:",
              SAVE_TEST),
     Mutation("save", "不检查结构（`{whatever:1}` 也会被覆盖成 sites 列表）",
@@ -175,11 +175,28 @@ MUTATIONS: list[Mutation] = [
     Mutation("save", "不用原子写（退回先清空再写的 `write_text`）",
              ADAP,
              "        _atomic_write_text(\n"
-             '            CONFIG_FILE, json.dumps(data, ensure_ascii=False, indent=2)\n'
+             '            LOCAL_SITES, json.dumps(data, ensure_ascii=False, indent=2)\n'
              "        )",
-             "        CONFIG_FILE.write_text(\n"
+             "        LOCAL_SITES.write_text(\n"
              '            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"\n'
              "        )",
+             SAVE_TEST),
+    Mutation("save", "运行时站点写回 `app/`（部署一覆盖，用户加的站就没了）",
+             ADAP,
+             "        _atomic_write_text(\n"
+             "            LOCAL_SITES, json.dumps(data, ensure_ascii=False, indent=2)\n",
+             "        _atomic_write_text(\n"
+             "            CONFIG_FILE, json.dumps(data, ensure_ascii=False, indent=2)\n",
+             SAVE_TEST),
+    Mutation("save", "加载端只读内置站点表（用户加的站看不见）",
+             CONF,
+             "    for cfg in _read_sites(CONFIG_FILE) + _read_sites(LOCAL_FILE):",
+             "    for cfg in _read_sites(CONFIG_FILE):",
+             SAVE_TEST),
+    Mutation("save", "同名时内置赢（把用户在向导里改过的盖回去）",
+             CONF,
+             "    for cfg in _read_sites(CONFIG_FILE) + _read_sites(LOCAL_FILE):",
+             "    for cfg in _read_sites(LOCAL_FILE) + _read_sites(CONFIG_FILE):",
              SAVE_TEST),
     Mutation("save", "同名不覆盖而是一直追加（站点列表越滚越长）",
              ADAP,
