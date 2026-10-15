@@ -36,10 +36,11 @@
 
 退出码
 ------
-    0  进程比代码新 —— 本次同步的代码确实在跑
+    0  进程比代码新，数据 timer 也都有下一次
     1  进程比代码**旧** —— 重启没生效，线上还在跑旧代码（这是要抓的那个）
     2  没找到干活的进程 —— 服务根本没起来
     3  探针不可用（没有 ps / 拿不到 etimes）—— 无法判定，不谎报成功
+    4  数据 timer 没有「下一次触发」—— 定时任务已经悄悄死了
 
 用法
 ----
@@ -97,6 +98,61 @@ def newest_source(root: pathlib.Path) -> tuple[float, str]:
                 # 会让"路径对不上"变成假红。as_posix() 两边一致。
                 best, where = t, p.relative_to(root).as_posix()
     return best, where
+
+
+# 线上靠两个 user timer 定期跑数据任务：榜单每 30 分钟、来源库夜间体检+学站。
+# 它们的一种**静默死法**（2026-10-15 线上真实踩到）：
+#   OnCalendar 写成了 systemd 解析不了的逗号列表 → systemd **静默忽略**该行，
+#   timer 只剩 OnBootSec —— 机器不重启就**永远没有下一次**。
+#   timer 单元还是 active 的、journal 里只有一条 parse 警告，表现为
+#   「夜间学站三天没跑、可搜源卡住不涨」，不盯 `Trigger: n/a` 根本看不出来。
+#   所以这里把它并进「重启验证」：数据任务也属于「线上真的在干活」的一部分。
+TIMERS = ("noveldock-ranks.timer", "noveldock-registry.timer")
+
+
+def timer_ok(val: str) -> bool:
+    """`NextElapseUSecRealtime` 的值算不算「真的有下一次」。
+
+    systemd 对「没有下一次」的表示是空串 / 'n/a' / '0'（实测：日历被忽略后
+    show 出来的就是这个）。抽成纯函数是为了能被单测反证 —— 喂这三种值
+    必须判红，喂真实时间戳必须判绿。
+    """
+    return bool(val) and val not in ("n/a", "0")
+
+
+def timer_audit() -> tuple[list[str], bool]:
+    """审计数据 timer：每一个都必须「有下一次触发」。
+
+    返回 (坏的 timer 列表, 是否真的探到了)。systemctl 不存在、或单次查询
+    退出码非 0（多半是 user bus 环境问题）→ 当作**探针不可用**：不算失败、
+    也不谎报 —— 主判据（进程 vs 代码）不受影响。跟 probe() 的三态是同一个
+    哲学：「查不到」和「查到了且是坏的」必须分开。
+    ⚠ 注意单元**不存在**时 show 也是 rc=0 + 空值（实测）—— 那正是
+      「永远没有下一次」，会落到 timer_ok("") 判红，而不是被当成探针不可用。
+    """
+    bad: list[str] = []
+    probed = False
+    for t in TIMERS:
+        try:
+            r = subprocess.run(
+                ["systemctl", "--user", "show", t,
+                 "-p", "NextElapseUSecRealtime", "--value"],
+                capture_output=True, text=True)
+        except FileNotFoundError:
+            return [], False
+        if r.returncode != 0:
+            print(f"  ? {t} 查不到下一次（systemctl 退出 {r.returncode}）"
+                  " —— 当作探针不可用跳过")
+            continue
+        probed = True
+        val = (r.stdout or "").strip()
+        if timer_ok(val):
+            print(f"  ✓ {t} 下一次：{val}")
+        else:
+            print(f"  x {t} 没有下一次触发（NextElapseUSecRealtime={val!r}）"
+                  " —— 日历写错会被 systemd 静默忽略，机器不重启它就永远不再跑")
+            bad.append(t)
+    return bad, probed
 
 
 def probe(pattern: str) -> list[tuple[int, float]] | None:
@@ -174,6 +230,16 @@ def main() -> int:
         print("     进程比源码旧 → 重启没生效，线上还在跑旧代码。"
               f"（--pattern {a.pattern!r}）")
         return 1
+
+    # ---- 附带审计：数据 timer 必须「有下一次」（见 TIMERS 的注释）----
+    bad_timers, probed = timer_audit()
+    if not probed:
+        print("  ? 本机查不了 timer（没有 systemctl / user bus）—— "
+              "timer 审计跳过，主判据不受影响")
+    if bad_timers:
+        print(f"     数据定时任务已静默死亡：{bad_timers} —— "
+              "线上数据不会自己更新，必须修 timer 单元（修完 daemon-reload + 重启 timer）")
+        return 4
     return 0
 
 

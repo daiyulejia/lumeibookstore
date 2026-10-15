@@ -96,7 +96,28 @@ def main() -> int:
           any(g.startswith("app/") for g in rc_mod.CODE_GLOBS)
           and "run.py" in rc_mod.CODE_GLOBS)
 
-    print("\n── 4. 探针不可用时**绝不谎报成功** ──")
+    print("\n── 4. timer 审计：数据定时任务不许「静默死亡」──")
+    # 为什么盯它（2026-10-15 线上真实事故）：OnCalendar 写成 systemd 解析不了的
+    # 逗号列表 → systemd **静默忽略**该行，timer 只剩 OnBootSec，机器不重启就
+    # 永远没有下一次。timer 仍是 active、journal 只有一条 parse 警告 ——
+    # 表现为「夜间学站三天没跑、可搜源卡在 3」，不盯 Trigger: n/a 看不出来。
+    check("真实时间戳 → 有下一次（判绿）",
+          rc_mod.timer_ok("Fri 2026-10-16 03:19:48 CST") is True)
+    # 反证：systemd 对「没有下一次」的三种表示，喂进去必须全部判红。
+    check("'n/a' → 判红（日历被静默忽略时 show 出来的就是它）",
+          rc_mod.timer_ok("n/a") is False)
+    check("空串 → 判红", rc_mod.timer_ok("") is False)
+    check("'0' → 判红", rc_mod.timer_ok("0") is False)
+    check("两个数据 timer 都在审计清单里（漏一个 = 那个永远没人看）",
+          set(rc_mod.TIMERS) == {"noveldock-ranks.timer", "noveldock-registry.timer"})
+    # 本机（Windows）没有 systemctl → timer_audit 必须是「探针不可用」，
+    # 绝不能算成「查出坏 timer」（否则本地每次跑都假红）。
+    if shutil.which("systemctl") is None:
+        bad, probed = rc_mod.timer_audit()
+        check("本机无 systemctl → 探针不可用（不算失败也不谎报）",
+              bad == [] and probed is False, f"bad={bad} probed={probed}")
+
+    print("\n── 5. 探针不可用时**绝不谎报成功** ──")
     with tempfile.TemporaryDirectory() as d:
         tmp = _fake_root(pathlib.Path(d))
         r = subprocess.run([sys.executable, str(TOOLS / "restart_check.py"),

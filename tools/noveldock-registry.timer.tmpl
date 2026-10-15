@@ -6,7 +6,7 @@ After=noveldock.service
 Wants=noveldock.service
 
 [Timer]
-# 凌晨 3:17 起，每 20 分钟一次，到 4:00 前结束 —— 一共 3 轮。
+# 凌晨 3:17 / 3:37 / 3:57 各一次 —— 一共 3 轮。
 # 为什么这么排（用户原话：「半夜的时候，凌晨三四点，都睡了你去排查」）：
 #   · 这个点没人用，体检要打几十个请求也不会跟用户抢带宽
 #   · 不取整点（3:00 整）是刻意的 —— 整点是各种定时任务扎堆的时候，
@@ -14,7 +14,17 @@ Wants=noveldock.service
 #   · 一晚跑 3 轮而不是 1 轮：第一轮常碰到站点抽风（临时 502 / 超时），
 #     多跑两轮能把它救回来，避免「偶然一次打不开就被清掉」
 # Persistent + RandomizedDelaySec：机器半夜关机也能在开机后补跑一次。
-OnCalendar=*-*-* 03:17,03:37,03:57:00
+#
+# ⚠⚠ **三行分开写，别并成一行**（2026-10-15 线上真实事故）：
+#   原来写的是 `OnCalendar=*-*-* 03:17,03:37,03:57:00` —— systemd
+#   **解析不了**这种逗号列表（`systemd-analyze calendar` 报 Invalid argument），
+#   于是这条日历被整个忽略，timer 只剩 `OnBootSec` 一条：机器不重启就
+#   **永远没有下一次**。线上表现为「夜间学站三天没跑、可搜源卡在 3」，
+#   而且 timer 单元是 active 的、journal 里只有一条 parse 警告 —— 不盯
+#   `Trigger: n/a` 根本看不出来。修复后必须 `daemon-reload` + 重启 timer。
+OnCalendar=*-*-* 03:17:00
+OnCalendar=*-*-* 03:37:00
+OnCalendar=*-*-* 03:57:00
 OnBootSec=30min
 Persistent=true
 RandomizedDelaySec=180
