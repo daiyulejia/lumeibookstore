@@ -63,6 +63,8 @@ RANKS_VUE = ROOT / "frontend" / "src" / "components" / "RanksPanel.vue"
 #   两种都不报错，只表现为"警告该有的时候没有 / 该撤的时候撤不掉"。
 REGISTRY = ROOT / "app" / "registry.py"
 DISCOVERY = ROOT / "app" / "discovery.py"
+# 来源库面板（旧 JS，不经 Vite 构建；改动后要同步推线上静态资源）
+SOURCES_JS = ROOT / "app" / "static" / "js" / "sources.js"
 # 引擎的"断开收手"记账 —— 2026-10-15 纳入反证。
 # ⚠ 失败方式：`aborted` 只由**采样**一个阶段回答，断开落在扇出/探测/联网
 #   阶段时收手明明发生了却报 False。它不报错，只是让真机断连测试
@@ -435,6 +437,28 @@ MUTATIONS: list[Mutation] = [
              MAIN,
              '             "searchable": registry.is_searchable(s),',
              '             "searchable": bool((s.get("search_tpl") or "").strip()),',
+             REGISTRY_TEST),
+    Mutation("registry", "来源库面板不亮「能搜」徽标（攒的资产看不见）",
+             SOURCES_JS,
+             "    s.searchable\n"
+             "      ? `<span class=\"tag ok\" title=\"学过它的站内搜索：搜书时会直接来这个站找，不用再联网\">能搜</span>`\n"
+             "      : \"\",",
+             "    \"\",",
+             REGISTRY_TEST),
+    Mutation("registry", "总览统计不显示可搜源数（夜间学的资产没处看）",
+             SOURCES_JS,
+             "      <span><span class=\"dot ok\"></span>${num(st.sites_searchable)} 能搜</span>\n",
+             "",
+             REGISTRY_TEST),
+    Mutation("registry", "statRow 的计数退回直接插值（绕过 num() 防注入纪律）",
+             SOURCES_JS,
+             "      <span><span class=\"n\">${num(st.sites)}</span> 个站</span>",
+             "      <span><span class=\"n\">${st.sites || 0}</span> 个站</span>",
+             REGISTRY_TEST),
+    Mutation("registry", "书行不显示「⚠ 可能不全」（章节数会冒充全书）",
+             SOURCES_JS,
+             '`${b.chapters} 章${b.note ? " ⚠ 可能不全" : ""}</span>`',
+             '`${b.chapters} 章</span>`',
              REGISTRY_TEST),
 
     # ------- 断开收手记账（tools/test_discover_fallback.py）-------

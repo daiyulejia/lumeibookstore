@@ -226,6 +226,32 @@ def main() -> int:
         check("标了可搜的站一定有模板",
               all(s["has_search_tpl"] for s in view["sites"] if s["searchable"]))
 
+        # -----------------------------------------------------------------
+        print("\n—— 接线：来源库面板要把「能搜」亮出来 ——")
+        # 可搜源是这个库攒的**主要资产**（夜间自动学的就是它），
+        # 但站点行原来只显示「目录模板已学 / 正文容器 / 成败次数」，
+        # 从不说哪个站能搜 —— 用户看到的只是一串可用/失效，
+        # 完全不知道搜索能力在长。徽标判据必须是接口的 `searchable`
+        # （健康 + 有模板）：有模板但站已失效的不标，那是空头支票。
+        # 静态检查（同上），配 mutate：删掉徽标必须报红。
+        js = (ROOT / "app" / "static" / "js" / "sources.js").read_text(encoding="utf-8")
+        check("站点行有「能搜」徽标（判据=接口的 searchable）",
+              bool(re.search(r's\.searchable\s*\?\s*`<span class="tag ok"[^>]*>能搜</span>`\s*:\s*""',
+                             js, re.S)),
+              "徽标不在或判据不是 s.searchable")
+        check("总览统计里能看到可搜源数（sites_searchable）",
+              "num(st.sites_searchable)" in js,
+              "statRow 没显示 sites_searchable")
+        # 计数位必须过 num()（防注入纪律，见 sources.js 顶部的长注释；
+        # statRow/tabsHTML 原来写 `${st.sites || 0}`，和自己定义的纪律不一致）。
+        bad_num = re.findall(r"\$\{st\.\w+ \|\| 0\}", js)
+        check(f"statRow/tabsHTML 的计数都走 num()（残留：{bad_num}）", not bad_num)
+        # 书行的「⚠ 可能不全」也是这面板的一部分（上一轮加的）：章节数必须
+        # 和目录结论一起出现 —— 「12 章」和「这本书就是 12 章」长得一模一样。
+        check("书行的章节标签带「⚠ 可能不全」（判据=b.note）",
+              bool(re.search(r"b\.note \? \" ⚠ 可能不全\"", js)),
+              "⚠ 文案不在，或判据不是 b.note")
+
         print("\n—— 护栏：全清要显式确认 ——")
         # 先落一次盘：缩水护栏是拿「盘上那份」当基准的，
         # 上面这些 note_* 都还压在内存里（落盘有 1 秒节流）

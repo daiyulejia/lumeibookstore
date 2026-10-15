@@ -119,21 +119,25 @@ let REG_ERROR = "";
 
 function statRow() {
   const st = (REG && REG.stats) || {};
+  // ⚠ 计数位一律过 num()（本文件顶部有详述：接口给的数字不直接信任）。
+  //   statRow/tabsHTML 原来直接插 st.sites 再拿"或 0"兜底 —— 和自己
+  //   定义的纪律不一致，顺手补上。
   return `
     <div class="hsum" style="margin-bottom:12px">
-      <span><span class="n">${st.sites || 0}</span> 个站</span>
-      <span><span class="dot ok"></span>${st.sites_ok || 0} 可用</span>
+      <span><span class="n">${num(st.sites)}</span> 个站</span>
+      <span><span class="dot ok"></span>${num(st.sites_ok)} 可用</span>
+      <span><span class="dot ok"></span>${num(st.sites_searchable)} 能搜</span>
       <span class="sep"></span>
-      <span><span class="n">${st.books || 0}</span> 本书</span>
-      <span><span class="dot ok"></span>${st.books_ok || 0} 可用</span>
+      <span><span class="n">${num(st.books)}</span> 本书</span>
+      <span><span class="dot ok"></span>${num(st.books_ok)} 可用</span>
     </div>`;
 }
 
 function tabsHTML() {
   const st = (REG && REG.stats) || {};
   return `<div class="regtabs">
-    <button class="rtab${regTab === "sites" ? " on" : ""}" data-rt="sites">站点 ${st.sites || 0}</button>
-    <button class="rtab${regTab === "books" ? " on" : ""}" data-rt="books">书 ${st.books || 0}</button>
+    <button class="rtab${regTab === "sites" ? " on" : ""}" data-rt="sites">站点 ${num(st.sites)}</button>
+    <button class="rtab${regTab === "books" ? " on" : ""}" data-rt="books">书 ${num(st.books)}</button>
     <span class="grow"></span>
     <button class="btn ghost sm" id="regCheck">体检</button>
     <button class="btn ghost sm" id="regPrune">清失效</button>
@@ -145,6 +149,14 @@ function siteRow(s, i) {
   const hp = s.healthy ? `<span class="pill ok">可用</span>`
                        : `<span class="pill bad">已失效</span>`;
   const tags = [
+    // 「能搜」是这个库最重要的资产：学过站内搜索的站，下次搜书会直接来
+    // 这里（不用再走搜索引擎）。夜间自动学的就是它 —— 不亮出来的话，
+    // 用户看到的只是一串"可用/已失效"，完全不知道搜索能力在长。
+    // ⚠ 判据用接口的 `searchable`（健康 + 有模板），和总览那个数同源；
+    //   有模板但站已失效的不标（那种站搜了也打不开，标了是空头支票）。
+    s.searchable
+      ? `<span class="tag ok" title="学过它的站内搜索：搜书时会直接来这个站找，不用再联网">能搜</span>`
+      : "",
     s.toc_tpl ? `<span class="tag own">目录模板已学</span>` : "",
     s.content_hint ? `<span class="tag own">正文容器 ${esc(s.content_hint)}</span>` : "",
     ok ? `<span class="tag ok">成功 ${ok}</span>` : "",
@@ -219,6 +231,7 @@ async function renderRegistry() {
       这是<b>联网发现</b>攒下来的库：搜书时本地来源全打不开，我就会出去搜，
       把找到的站和书存进来 —— 库越大，下次越不用联网。
       同一个站第二次抓会直接用它上次学到的<b>目录模板</b>和<b>正文容器</b>，不再重新猜。
+      标着<b>能搜</b>的站还学过<b>站内搜索</b>：搜书会直接来这些站找，夜里也会接着学新的。
       「体检」会把记下的书重开一遍，连续打不开的自动清掉。
     </div>`;
 
