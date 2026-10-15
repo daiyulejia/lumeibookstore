@@ -65,6 +65,9 @@ REGISTRY = ROOT / "app" / "registry.py"
 DISCOVERY = ROOT / "app" / "discovery.py"
 # 来源库面板（旧 JS，不经 Vite 构建；改动后要同步推线上静态资源）
 SOURCES_JS = ROOT / "app" / "static" / "js" / "sources.js"
+# 自有来源搜索链路（学到的模板 → 真的能搜出书）
+REGSRC = ROOT / "app" / "sources" / "registry_source.py"
+SITELEARN = ROOT / "app" / "sitelearn.py"
 # 引擎的"断开收手"记账 —— 2026-10-15 纳入反证。
 # ⚠ 失败方式：`aborted` 只由**采样**一个阶段回答，断开落在扇出/探测/联网
 #   阶段时收手明明发生了却报 False。它不报错，只是让真机断连测试
@@ -78,6 +81,7 @@ DIRECT_TEST = ROOT / "tools" / "test_adapt_direct.py"
 MOTION_TEST = ROOT / "tools" / "test_motion.py"
 RANKS_TEST = ROOT / "tools" / "test_ranks.py"
 REGISTRY_TEST = ROOT / "tools" / "test_registry.py"
+REGSRC_TEST = ROOT / "tools" / "test_registry_source.py"
 FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
 
 
@@ -433,6 +437,30 @@ MUTATIONS: list[Mutation] = [
              "        searchable = sum(1 for s in s_all.values() if is_searchable(s))",
              "        searchable = sum(1 for s in s_all.values() if has_search_tpl(s))",
              REGISTRY_TEST),
+    Mutation("registry", "搜索扇出又把判据写了一遍（数模板不管健康，坏站进扇出）",
+             REGISTRY,
+             "    return {h: s for h, s in sites().items() if is_searchable(s)}",
+             "    return {h: s for h, s in sites().items() if has_search_tpl(s)}",
+             REGISTRY_TEST),
+
+    # ------- 自有来源搜索链路（tools/test_registry_source.py）-------
+    Mutation("regsrc", "抽链接不分组不评分（导航/章节全混进结果）",
+             REGSRC,
+             "    if not links:\n        return []",
+             "    if not links:\n        return []\n    return _dedup_pairs(links)",
+             REGSRC_TEST),
+    Mutation("regsrc", "章节页不再被排除（最新章节列表冒充搜索结果）",
+             REGSRC,
+             "    if _CHAPTER_TAIL.search(_path_tpl_of(u)):\n        return False\n"
+             "    if _BOOK_PATH.search(_path_tpl_of(u)):\n        return True",
+             "    if _BOOK_PATH.search(_path_tpl_of(u)):\n        return True",
+             REGSRC_TEST),
+    Mutation("regsrc", "build_url 把完整 URL 模板拼到 host 后面（必 404，还记成 fail_down）",
+             SITELEARN,
+             "    if re.match(r\"^https?://\", tpl, re.I):\n        return path\n"
+             "    base = f\"{scheme}://{host}\"",
+             "    base = f\"{scheme}://{host}\"",
+             REGSRC_TEST),
     Mutation("registry", "/api/registry 的 searchable 退回旧口径（总览与列表两个数字）",
              MAIN,
              '             "searchable": registry.is_searchable(s),',

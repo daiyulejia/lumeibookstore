@@ -507,9 +507,13 @@ def searchable_sites() -> dict:
     「记着哪些站可以拿任意关键词去搜」。有了它，
     `sources/registry_source.py` 就能拿新书的关键词直接搜这些站，
     不用每次都重新走搜索引擎。
+
+    ⚠ 判据必须走 `is_searchable()`，**不许在这里再写一遍**「健康 且 有模板」：
+      这是全项目「可搜源」的**第三个消费方**（stats 总览 / /api/registry
+      徽标 / 本函数给搜索扇出）。曾经各写一份，线上实测 3 vs 6 ——
+      界面说"能搜 6 个"，实际搜索只问 3 个，用户看到的资产是虚的。
     """
-    return {h: s for h, s in sites().items()
-            if is_healthy(s) and (s.get("search_tpl") or "").strip()}
+    return {h: s for h, s in sites().items() if is_searchable(s)}
 
 
 def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",

@@ -209,6 +209,15 @@ def main() -> int:
               R.has_search_tpl(R.sites()["bad.com"]))
         check("健康 + 没模板 → 不算可搜", not R.is_searchable(R.sites()["plain.com"]))
 
+        # —— 第三个消费方：**搜索扇出**（RegistrySource 拿关键词直接问这些站）。
+        #    searchable_sites() 以前把「健康 且 有模板」又写了一遍 ——
+        #    三处各写一份的结局就是漂（界面 6 个、实际只搜 3 个）。
+        ss = R.searchable_sites()
+        check("搜索扇出收下健康 + 有模板的站", "good.com" in ss, str(sorted(ss)))
+        check("搜索扇出**不收**被判死的站（哪怕学过模板）",
+              "bad.com" not in ss)
+        check("搜索扇出不收没学过模板的站", "plain.com" not in ss)
+
         # 关键一条：接口返回的两个口径必须**是同一个数**。
         from fastapi.testclient import TestClient  # noqa: E402
         from app import main as M                  # noqa: E402
@@ -225,6 +234,12 @@ def main() -> int:
               str([s["host"] for s in view["sites"] if s["searchable"] and not s["healthy"]]))
         check("标了可搜的站一定有模板",
               all(s["has_search_tpl"] for s in view["sites"] if s["searchable"]))
+        # 三个消费方必须是**同一个数**：总览统计、面板徽标、搜索扇出。
+        # 漂移的真实后果：界面说「能搜 6 个」，实际每轮搜索只问 3 个。
+        n_fan = len(R.searchable_sites())
+        check("三个消费方同一个数（总览 / 徽标 / 搜索扇出）",
+              view["stats"]["sites_searchable"] == n_list == n_fan,
+              f"stats={view['stats']['sites_searchable']} 徽标={n_list} 扇出={n_fan}")
 
         # -----------------------------------------------------------------
         print("\n—— 接线：来源库面板要把「能搜」亮出来 ——")

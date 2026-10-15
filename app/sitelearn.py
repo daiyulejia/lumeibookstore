@@ -219,6 +219,12 @@ def build_url(tpl: str, host: str, keyword: str, *, enc: str = "utf-8",
     else:
         kw = quote(keyword, encoding="utf-8")
     path = tpl.replace("{kw}", kw)
+    # 模板本来就是完整 URL 时**直接用**，别再往 host 后面拼。
+    # 学习链路存的都是路径形（/search.php?q={kw}），但这个函数是公共入口，
+    # 拿到完整 URL 一旦拼错就是 `https://host/https://...` —— 请求必 404，
+    # 而且记进 fail_down，把一个能用的站慢慢拖进"不健康"。
+    if re.match(r"^https?://", tpl, re.I):
+        return path
     base = f"{scheme}://{host}"
     if not path.startswith("/"):
         path = "/" + path

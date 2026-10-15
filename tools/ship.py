@@ -58,6 +58,9 @@ STATIC_SUITES = [
     ("test_parse.py", "解析器"),
     ("test_ranks.py", "榜单解析"),
     ("test_registry.py", "来源库"),
+    # 自有来源（学到的模板）→ 真的能搜出书。这条链路一断，表现为
+    # 「每次搜索悄悄少一批自有源结果」——不报错、日志只有一句 debug。
+    ("test_registry_source.py", "自有来源搜索"),
     ("test_relevance.py", "结果相关性"),
     ("test_sitelearn.py", "站点学习"),
     ("test_deobfuscate.py", "反混淆"),
