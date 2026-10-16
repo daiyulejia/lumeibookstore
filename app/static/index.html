@@ -74,6 +74,7 @@
   </div>
   <nav class="tabs">
     <button data-nav="home" class="on">发现</button>
+    <button data-nav="ranks">推荐</button>
     <button data-nav="shelf">书架 <span id="shelfN"></span></button>
     <button data-nav="files">文件</button>
   </nav>
@@ -180,25 +181,40 @@
       </div>
     </div>
 
-    <!-- 热门榜单：不知道读什么的时候，看看别人都在读什么。
-         数据来自已适配站点的公开榜单（见 app/ranks.py）。
-
-         ⚠ 这一块已迁移到 Vue（frontend/src/components/RanksPanel.vue）。
-         `data-vue-ranks` 是给 Vue 的挂载信号：有它就挂载组件，
-         没有就说明这页还没迁 —— 旧代码与 Vue 因此能在同一页共存。
-         `#ranksBox` 这个 id 保留（旧测试与旧代码还会找它）。
-
-         ⚠ 它必须留在 **DiscoverPanel 的容器之外**：
-           Vue 只能把整棵树渲进一个元素，若把榜单放进 `[data-vue-discover]`，
-           它会跟发现页组件抢同一个渲染入口（真踩过这类"组件渲错地方"）。 -->
-    <section class="ranks" id="ranksBox" data-vue-ranks hidden>
-      <div id="vue-root"></div>
-    </section>
+    <!-- 热门榜单：2026-10-15 起升级为独立 tab（用户需求：「把推荐专门
+         放在一个 tab 和下面的 tab 并列」）。区块本体搬去了 #view-ranks，
+         发现页从此只管「搜书 + 看结果」，不用再和榜单挤一页。 -->
 
     <!-- 结果区（Vue）。上面 hero 里的 #q / #btnSearch 留在静态 HTML 里，
          这块是**有状态**的部分（搜索状态栏 / 来源筛选 / 结果卡 / 联网实况 /
          书名确认框）—— 旧代码用 innerHTML 拼字符串的重灾区，迁到 Vue。 -->
     <div id="vue-root-discover" data-vue-discover></div>
+  </div>
+</section>
+
+<!-- ==================== 推荐（热门榜单独立页） ==================== -->
+<!-- ⚠ 外层的 #view-ranks + data-view 必须留着 —— shell.js 的 nav() 靠
+      #view-<name> 切换 .hidden 来显示/隐藏整页（与 #view-shelf 同一契约）。
+
+      榜单块本体（.ranks / #ranksBox）从发现页**原样搬来**，契约不变：
+        · `data-vue-ranks` 是给 Vue 的挂载信号（frontend/src/main.js 按它找）；
+          有它就挂 RanksPanel，没有才退回旧 ranks.js（迁移期并存）。
+        · `#ranksBox` 这个 id 保留（旧测试与旧代码还会找它）。
+        · `hidden` 属性由组件 onMounted 拿到 /api/ranks/kinds 后解开；
+          拿不到目录（老后端/断网）就保持 hidden，整页只剩空壳、不打扰用户。
+
+      ⚠ 它必须留在 **DiscoverPanel 的容器之外**：
+        Vue 只能把整棵树渲进一个元素，若把榜单放进 `[data-vue-discover]`，
+        它会跟发现页组件抢同一个渲染入口（真踩过这类"组件渲错地方"）。
+
+      「收起/展开」按钮已随独立 tab 一起下线：榜单自己占一整页后，
+      折叠只会让页面变成空白，功能失去了存在意义（点书名去找书，
+      现在由 searchFromHash 顺手切回发现页，不再靠"折叠让位"）。 -->
+<section id="view-ranks" class="hidden" data-view>
+  <div class="wrap">
+    <section class="ranks" id="ranksBox" data-vue-ranks hidden>
+      <div id="vue-root"></div>
+    </section>
   </div>
 </section>
 
@@ -218,6 +234,7 @@
 <!-- 移动端底部标签栏 -->
 <nav class="tabbar">
   <button data-nav="home" class="on"><i>🔍</i>发现</button>
+  <button data-nav="ranks"><i>🏆</i>推荐</button>
   <button data-nav="shelf"><i>📚</i>书架</button>
   <button data-nav="files"><i>📄</i>文件</button>
 </nav>

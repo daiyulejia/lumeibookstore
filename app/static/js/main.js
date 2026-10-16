@@ -60,7 +60,7 @@ function wireEvents() {
 }
 
 /* ---------- 深链 ----------
-   #shelf / #files / #search=书名 / #read=书架id
+   #shelf / #ranks / #files / #search=书名 / #read=书架id
    刷新能保持状态，也能把「这次搜索」「这本书」直接发给人。
 
    ⚠ 这个函数要能被**重复调用**（挂上 hashchange 之后）：
@@ -82,6 +82,8 @@ async function bootRoute() {
   if (h === "#stats") { nav("home"); openSources("stats"); return; }
   if (h === "#sources") { nav("home"); openSources(); return; }
   if (h === "#shelf") nav("shelf");
+  // 推荐（榜单）独立 tab 的深链 —— 直达、刷新保持、可分享
+  else if (h === "#ranks") nav("ranks");
   else if (h === "#files") nav("files");
   else nav("home");
 }

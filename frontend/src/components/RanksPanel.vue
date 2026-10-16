@@ -28,15 +28,14 @@
       <span class="rk-age" id="ranksAge">{{ freshness }}</span>
       <div class="rk-actions">
         <!-- ⚠ id 是**对外契约**，不是内部细节：tools/test_ranks_ui.py 靠它
-             验证"刷新按钮点了会转""收起会折起来"等用户可见行为。
+             验证"刷新按钮点了会转"等用户可见行为。
              Vue 重写渲染方式时保留这些钩子，测试就还能守住同一批行为
-             （而不是把测试改松 —— 那等于把验收标准降了）。 -->
+             （而不是把测试改松 —— 那等于把验收标准降了）。
+             （2026-10-15：「收起/展开」按钮已随独立 tab 下线 —— 榜单自己一整页
+               之后"折叠"只会让页面变空白，功能失去意义。） -->
         <n-button id="ranksRefresh" size="small" quaternary :loading="loading" @click="refresh">
           <template #icon><n-icon><RefreshIcon /></n-icon></template>
           刷新
-        </n-button>
-        <n-button id="ranksFold" size="small" quaternary @click="folded = !folded">
-          {{ folded ? "展开" : "收起" }}
         </n-button>
       </div>
     </div>
@@ -49,7 +48,7 @@
          自己写这十几个标签一点也不亏：样式本来就要跟噜妹主题走，
          用 Naive 的反而还要再去覆盖它。
          （这正是"N 个标签"这种小控件不该引重组件库的地方。） -->
-    <div v-if="!folded" id="ranksTabs" class="rk-tabs" role="tablist">
+    <div id="ranksTabs" class="rk-tabs" role="tablist">
       <button
         v-for="k in kinds"
         :key="k.kind"
@@ -66,10 +65,10 @@
     </div>
 
     <!-- 说明这一榜是按什么排的 -->
-    <p v-if="!folded && curDesc" class="rk-desc" id="ranksDesc">{{ curDesc }}</p>
+    <p v-if="curDesc" class="rk-desc" id="ranksDesc">{{ curDesc }}</p>
 
     <!-- 列表主体：骨架 / 数据 / 空 / 错误 四态 -->
-    <div v-if="!folded" class="rk-body">
+    <div class="rk-body">
       <!-- 加载骨架：用 Naive 的 skeleton，比手写灰条更规整 -->
       <div v-if="loading && !items.length" class="rk-skel">
         <n-skeleton v-for="i in 6" :key="i" height="46px" :sharp="false" />
@@ -139,9 +138,9 @@
  * 等旧模块的其余部分都迁完了，再把数据层也搬进来，最后删掉 ranks.js。
  * 这就是「分页迁移、每步可上线」的具体落地方式。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { NButton, NIcon, NSkeleton } from "naive-ui";
-import { api, bus, PRE, toast, whenAuthReady } from "../legacy/util.js";
+import { api, bus, toast, whenAuthReady } from "../legacy/util.js";
 import { stagger } from "../legacy/motion.js";
 
 // 极简的刷新图标（内联 SVG，省一个图标库依赖）
@@ -164,7 +163,6 @@ const sources = ref([]);
 const loading = ref(false);
 const error = ref("");
 const emptyHint = ref("");
-const folded = ref(PRE.get("ranksFold", false));
 const age = ref(null);
 const refreshedAt = ref(0);
 const staleNow = ref(false);   // 这一份是不是"过期缓存"（服务端 fresh=false）
@@ -373,16 +371,16 @@ async function refresh() {
  * 旧代码是直接 import runSearch 调的。Vue 侧**不能**再 import 一次 ——
  * 那会打进产物、变成第二份 discover 模块实例（两份状态、两个 AbortController）。
  * 所以走旧代码暴露在 window 上的 `searchFromHash`（同一个实例），
- * 它内部就是 "填 input + runSearch(kw, true)"，正是我们要的语义。
+ * 它内部就是 "切回发现页 + 填 input + runSearch(kw, true)"。
  *
- * 另外要**顺手把面板收起**：搜索结果紧接着就出来了，榜单挂在上面
- * 会把结果顶到屏幕外 —— 点了书名却"看不到任何反应"，是最糟的体验。
- * （这条是 tools/test_ranks_ui.py 明写的验收项：「面板自动收起」。）
+ * ⚠ "切回发现页"这一步是 2026-10-15 独立 tab 化之后的关键：
+ *   榜单（推荐）现在是独立页面，搜索结果长在发现页上 —— 不切回去的话
+ *   搜索在后台跑完了、用户眼前什么都没有，表现为"点了没反应"。
+ *   （旧版靠"折叠面板给结果让位"，折叠已随独立 tab 下线。）
  */
 function pick(it) {
   const t = it && it.title;
   if (!t) return;
-  folded.value = true; // 挡住搜索结果，先收起来
   const q = document.getElementById("q");
   if (q) q.value = t;
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -401,14 +399,6 @@ function toShelf() {
 let off1 = null;
 let off2 = null;
 
-// 收起状态要写回容器类名（旧 CSS `.ranks.folded` 靠它收起，
-// 也是 test_ranks_ui 会检查的地方）。Vue 只管状态，类名映射放这里。
-watch(folded, (v) => {
-  const box = document.getElementById("ranksBox");
-  if (box) box.classList.toggle("folded", !!v);
-  PRE.set("ranksFold", !!v);
-});
-
 onMounted(async () => {
   // ⚠ 先等令牌就绪，再发第一个请求。
   //   页面用 `?t=<token>` 传令牌，读它的是旧代码的 bootstrapAuth()；
@@ -419,8 +409,6 @@ onMounted(async () => {
   await whenAuthReady();
 
   const box = document.getElementById("ranksBox");
-  // 恢复上次的收起状态（类名也要同步，否则展开/收起的视觉状态对不上）
-  if (box) box.classList.toggle("folded", !!folded.value);
 
   // 拿榜单目录。⚠ 允许重试一次 —— 这里失败的话整个区块都不显示，
   //   用户连"榜单"两个字都看不到，代价比多打一个请求大得多。
@@ -443,7 +431,7 @@ onMounted(async () => {
     }
     if (!kinds.value.some((k) => k.kind === cur.value)) cur.value = kinds.value[0].kind;
     if (box) box.hidden = false;
-    if (!folded.value) loadRanks();
+    loadRanks();
   } catch {
     kinds.value = [];
     if (box) box.hidden = true;

@@ -329,8 +329,32 @@ def group_b(t: Tab, s: Suite):
 
 
 def group_c(t: Tab, s: Suite):
-    """C. 榜单"""
+    """C. 推荐（榜单）—— 2026-10-15 起是独立 tab，不再长在发现页里"""
     s.g("C. 榜单")
+
+    # ---- C0/C3 导航本体：推荐必须是「与发现/书架/文件并列的页面」----
+    # 顶栏（桌面）和移动端底栏两处导航都该有入口。
+    s.check("C0 顶栏+底栏都有「推荐」入口",
+            t.js("document.querySelectorAll('[data-nav=\"ranks\"]').length") == 2)
+    s.check("C0 推荐是独立页面（#view-ranks 存在且初始隐藏）",
+            t.js("!!document.querySelector('#view-ranks')"
+                 " && document.querySelector('#view-ranks').classList"
+                 ".contains('hidden')") is True)
+    # 深链直达：bootRoute 要认识 #ranks（刷新 / 分享出去能停在推荐页）
+    t.js("location.hash='#ranks'")
+    shown = t.wait("!document.querySelector('#view-ranks').classList"
+                   ".contains('hidden')", timeout=8)
+    s.check("C3 #ranks 深链切进推荐页", shown is True)
+    s.check("C3 推荐 tab 高亮",
+            t.js("document.querySelector('[data-nav=\"ranks\"]').classList"
+                 ".contains('on')") is True)
+    # 互斥：点「发现」要切回去，推荐页收起
+    t.js("(function(){var b=document.querySelector('[data-nav=\"home\"]');"
+         "if(b)b.click();})()")
+    time.sleep(0.6)
+    s.check("C3 点「发现」互斥切回（推荐页隐藏）",
+            t.js("document.querySelector('#view-ranks').classList"
+                 ".contains('hidden')") is True)
 
     s.check("C1 榜单面板存在", t.js("!!document.querySelector('#ranksBox')") is True)
 
@@ -364,7 +388,12 @@ def group_c(t: Tab, s: Suite):
     s.check("C2 点刷新会打 /api/ranks/refresh", hit, str((t.js("window.__hit||[]") or [])[:3]))
     time.sleep(1.5)
 
-    # C5 点条目 → 书名进搜索框、面板收起、发起搜索
+    # C5 点条目 → 书名进搜索框、**切回发现页**、发起搜索
+    #   （2026-10-15 独立 tab 化后的新契约：旧版靠"折叠面板给结果让位"，
+    #     折叠已下线，现在由 searchFromHash 顺手切页 —— 断言也跟着升级。）
+    t.js("(function(){var b=document.querySelector('[data-nav=\"ranks\"]');"
+         "if(b)b.click();})()")
+    time.sleep(0.6)
     target = t.js("(document.querySelector('.rk-item[data-title]')||{}).dataset "
                   "&& document.querySelector('.rk-item[data-title]').dataset.title")
     if target:
@@ -372,8 +401,13 @@ def group_c(t: Tab, s: Suite):
         time.sleep(0.9)
         qv = t.js("document.querySelector('#q').value")
         s.eq("C5 点榜单条目：书名进搜索框", qv, target)
-        folded = t.js("document.querySelector('#ranksBox').classList.contains('folded')")
-        s.check("C5 面板自动收起", folded is True)
+        # ⚠ 必须从推荐页出发才有牙：不切回发现页的话，搜索在后台跑完了、
+        #   用户眼前却什么都没有（表现为"点了没反应"）。
+        s.check("C5 点书名自动切回发现页（结果长在那页）",
+                t.js("!document.querySelector('#view-home').classList"
+                     ".contains('hidden')") is True
+                and t.js("document.querySelector('#view-ranks').classList"
+                         ".contains('hidden')") is True)
         # 榜单点进去的搜索是走全源探测的，比首页手打慢 —— 轮询要放宽到 45s，
         # 且不能只看 spin（搜索结果秒回时 spin 可能一闪而过抓不到），
         # 所以「有结果卡」或「statbar 有文案」或「spin 在转」三者任一都算发起成功。
@@ -390,39 +424,10 @@ def group_c(t: Tab, s: Suite):
     else:
         s.check("C5 有可点的榜单条目", False, "没有 data-title")
 
-    # C3 折叠/展开
-    #
-    # ⚠ 这里**不能假设点之前的初始状态**。
-    #   上一节 C5 点了榜单条目 —— 点条目会顺手把面板收起来（否则搜索结果
-    #   被榜单挡在屏幕外，用户以为"点了没反应"）。旧实现是直接给容器加
-    #   `.folded` 类但不改内部状态（状态与视觉不同步，其实是个 bug）；
-    #   迁移到 Vue 后改成了正式的状态驱动，初始就已经是"折叠"。
-    #   所以正确写法是：先读当前状态，再断言"点一下就翻转" ——
-    #   这才是这个按钮真正的契约，也和"从哪个状态开始"无关。
-    def _is_folded():
-        return t.js("document.querySelector('#ranksBox').classList.contains('folded')")
-
-    # 只有真的展开着才需要先确认"点收起会折叠"
-    if not _is_folded():
-        t.js("document.querySelector('#ranksFold').click()")
-        time.sleep(0.4)
-        s.check("C3 点「收起」折叠榜单", _is_folded() is True)
-    else:
-        s.check("C3 点「收起」折叠榜单", True, "（点条目前已自动收起，跳过重复折叠）")
-
-    # 现在必定是折叠态 → 点一次应当展开
-    t.js("document.querySelector('#ranksFold').click()")
-    time.sleep(0.4)
-    s.check("C3 再点「展开」", _is_folded() is False)
-    # 再点一次回到折叠 —— 确认是「可反复切换」而不是单向的
-    t.js("document.querySelector('#ranksFold').click()")
-    time.sleep(0.4)
-    s.check("C3 可以再收起（不是单向）", _is_folded() is True)
-    # 展开回来，给后面的切标签用例留出可点的标签
-    t.js("document.querySelector('#ranksFold').click()")
+    # C1 切标签（先回推荐页 —— 上一段点完书名停在发现页）
+    t.js("(function(){var b=document.querySelector('[data-nav=\"ranks\"]');"
+         "if(b)b.click();})()")
     time.sleep(0.5)
-
-    # C1 切标签
     if n_tabs >= 2:
         first = t.js("(document.querySelector('.rk-tab.on')||{}).dataset "
                      "&& document.querySelector('.rk-tab.on').dataset.kind")
@@ -885,7 +890,6 @@ def main() -> int:
           (function(){
             try{
               localStorage.setItem('nd_onlyOk', 'false');
-              localStorage.setItem('nd_ranksFold', 'false');
             }catch(e){}
           })();
         """)

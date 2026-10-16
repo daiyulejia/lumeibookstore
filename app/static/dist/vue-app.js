@@ -17295,21 +17295,17 @@ ${style}
     };
     const _hoisted_4$5 = { class: "rk-actions" };
     const _hoisted_5$4 = {
-      key: 0,
       id: "ranksTabs",
       class: "rk-tabs",
       role: "tablist"
     };
     const _hoisted_6$4 = ["data-kind", "aria-selected", "onClick"];
     const _hoisted_7$4 = {
-      key: 1,
+      key: 0,
       class: "rk-desc",
       id: "ranksDesc"
     };
-    const _hoisted_8$4 = {
-      key: 2,
-      class: "rk-body"
-    };
+    const _hoisted_8$4 = { class: "rk-body" };
     const _hoisted_9$4 = {
       key: 0,
       class: "rk-skel"
@@ -17350,7 +17346,6 @@ ${style}
         const loading = /* @__PURE__ */ ref(false);
         const error = /* @__PURE__ */ ref("");
         const emptyHint = /* @__PURE__ */ ref("");
-        const folded = /* @__PURE__ */ ref(PRE.get("ranksFold", false));
         const age = /* @__PURE__ */ ref(null);
         const refreshedAt = /* @__PURE__ */ ref(0);
         const staleNow = /* @__PURE__ */ ref(false);
@@ -17486,7 +17481,6 @@ ${style}
         function pick2(it) {
           const t = it && it.title;
           if (!t) return;
-          folded.value = true;
           const q = document.getElementById("q");
           if (q) q.value = t;
           window.scrollTo({ top: 0, behavior: "smooth" });
@@ -17499,15 +17493,9 @@ ${style}
         }
         let off1 = null;
         let off2 = null;
-        watch(folded, (v) => {
-          const box = document.getElementById("ranksBox");
-          if (box) box.classList.toggle("folded", !!v);
-          PRE.set("ranksFold", !!v);
-        });
         onMounted(async () => {
           await whenAuthReady();
           const box = document.getElementById("ranksBox");
-          if (box) box.classList.toggle("folded", !!folded.value);
           let d = null;
           for (let attempt = 0; attempt < 2 && !d; attempt++) {
             try {
@@ -17524,7 +17512,7 @@ ${style}
             }
             if (!kinds.value.some((k) => k.kind === cur.value)) cur.value = kinds.value[0].kind;
             if (box) box.hidden = false;
-            if (!folded.value) loadRanks();
+            loadRanks();
           } catch {
             kinds.value = [];
             if (box) box.hidden = true;
@@ -17541,7 +17529,7 @@ ${style}
         return (_ctx, _cache) => {
           return openBlock(), createElementBlock("div", _hoisted_1$7, [
             createBaseVNode("div", _hoisted_2$7, [
-              _cache[2] || (_cache[2] = createBaseVNode("h2", { class: "rk-title" }, "热门榜单", -1)),
+              _cache[1] || (_cache[1] = createBaseVNode("h2", { class: "rk-title" }, "热门榜单", -1)),
               createBaseVNode("span", _hoisted_3$7, toDisplayString(freshness.value), 1),
               createBaseVNode("div", _hoisted_4$5, [
                 createVNode(unref(Button), {
@@ -17560,24 +17548,13 @@ ${style}
                     })
                   ]),
                   default: withCtx(() => [
-                    _cache[1] || (_cache[1] = createTextVNode(" 刷新 ", -1))
+                    _cache[0] || (_cache[0] = createTextVNode(" 刷新 ", -1))
                   ]),
                   _: 1
-                }, 8, ["loading"]),
-                createVNode(unref(Button), {
-                  id: "ranksFold",
-                  size: "small",
-                  quaternary: "",
-                  onClick: _cache[0] || (_cache[0] = ($event) => folded.value = !folded.value)
-                }, {
-                  default: withCtx(() => [
-                    createTextVNode(toDisplayString(folded.value ? "展开" : "收起"), 1)
-                  ]),
-                  _: 1
-                })
+                }, 8, ["loading"])
               ])
             ]),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_5$4, [
+            createBaseVNode("div", _hoisted_5$4, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(kinds.value, (k) => {
                 return openBlock(), createElementBlock("button", {
                   key: k.kind,
@@ -17589,9 +17566,9 @@ ${style}
                   onClick: ($event) => onKindChange(k.kind)
                 }, toDisplayString(k.label), 11, _hoisted_6$4);
               }), 128))
-            ])) : createCommentVNode("", true),
-            !folded.value && curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$4, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
-            !folded.value ? (openBlock(), createElementBlock("div", _hoisted_8$4, [
+            ]),
+            curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$4, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
+            createBaseVNode("div", _hoisted_8$4, [
               loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$4, [
                 (openBlock(), createElementBlock(Fragment, null, renderList(6, (i) => {
                   return createVNode(unref(Skeleton_default), {
@@ -17640,7 +17617,7 @@ ${style}
                   quaternary: "",
                   onClick: reload
                 }, {
-                  default: withCtx(() => [..._cache[3] || (_cache[3] = [
+                  default: withCtx(() => [..._cache[2] || (_cache[2] = [
                     createTextVNode("重试", -1)
                   ])]),
                   _: 1
@@ -17653,13 +17630,13 @@ ${style}
                   quaternary: "",
                   onClick: reload
                 }, {
-                  default: withCtx(() => [..._cache[4] || (_cache[4] = [
+                  default: withCtx(() => [..._cache[3] || (_cache[3] = [
                     createTextVNode("重试", -1)
                   ])]),
                   _: 1
                 })
               ])) : createCommentVNode("", true)
-            ])) : createCommentVNode("", true),
+            ]),
             createBaseVNode("div", _hoisted_16$2, [
               createTextVNode(toDisplayString(footLine.value) + " ", 1),
               createBaseVNode("button", {
@@ -17673,7 +17650,7 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-784f026a"]]);
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-f48810cd"]]);
     const _hoisted_1$6 = ["src"];
     const _hoisted_2$6 = { class: "t" };
     const _hoisted_3$6 = { class: "a" };

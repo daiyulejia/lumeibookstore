@@ -115,8 +115,9 @@ npm run build
 
 Vue 重写渲染方式时，**要把这些钩子保留下来**，而不是去改测试 ——
 改测试等于把验收标准降了。已经保留的：
-`#ranksBox #ranksAge #ranksRefresh #ranksFold #ranksTabs #ranksDesc
+`#ranksBox #ranksAge #ranksRefresh #ranksTabs #ranksDesc
 #ranksList #ranksToLib`、`.rk-item[data-title]`、`.rk-tab[data-kind]`。
+（2026-10-15：原「收起/展开」按钮随榜单独立 tab 化下线，钩子一并移除。）
 
 ⚠ 阅读器那一票 id 更要小心：**旧代码并没有停止读写它们**。
 `renderToc()` 会 `$("#rdTocList").innerHTML=""`、`.scrollTop=0`、

@@ -73,6 +73,15 @@ SITELEARN = ROOT / "app" / "sitelearn.py"
 #   阶段时收手明明发生了却报 False。它不报错，只是让真机断连测试
 #   变成"取决于掐断落在哪个窗口"的偶发假红。
 ENGINE = ROOT / "app" / "engine.py"
+# 「推荐」独立 tab 的接线 —— 2026-10-15 纳入反证。
+# ⚠ 失败方式全是静默：导航少一格（手机进不去）、#view-ranks 丢失
+#   （切过去白页）、深链不认（分享的链接落到发现页）、点书名不切页
+#   （搜索跑完了眼前却什么都没有）。判据在 tools/test_ranks.py P 段。
+SHELL_JS = ROOT / "app" / "static" / "js" / "shell.js"
+MAIN_JS = ROOT / "app" / "static" / "js" / "main.js"
+DISCOVER_JS = ROOT / "app" / "static" / "js" / "discover.js"
+RANKS_JS = ROOT / "app" / "static" / "js" / "ranks.js"
+APP_CSS = ROOT / "app" / "static" / "css" / "app.css"
 
 TOC_TEST = ROOT / "tools" / "test_toc_full.py"
 SAVE_TEST = ROOT / "tools" / "test_adapt_save.py"
@@ -508,6 +517,43 @@ MUTATIONS: list[Mutation] = [
              "                                       should_stop=_stop)",
              "                                       should_stop=should_stop)",
              FALLBACK_TEST),
+
+    # ------- 「推荐」独立 tab 的接线（tools/test_ranks.py P 段）-------
+    Mutation("rankstab", "底栏没有「推荐」入口（手机上永远进不去推荐页）",
+             INDEX_HTML,
+             '  <button data-nav="ranks"><i>🏆</i>推荐</button>\n',
+             "",
+             RANKS_TEST),
+    Mutation("rankstab", "#view-ranks 被改名（nav() 切过去找不到页，白屏）",
+             INDEX_HTML,
+             '<section id="view-ranks" class="hidden" data-view>',
+             '<section id="view-ranks-x" class="hidden" data-view>',
+             RANKS_TEST),
+    Mutation("rankstab", "nav() 的页面清单漏了 ranks（推荐页永远切不进去）",
+             SHELL_JS,
+             '["home", "ranks", "shelf", "files"]',
+             '["home", "shelf", "files"]',
+             RANKS_TEST),
+    Mutation("rankstab", "深链 #ranks 落到发现页（分享出去的推荐页链接失效）",
+             MAIN_JS,
+             'else if (h === "#ranks") nav("ranks");',
+             'else if (h === "#ranks") nav("home");',
+             RANKS_TEST),
+    Mutation("rankstab", "searchFromHash 不再切回发现页（推荐页点书名像没反应）",
+             DISCOVER_JS,
+             '  nav("home");\n  $("#q").value = kw;',
+             '  $("#q").value = kw;',
+             RANKS_TEST),
+    Mutation("rankstab", "降级 JS 点书名绕开 searchFromHash（不切回发现页）",
+             RANKS_JS,
+             "      searchFromHash(t);",
+             '      $("#q").value = t;',
+             RANKS_TEST),
+    Mutation("rankstab", "把折叠样式加回来（死代码复活，没人会发现）",
+             APP_CSS,
+             ".ranks[hidden]{display:none}",
+             ".ranks[hidden]{display:none}\n.ranks.folded .rk-body{display:none}",
+             RANKS_TEST),
 ]
 
 

@@ -6,16 +6,15 @@
    不另开一条"从榜单直接下载"的路径（那条路的可用性没人验证过）。
    ========================================================================== */
 
-import { $, esc, api, toast, PRE, bus } from "./util.js";
+import { $, esc, api, toast, bus } from "./util.js";
 import { stagger } from "./motion.js";
-import { runSearch } from "./discover.js";
+import { searchFromHash } from "./discover.js";
 
 const RK = {
   kinds: [],
   cur: "allvisit",
   cache: new Map(),      // kind -> items（前端也缓存一层，切标签不重复请求）
   loading: false,
-  folded: PRE.get("ranksFold", false),
   mounted: false,
   age: null,             // 服务端告知的"这份数据多久前抓的"（秒）
   refreshedAt: 0,        // 本地记录：我们这次刷新拿到的时刻
@@ -67,13 +66,6 @@ function ensureShelf(force) {
 export function renderRanks() {
   const box = $("#ranksBox");
   if (!box) return;
-  if (RK.folded) {
-    box.classList.add("folded");
-  } else {
-    box.classList.remove("folded");
-  }
-  const fb = $("#ranksFold");
-  if (fb) fb.textContent = RK.folded ? "展开" : "收起";
   paintFreshness();
 }
 
@@ -256,14 +248,11 @@ function bindItems() {
     el.onclick = () => {
       const t = el.dataset.title;
       if (!t) return;
-      // 复用发现页的搜索流程：填进输入框 → 滚上去 → 开搜。
-      // 这样"从榜单点进来"和"自己手打书名"走的是同一条被验证过的路。
-      const q = $("#q");
-      if (q) q.value = t;
-      const box = $("#ranksBox");
-      if (box) box.classList.add("folded");
+      // 复用发现页的搜索流程：searchFromHash 会填输入框、切回发现页、开搜
+      // —— 和"自己手打书名"走的是同一条被验证过的路。2026-10-15 起
+      //   榜单是独立 tab，切页这件事就交给它（旧版靠折叠让位，已下线）。
       window.scrollTo({ top: 0, behavior: "smooth" });
-      runSearch(t, true);
+      searchFromHash(t);
     };
   });
   const rt = $("#rkRetry");
@@ -276,15 +265,6 @@ export async function mountRanks() {
 
   const box = $("#ranksBox");
   if (!box) return;
-
-  const fb = $("#ranksFold");
-  if (fb) fb.onclick = () => {
-    RK.folded = !RK.folded;
-    PRE.set("ranksFold", RK.folded);
-    renderRanks();
-    // 从收起状态展开时，如果还没数据就顺手拉一次
-    if (!RK.folded && !RK.cache.size) loadRanks();
-  };
 
   // 标签用事件委托 —— 标签是动态重建的，逐个绑会漏掉后来生成的
   const tb = $("#ranksTabs");
@@ -315,8 +295,7 @@ export async function mountRanks() {
     if (!RK.kinds.some(k => k.kind === RK.cur)) RK.cur = RK.kinds[0].kind;
     box.hidden = false;
     renderRanks();
-    // 默认展开时才立刻拉数据 —— 收起的用户不该白白触发一次联网
-    if (!RK.folded) loadRanks();
+    loadRanks();
   } catch {
     // 拿不到目录（比如老版本服务端）就当这个功能不存在，不要报错打扰用户
     box.hidden = true;

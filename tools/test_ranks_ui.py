@@ -5,7 +5,8 @@
 
   1. 榜单面板出现，标签渲染出来
   2. 点一条榜单 → 书名填进搜索框
-  3. 点一条榜单 → 面板收起（避免挡住搜索结果）
+  3. 点一条榜单 → 切回发现页（搜索结果长在那页；2026-10-15 独立 tab 化后
+     的契约，替代旧版"面板自动收起"）
   4. 点一条榜单 → 真的触发了搜索（结果区出现卡片，或进入"搜索中"）
 
 为什么必须用真浏览器
@@ -205,6 +206,26 @@ def main() -> int:
         check("榜单加载出条目", ok)
 
         print()
+        print("== 推荐 tab（2026-10-15 起是独立页面）==")
+        # 顶栏（桌面）+ 移动端底栏都该有入口，缺一个就是"某个尺寸的设备进不去"
+        check("顶栏+底栏都有「推荐」入口",
+              t.js("document.querySelectorAll('[data-nav=\"ranks\"]').length") == 2)
+        check("推荐是独立页面（#view-ranks 存在）",
+              t.js("!!document.querySelector('#view-ranks')") is True)
+        # 深链直达：bootRoute 认识 #ranks，刷新/分享出去能停在推荐页
+        t.js("location.hash='#ranks'")
+        nav_ok = False
+        for _ in range(20):
+            time.sleep(0.3)
+            if t.js("!document.querySelector('#view-ranks').classList"
+                    ".contains('hidden')") is True and \
+               t.js("document.querySelector('[data-nav=\"ranks\"]').classList"
+                    ".contains('on')") is True:
+                nav_ok = True
+                break
+        check("#ranks 深链切进推荐页 + tab 高亮", nav_ok)
+
+        print()
         print("== 界面结构 ==")
         check("面板可见",
               t.js("(function(){var b=document.querySelector('#ranksBox');"
@@ -216,7 +237,6 @@ def main() -> int:
         check("第一条有条目名",
               bool(t.js("(document.querySelector('.rk-item[data-title]')||{}).dataset "
                         "&& document.querySelector('.rk-item[data-title]').dataset.title")))
-        check("有「收起」按钮", t.js("!!document.querySelector('#ranksFold')") is True)
 
         # ---- 本轮新增的三个产品点 ----
         print()
@@ -281,8 +301,14 @@ def main() -> int:
         after_q = t.js("document.querySelector('#q').value")
         check(f"书名填进了搜索框（{before_q!r} → {after_q!r}）", after_q == target)
 
-        folded = t.js("document.querySelector('#ranksBox').classList.contains('folded')")
-        check("面板自动收起（不挡住搜索结果）", folded is True)
+        # 独立 tab 化后的新契约：点书名要**切回发现页** ——
+        # 搜索结果长在 #view-home 里，不切回去的话搜索在后台跑完了、
+        # 用户眼前却什么都没有（表现为"点了没反应"）。
+        # （旧版靠"面板自动收起"给结果让位，折叠已随独立页下线。）
+        back_home = t.js(
+            "!document.querySelector('#view-home').classList.contains('hidden')"
+            " && document.querySelector('#view-ranks').classList.contains('hidden')")
+        check("点书名自动切回发现页（不挡住搜索结果）", back_home is True)
 
         # ---- 「点击真的触发了搜索」怎么判？----
         #
@@ -331,9 +357,10 @@ def main() -> int:
 
         print()
         print("== 切换标签 ==")
-        # 展开回来（点「收起」按钮），换个标签
-        t.js("document.querySelector('#ranksFold').click()")
-        time.sleep(0.4)
+        # 上一段点完书名停在了发现页 —— 先回推荐页再切标签
+        t.js("(function(){var b=document.querySelector('[data-nav=\"ranks\"]');"
+             "if(b)b.click();})()")
+        time.sleep(0.5)
         t.js("(document.querySelectorAll('.rk-tab')[1]||{}).click "
              "&& document.querySelectorAll('.rk-tab')[1].click()")
         switched = False
@@ -414,7 +441,6 @@ def main() -> int:
 
         t.call("Page.addScriptToEvaluateOnNewDocument", source=stub)
         clean2 = a.base.split("#")[0]
-        t.js("try{localStorage.removeItem('nd_ranksFold');}catch(e){}")
         t.call("Page.navigate", url=clean2)
         # 等标签渲染出来
         for _ in range(60):
@@ -477,10 +503,6 @@ def main() -> int:
             # navigate(a.base) 会停在搜索结果页，榜单面板根本没渲染 ——
             # 于是断言全红，看起来像角标坏了，其实是页面状态不对。
             clean = a.base.split("#")[0]
-            # 还要把「收起」状态清掉：前面点过条目，folded 已经写进
-            # localStorage，重载后会是收起态（列表 display:none，DOM 里
-            # 查不到 .rk-item）。这两件事叠加是最初 3 条假失败的真因。
-            t.js("try{localStorage.removeItem('nd_ranksFold');}catch(e){}")
             t.call("Page.navigate", url=clean)
             for _ in range(120):
                 time.sleep(0.5)

@@ -544,6 +544,51 @@ def main() -> int:
     # 降级路径：老后端不带 sources 时，页脚不能变成空白
     check("没有 sources 时页脚有兜底文案", 'n === 1 ?' in vue and '"榜单来自公开榜单页"' in vue)
 
+    # -----------------------------------------------------------------
+    print()
+    print("== P. 推荐 tab 接线（静态检查：独立页面 + 导航可达 + 折叠已下线）==")
+    # ⚠ 2026-10-15 榜单从发现页区块升级成独立 tab。它的失败方式全是**静默**的：
+    #   导航少一格（某个尺寸的设备永远进不去）、#view-ranks 不存在
+    #   （切过去白页）、深链不认（分享出去的链接落到发现页）、点书名
+    #   不切页（搜索在后台跑完了、眼前却什么都没有）。
+    #   这里是接线底线；真机行为在 test_ranks_ui.py 与 test_buttons.py C 组。
+    idx = (ROOT / "app/static/index.html").read_text(encoding="utf-8")
+    shell_js = (ROOT / "app/static/js/shell.js").read_text(encoding="utf-8")
+    main_js = (ROOT / "app/static/js/main.js").read_text(encoding="utf-8")
+    disc_js = (ROOT / "app/static/js/discover.js").read_text(encoding="utf-8")
+    rk_js = (ROOT / "app/static/js/ranks.js").read_text(encoding="utf-8")
+    css = (ROOT / "app/static/css/app.css").read_text(encoding="utf-8")
+
+    check("顶栏 + 底栏都有「推荐」入口（各一个 data-nav=ranks）",
+          idx.count('data-nav="ranks"') == 2)
+    check("推荐是独立页面（#view-ranks 带 data-view）",
+          re.search(r'<section id="view-ranks"[^>]*data-view', idx) is not None)
+    # 榜单容器必须搬进 #view-ranks、离开发现页 —— 按文档顺序：
+    # view-home < view-ranks < ranksBox < view-shelf
+    i_home = idx.index('id="view-home"')
+    i_view = idx.index('id="view-ranks"')
+    i_box = idx.index('id="ranksBox"')
+    i_shelf = idx.index('id="view-shelf"')
+    check("榜单容器长在 #view-ranks 里（已搬出发现页）",
+          i_home < i_view < i_box < i_shelf)
+    check("榜单容器全站只有一个（没在发现页留副本）",
+          idx.count('id="ranksBox"') == 1
+          and idx.count('data-vue-ranks hidden') == 1)
+    check("shell.nav() 认识 ranks 视图",
+          '["home", "ranks", "shelf", "files"]' in shell_js)
+    check("深链 #ranks 路由到推荐页",
+          'h === "#ranks"' in main_js and 'nav("ranks")' in main_js)
+    # 点书名切回发现页：searchFromHash 体内、runSearch 之前必须有 nav("home")
+    sf = disc_js[disc_js.index("export function searchFromHash"):]
+    sf_body = sf[:sf.index("runSearch(kw, true);")]
+    check("searchFromHash 先切回发现页再搜（点书名不白屏）",
+          'nav("home");' in sf_body)
+    check("降级 JS 点书名也走 searchFromHash（同一语义）",
+          "searchFromHash(t);" in rk_js)
+    check("「收起」功能整体下线（Vue 侧无残留）", "ranksFold" not in vue)
+    check("「收起」功能整体下线（降级 JS 无残留）", "ranksFold" not in rk_js)
+    check("旧折叠样式已清理", ".ranks.folded" not in css)
+
     print()
     if fails:
         print(f"✗ {len(fails)} 项失败：")

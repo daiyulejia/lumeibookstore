@@ -5,6 +5,7 @@
 import { $, $$, esc, api, toast, PRE, bus, debounce } from "./util.js";
 import { stagger } from "./motion.js";
 import { artHTML } from "./art.js";
+import { nav } from "./shell.js";
 
 export const M = {
   books: [], flat: [], byUrl: new Map(), stats: {},
@@ -802,6 +803,13 @@ async function runFetchUrl(url) {
 }
 
 export function searchFromHash(kw) {
+  // ⚠ 先切回发现页再搜：搜索结果只长在 #view-home 里。
+  //   2026-10-15 起榜单（推荐）是独立 tab —— 「从推荐页点书名」时用户还
+  //   停在 #view-ranks，不切回去的话搜索在后台跑完了、眼前却什么都没有，
+  //   表现就是"点了没反应"（旧版靠折叠榜单让位，现在折叠已随独立页下线）。
+  //   深链路由（bootRoute 的 #search=）本来就在 nav("home") 之后调它，
+  //   这里再切一次是幂等的，不影响那条路。
+  nav("home");
   $("#q").value = kw;
   // 深链里也可能是地址（#search=https://…），同样直接抓
   if (isUrl(kw)) { hintUrlBox(kw); runFetchUrl(kw); return; }

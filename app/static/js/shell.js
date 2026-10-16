@@ -14,7 +14,10 @@ export function onNav(name, fn) { hooks[name] = fn; }
 export function nav(name) {
   current = name;
   $$("[data-nav]").forEach(b => b.classList.toggle("on", b.dataset.nav === name));
-  ["home", "shelf", "files"].forEach(v => {
+  // ⚠ 这个清单是「全站有哪些页面」的唯一真源：#view-<name> 必须在
+  //   index.html 里存在，否则切过去就是一张永远空白的页。
+  //   2026-10-15 起「推荐」（榜单）从发现页的区块升级成独立 tab。
+  ["home", "ranks", "shelf", "files"].forEach(v => {
     const el = $("#view-" + v);
     if (el) el.classList.toggle("hidden", v !== name);
   });

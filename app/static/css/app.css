@@ -988,10 +988,8 @@ details.rawfold pre{
   padding:16px 18px 12px;
 }
 .ranks[hidden]{display:none}
-/* 收起：隐藏组件的内容区（组件内部用 .rk-body 包住列表） */
-.ranks.folded .rk-body,
-.ranks.folded .rk-tabs,
-.ranks.folded .rk-desc{display:none}
+/* （原「收起/展开」那一组折叠样式已随 2026-10-15 的「推荐独立 tab」下线：
+    榜单自己占一整页后，折叠只会让页面变成空白，功能失去了存在意义。） */
 
 
 /* ==========================================================================
