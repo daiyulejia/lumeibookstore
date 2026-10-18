@@ -291,14 +291,32 @@ export async function mountRanks() {
   try {
     const d = await api.get("/api/ranks/kinds");
     RK.kinds = (d && d.kinds) || [];
-    if (!RK.kinds.length) { box.hidden = true; return; }
+    if (!RK.kinds.length) {
+      // ⚠ 2026-10-18：独立 tab 之后不许静默留白。
+      //   旧行为是把整个区块 hidden —— 在发现页只是"少一块"，
+      //   在独立页就是"点进来一片白"，用户只能猜是网坏了还是站坏了。
+      box.hidden = false;
+      box.innerHTML = '<div class="rk-err" id="ranksKindsErr">'
+        + "这个版本还没有榜单数据。</div>";
+      return;
+    }
+    // 榜单内部 DOM（#ranksTabs / #ranksList）现在由 Vue 组件渲染。
+    // 走到这里说明 Vue 没挂上（产物 404 / 语法错）——没有容器就画不出东西。
+    // 与其静默留空，不如说清楚，用户知道"刷新一下"可能有用。
+    if (!document.getElementById("ranksList")) {
+      box.hidden = false;
+      box.innerHTML = '<div class="rk-err" id="ranksKindsErr">'
+        + "榜单组件没加载出来（前端产物可能没到位），刷新一下试试。</div>";
+      return;
+    }
     if (!RK.kinds.some(k => k.kind === RK.cur)) RK.cur = RK.kinds[0].kind;
     box.hidden = false;
     renderRanks();
     loadRanks();
   } catch {
-    // 拿不到目录（比如老版本服务端）就当这个功能不存在，不要报错打扰用户
-    box.hidden = true;
+    box.hidden = false;
+    box.innerHTML = '<div class="rk-err" id="ranksKindsErr">'
+      + "榜单目录没拿到 —— 可能是网络不通，或访问令牌过期了。</div>";
   }
 }
 

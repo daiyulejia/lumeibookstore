@@ -26,7 +26,22 @@ export function nav(name) {
   // ⚠ 用 replaceState 而不是直接 location.hash —— 后者会触发 hashchange，
   // 和 bootRoute() 形成一次多余的往返（点击 → 路由 → 再触发一次路由）。
   const want = name === "home" ? location.pathname : "#" + name;
-  try { history.replaceState(null, "", want); } catch {}
+  try { history.replaceState(null, "", want); } catch {}  // 切页回到顶部。
+  // ⚠ 没有这一句时，页面共用同一个滚动位置：在推荐页滚到第 20 名再点「发现」，
+  //   落地的发现页会停在屏幕中间（搜索结果/空态都被顶到上面看不见）——
+  //   看起来像"点了没反应"。同一个 tab 再点一次也回顶，符合肌肉记忆。
+  try { window.scrollTo(0, 0); } catch {}
+  // ⚠ 广播「hash 是被我改的」。
+  //   nav() 用 replaceState 写 hash，**不会**触发 hashchange，于是 main.js
+  //   里那份「上一次处理过的 hash」(`_lastHash`) 会一直停在旧值。
+  //   后果是一个很难查的静默故障：
+  //     ① 在推荐页（hash=#ranks）
+  //     ② 点「发现」→ nav("home")，hash 被清空，但 _lastHash 仍是 "#ranks"
+  //     ③ 再点「去推荐逛逛」（location.hash="#ranks"）
+  //        → hashchange 来了，但 main.js 一看"和上次一样"就 return
+  //        → 页面纹丝不动，按钮看着像坏的。
+  //   所以这里补一次广播，让 main.js 把 _lastHash 同步成真实 hash。
+  bus.emit("shell:nav", name);
   hooks[name]?.(name);
 }
 

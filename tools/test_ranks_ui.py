@@ -26,6 +26,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -175,13 +176,56 @@ def main() -> int:
         # 用 addScriptToEvaluateOnNewDocument 才是在文档创建前生效。
         if a.fake_shelf:
             names = [s.strip() for s in a.fake_shelf.split(",") if s.strip()]
+            # ⚠ 角标用例的前提是"书架里的书**真的在榜单里**"。
+            #   写死两个书名（三体 / 斗破苍穹）会随榜单内容变化而假红 ——
+            #   实测当前 30 条里没有它们，于是"有标记的条目 0 条"，
+            #   看起来像角标坏了，其实是数据不巧。
+            #   所以再从接口取前两条真实书名补进去（保留调用方给的名字），
+            #   让这条判据不靠运气。
+            # ⚠ 还要取「页面默认会显示哪个类别」的榜单前两条。
+            #   这里踩过一个更阴的坑（加了「记住上次看的类别」之后才暴露）：
+            #   前半段测试点过别的标签，`PRE("ranksKind")` 被记住了，
+            #   于是最后一次导航回来显示的是**那个类别**的榜单；
+            #   而假书架里补的是 allvisit 的书名 —— 两边对不上，
+            #   角标又是 0 条。所以不能写死 allvisit，要按 kinds[0]
+            #   （= 没记忆时的默认类别）去取，后面也会显式点回这个标签。
+            default_kind = "allvisit"
+            try:
+                from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+                sp = urlsplit(a.base.split("#")[0])
+                qs = dict(parse_qsl(sp.query))
+                rq0 = urlunsplit((sp.scheme, sp.netloc, "/api/ranks/kinds",
+                                  urlencode(qs), ""))
+                with urllib.request.urlopen(rq0, timeout=15) as r:
+                    ks = json.loads(r.read()).get("kinds") or []
+                if ks and ks[0].get("kind"):
+                    default_kind = ks[0]["kind"]
+                qs["kind"] = default_kind
+                rq = urlunsplit((sp.scheme, sp.netloc, "/api/ranks", urlencode(qs), ""))
+                with urllib.request.urlopen(rq, timeout=15) as r:
+                    data = json.loads(r.read())
+                names += [it["title"] for it in (data.get("items") or [])[:2] if it.get("title")]
+                print(f"     假书架：{names}"
+                      f"（后两个取自《{default_kind}》前两条，保证标记判据不靠运气）")
+            except Exception as e:  # noqa: BLE001
+                print(f"     ~ 取榜单真实书名失败（{e}），只用给定的名字")
             payload = json.dumps([{"title": n} for n in names], ensure_ascii=False)
+            # ⚠ body 必须是**字符串**。踩过坑：早先写成 `new Response(payload)`
+            #   （payload 是 Python list），落地变成 `[object Object],[object Object]`，
+            #   `.json()` 直接抛 → ensureShelf 拿到空集 → 角标 0 条，
+            #   看着像角标坏了。所以这里两件事都要保证：
+            #     ① Python 侧 json.dumps 一次 → 得到 JSON 文本；
+            #     ② 再 dumps 一次 → 得到**带引号的 JS 字符串字面量**。
+            #   `__fsHit` 是给失败时定位用的：0 说明 stub 根本没被调用
+            #   （那是拦截没装上），非 0 说明拦截生效、问题在数据形状上。
             t.call("Page.addScriptToEvaluateOnNewDocument", source=f"""
               (function(){{
+                window.__fsHit = 0;
                 var of = window.fetch;
                 window.fetch = function(u, o){{
                   var s = String(u);
                   if (s.indexOf('/api/library') === 0) {{
+                    window.__fsHit++;
                     return Promise.resolve(new Response({json.dumps(payload)},
                       {{status:200, headers:{{'Content-Type':'application/json'}}}}));
                   }}
@@ -418,6 +462,12 @@ def main() -> int:
         # 于是旧榜单的数据被写进新标签的缓存键，之后切回去看到的是别人的内容。
         stub = """
         (() => {
+          // ⚠ 用 URL 参数开关，而不是"装上就一直生效"。
+          //   addScriptToEvaluateOnNewDocument 是**持久**的：装上之后每次
+          //   导航都会执行。以前它不带开关，于是后面「已在书架」那段
+          //   拿到的榜单全变成 STUB-xxx，角标用例必然 0 条 —— 假红，
+          //   而且只在手动带 --fake-shelf 时才暴露（ship 不传这个参数）。
+          if (location.search.indexOf('stub=1') < 0) return;
           const real = window.fetch.bind(window);
           const kinds = %s;
           window.__rkFast = null;   // 想让哪个 kind 立刻回
@@ -441,7 +491,8 @@ def main() -> int:
 
         t.call("Page.addScriptToEvaluateOnNewDocument", source=stub)
         clean2 = a.base.split("#")[0]
-        t.call("Page.navigate", url=clean2)
+        sep2 = "&" if "?" in clean2 else "?"
+        t.call("Page.navigate", url=clean2 + sep2 + "stub=1")
         # 等标签渲染出来
         for _ in range(60):
             time.sleep(0.4)
@@ -509,14 +560,25 @@ def main() -> int:
                 n = t.js("document.querySelectorAll('.rk-item[data-title]').length")
                 if n and n > 0:
                     break
-            # 等 ensureShelf 回来补画角标（它是并着跑的，不阻塞列表渲染）
-            for _ in range(30):
+            # ⚠ 显式点回 default_kind 那个标签 —— 别指望"导航回来正好是它"。
+            #   页面会恢复上次看的类别（PRE 里记着），而假书架里补的书名
+            #   属于 default_kind。不点的话两边类别不同，角标必然 0 条，
+            #   又是一次"看着像功能坏了"的假红。
+            if default_kind:
+                t.js(f"(function(){{var b=document.querySelector("
+                     f"'.rk-tab[data-kind=\"{default_kind}\"]');if(b)b.click();}})()")
+            for _ in range(120):
                 time.sleep(0.4)
                 if (t.js("document.querySelectorAll('.rk-owned').length") or 0) >= 1:
                     break
 
             n_owned = t.js("document.querySelectorAll('.rk-item.owned').length") or 0
-            check(f"有被标记为「已在书架」的条目（{n_owned} 条）", n_owned >= 1)
+            fs_hit = t.js("window.__fsHit") or 0
+            cur_kind = t.js("(function(){var b=document.querySelector('.rk-tab.on');"
+                            "return b && b.dataset ? b.dataset.kind : '';})()") or ""
+            check(f"有被标记为「已在书架」的条目（{n_owned} 条）", n_owned >= 1,
+                  f"假书架拦截被命中 {fs_hit} 次；当前类别 {cur_kind!r}，"
+                  f"期望 {default_kind!r}")
             badge = t.js("(function(){var e=document.querySelector('.rk-owned');"
                          "return e?e.textContent:'';})()") or ""
             check(f"角标文案正确（{badge!r}）", "已在书架" in badge)
@@ -525,6 +587,46 @@ def main() -> int:
             n_go = t.js("document.querySelectorAll('.rk-item .rk-go').length") or 0
             check(f"未拥有的条目仍是「找这本」（{n_go} 条）", n_go >= 1)
             check("标记数不超过总数", n_owned <= total)
+
+        # ---- 取不到榜单目录时：推荐页不能是一片空白 ----
+        # ⚠ 独立 tab 之后，这个失败从"少一个区块"变成"点进去一片白"。
+        #   以前只判 #ranksBox 是否 hidden；现在要「有话说」才通过：
+        #   说明文案 + 重试按钮都得在。
+        #   stub 只在 URL 带 kindsfail=1 时生效 —— 否则这次注入会污染
+        #   后面所有导航（addScriptToEvaluateOnNewDocument 是持久的）。
+        t.call("Page.addScriptToEvaluateOnNewDocument", source="""
+          (function(){
+            if (location.search.indexOf('kindsfail=1') < 0) return;
+            var of = window.fetch;
+            window.fetch = function(u, o){
+              if (String(u).indexOf('/api/ranks/kinds') === 0) {
+                return Promise.resolve(new Response(
+                  '{"ok":false,"error":"boom"}',
+                  {status:500, headers:{'Content-Type':'application/json'}}));
+              }
+              return of.apply(this, arguments);
+            };
+          })();
+        """)
+        clean3 = a.base.split("#")[0]
+        sep = "&" if "?" in clean3 else "?"
+        print()
+        print("== 取不到榜单目录：推荐页不能空白 ==")
+        t.call("Page.navigate", url=clean3 + sep + "kindsfail=1#ranks")
+        txt = ""
+        fail_ok = False
+        for _ in range(40):
+            time.sleep(0.4)
+            txt = (t.js("(document.querySelector('#ranksKindsErr')||{})"
+                        ".textContent || ''") or "").strip()
+            if txt and t.js("!document.querySelector('#ranksBox').hidden") is True:
+                fail_ok = True
+                break
+        check(f"给出说明文案（{txt[:24]!r}）", bool(fail_ok))
+        check("容器仍然露着（不是整页空白）",
+              t.js("!document.querySelector('#ranksBox').hidden") is True)
+        check("说明里有重试按钮",
+              t.js("!!document.querySelector('#ranksKindsRetry')") is True)
 
     finally:
         try:

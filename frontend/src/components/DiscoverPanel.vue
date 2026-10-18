@@ -169,6 +169,11 @@
       <div class="empty-art" aria-hidden="true"></div>
       <h3>{{ emptyTitle }}</h3>
       <p>{{ emptyText }}</p>
+      <!-- 不知道读什么时的下一步：推荐页（榜单）。
+           只留一句"说个书名"等于把人晾在原地 —— 给一个现成的去处。
+           只在一本都没搜到（首屏）时给；搜过但没通过验证时不给（那是另一个问题）。 -->
+      <button v-if="!books.length" id="homeToRanks" class="btn ghost sm"
+              type="button" @click="toRanks">去推荐逛逛 ›</button>
     </div>
 
     <!-- 书名确认框 / 网址提示框。内容由旧代码的 renderConfirm / hintUrlBox
@@ -254,6 +259,14 @@ const emptyText = computed(() => {
   }
   return "关掉上面的「只看能读的」看看原始结果，或者点开卡片看每个来源的状态 —— 有的站点目录能开、正文抓不到，卡片上会写清楚。";
 });
+
+/** 空态里的「去推荐逛逛」：改 hash 即可，main.js 的 hashchange 会接管路由。
+ *  ⚠ 不直接调 nav()：Vue 侧不 import 旧 shell 模块（会打进第二份实例），
+ *    走 hash 是唯一不产生第二份状态的路径。
+ */
+function toRanks() {
+  location.hash = "#ranks";
+}
 
 /* ---------- 纯函数（与 discover.js 同口径，改动要两边同步） ---------- */
 

@@ -55,6 +55,8 @@ INDEX_HTML = ROOT / "app" / "static" / "index.html"
 RANKS = ROOT / "app" / "ranks.py"
 MAIN = ROOT / "app" / "main.py"
 RANKS_VUE = ROOT / "frontend" / "src" / "components" / "RanksPanel.vue"
+# 发现页组件（空态里的「去推荐逛逛」就在这里）
+DISC_VUE = ROOT / "frontend" / "src" / "components" / "DiscoverPanel.vue"
 
 # 来源库的「目录可能不全」备注 —— 2026-10-15 纳入反证。
 # ⚠ 它的失败方式：把"这次没看目录"和"这次看过、目录是全的"混成一个语义，
@@ -553,6 +555,48 @@ MUTATIONS: list[Mutation] = [
              APP_CSS,
              ".ranks[hidden]{display:none}",
              ".ranks[hidden]{display:none}\n.ranks.folded .rk-body{display:none}",
+             RANKS_TEST),
+    Mutation("rankstab", "推荐页拿不到目录时不说话（点进去一片空白）",
+             RANKS_VUE,
+             '    <div v-if="!kinds.length" class="rk-err" id="ranksKindsErr">\n'
+             '      {{ kindsError || "榜单暂时取不到。" }}\n'
+             '      <n-button id="ranksKindsRetry" size="tiny" quaternary @click="retryKinds">重试</n-button>\n'
+             '    </div>\n',
+             "",
+             RANKS_TEST),
+    Mutation("rankstab", "降级路径退回静默留白（hidden 掉整块）",
+             RANKS_JS,
+             "  } catch {\n"
+             "    box.hidden = false;\n"
+             "    box.innerHTML = '<div class=\"rk-err\" id=\"ranksKindsErr\">'\n"
+             "      + \"榜单目录没拿到 —— 可能是网络不通，或访问令牌过期了。</div>\";\n"
+             "  }",
+             "  } catch {\n"
+             "    box.hidden = true;\n"
+             "  }",
+             RANKS_TEST),
+    Mutation("rankstab", "切页不回顶（落地上个页面的半截位置）",
+             SHELL_JS,
+             "  try { window.scrollTo(0, 0); } catch {}\n",
+             "",
+             RANKS_TEST),
+    Mutation("rankstab", "首页空态的去处指错页（去推荐 → 去书架）",
+             DISC_VUE,
+             'location.hash = "#ranks"',
+             'location.hash = "#shelf"',
+             RANKS_TEST),
+    Mutation("rankstab", "不记住上次看的榜单类别（每次回到总点击榜）",
+             RANKS_VUE,
+             '    PRE.set("ranksKind", kind);   // 换过类别就记住（见 cur 的注释）',
+             "",
+             RANKS_TEST),
+    # ⚠ 这条不是"少个功能"，是"点了没反应"：nav() 用 replaceState 改 hash
+    #   不触发 hashchange，main.js 的 _lastHash 靠这个广播才跟得上。
+    #   删掉广播后，「推荐页 → 发现 → 再点去推荐逛逛」会静默不动。
+    Mutation("rankstab", "nav() 不广播 hash（去推荐逛第二次点不动）",
+             SHELL_JS,
+             '  bus.emit("shell:nav", name);\n',
+             "",
              RANKS_TEST),
 ]
 

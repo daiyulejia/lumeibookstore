@@ -17295,41 +17295,50 @@ ${style}
     };
     const _hoisted_4$5 = { class: "rk-actions" };
     const _hoisted_5$4 = {
+      key: 0,
+      class: "rk-err",
+      id: "ranksKindsErr"
+    };
+    const _hoisted_6$4 = {
+      key: 1,
       id: "ranksTabs",
       class: "rk-tabs",
       role: "tablist"
     };
-    const _hoisted_6$4 = ["data-kind", "aria-selected", "onClick"];
-    const _hoisted_7$4 = {
-      key: 0,
+    const _hoisted_7$4 = ["data-kind", "aria-selected", "onClick"];
+    const _hoisted_8$4 = {
+      key: 2,
       class: "rk-desc",
       id: "ranksDesc"
     };
-    const _hoisted_8$4 = { class: "rk-body" };
     const _hoisted_9$4 = {
+      key: 3,
+      class: "rk-body"
+    };
+    const _hoisted_10$4 = {
       key: 0,
       class: "rk-skel"
     };
-    const _hoisted_10$4 = ["data-title", "data-kind", "onClick"];
-    const _hoisted_11$3 = { class: "rk-src" };
-    const _hoisted_12$3 = {
+    const _hoisted_11$3 = ["data-title", "data-kind", "onClick"];
+    const _hoisted_12$3 = { class: "rk-src" };
+    const _hoisted_13$3 = {
       key: 0,
       class: "rk-owned",
       title: "这本书已经在你书架里了"
     };
-    const _hoisted_13$3 = {
+    const _hoisted_14$3 = {
       key: 1,
       class: "rk-go"
     };
-    const _hoisted_14$3 = {
+    const _hoisted_15$2 = {
       key: 2,
       class: "rk-err"
     };
-    const _hoisted_15$2 = {
+    const _hoisted_16$2 = {
       key: 3,
       class: "rk-err"
     };
-    const _hoisted_16$2 = { class: "rk-foot" };
+    const _hoisted_17$2 = { class: "rk-foot" };
     const _sfc_main$8 = {
       __name: "RanksPanel",
       setup(__props) {
@@ -17340,7 +17349,8 @@ ${style}
         };
         const HUE = { allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268, size: 200, postdate: 145, lastupdate: 40 };
         const kinds = /* @__PURE__ */ ref([]);
-        const cur = /* @__PURE__ */ ref("allvisit");
+        const cur = /* @__PURE__ */ ref(PRE.get("ranksKind", "allvisit"));
+        const kindsError = /* @__PURE__ */ ref("");
         const items = /* @__PURE__ */ ref([]);
         const sources = /* @__PURE__ */ ref([]);
         const loading = /* @__PURE__ */ ref(false);
@@ -17401,7 +17411,10 @@ ${style}
           return shelfPromise.value;
         }
         async function loadRanks(kind) {
-          if (kind) cur.value = kind;
+          if (kind) {
+            cur.value = kind;
+            PRE.set("ranksKind", kind);
+          }
           const want = cur.value;
           loading.value = true;
           error.value = "";
@@ -17491,11 +17504,9 @@ ${style}
         function toShelf() {
           location.hash = "#shelf";
         }
-        let off1 = null;
-        let off2 = null;
-        onMounted(async () => {
-          await whenAuthReady();
+        async function loadKinds() {
           const box = document.getElementById("ranksBox");
+          kindsError.value = "";
           let d = null;
           for (let attempt = 0; attempt < 2 && !d; attempt++) {
             try {
@@ -17504,19 +17515,23 @@ ${style}
               if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
             }
           }
-          try {
-            kinds.value = d && d.kinds || [];
-            if (!kinds.value.length) {
-              if (box) box.hidden = true;
-              return;
-            }
-            if (!kinds.value.some((k) => k.kind === cur.value)) cur.value = kinds.value[0].kind;
-            if (box) box.hidden = false;
-            loadRanks();
-          } catch {
-            kinds.value = [];
-            if (box) box.hidden = true;
+          kinds.value = d && d.kinds || [];
+          if (box) box.hidden = false;
+          if (!kinds.value.length) {
+            kindsError.value = d ? "这个版本还没有榜单数据。" : "榜单目录没拿到 —— 可能是网络不通，或访问令牌过期了。";
+            return;
           }
+          if (!kinds.value.some((k) => k.kind === cur.value)) cur.value = kinds.value[0].kind;
+          loadRanks();
+        }
+        function retryKinds() {
+          loadKinds();
+        }
+        let off1 = null;
+        let off2 = null;
+        onMounted(async () => {
+          await whenAuthReady();
+          await loadKinds();
           ensureShelf(true);
           off1 = bus.on("task:done", () => ensureShelf(true));
           off2 = bus.on("shelf:changed", () => ensureShelf(true));
@@ -17554,7 +17569,21 @@ ${style}
                 }, 8, ["loading"])
               ])
             ]),
-            createBaseVNode("div", _hoisted_5$4, [
+            !kinds.value.length ? (openBlock(), createElementBlock("div", _hoisted_5$4, [
+              createTextVNode(toDisplayString(kindsError.value || "榜单暂时取不到。") + " ", 1),
+              createVNode(unref(Button), {
+                id: "ranksKindsRetry",
+                size: "tiny",
+                quaternary: "",
+                onClick: retryKinds
+              }, {
+                default: withCtx(() => [..._cache[2] || (_cache[2] = [
+                  createTextVNode("重试", -1)
+                ])]),
+                _: 1
+              })
+            ])) : createCommentVNode("", true),
+            kinds.value.length ? (openBlock(), createElementBlock("div", _hoisted_6$4, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(kinds.value, (k) => {
                 return openBlock(), createElementBlock("button", {
                   key: k.kind,
@@ -17564,12 +17593,12 @@ ${style}
                   "aria-selected": k.kind === cur.value,
                   type: "button",
                   onClick: ($event) => onKindChange(k.kind)
-                }, toDisplayString(k.label), 11, _hoisted_6$4);
+                }, toDisplayString(k.label), 11, _hoisted_7$4);
               }), 128))
-            ]),
-            curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_7$4, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
-            createBaseVNode("div", _hoisted_8$4, [
-              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$4, [
+            ])) : createCommentVNode("", true),
+            curDesc.value ? (openBlock(), createElementBlock("p", _hoisted_8$4, toDisplayString(curDesc.value), 1)) : createCommentVNode("", true),
+            kinds.value.length ? (openBlock(), createElementBlock("div", _hoisted_9$4, [
+              loading.value && !items.value.length ? (openBlock(), createElementBlock("div", _hoisted_10$4, [
                 (openBlock(), createElementBlock(Fragment, null, renderList(6, (i) => {
                   return createVNode(unref(Skeleton_default), {
                     key: i,
@@ -17604,27 +17633,14 @@ ${style}
                         createBaseVNode("b", null, toDisplayString(it.title), 1),
                         createBaseVNode("em", null, toDisplayString(metaOf(it) || " "), 1)
                       ], 4),
-                      createBaseVNode("span", _hoisted_11$3, toDisplayString(it.source_display || it.source || ""), 1),
-                      isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_12$3, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_13$3, "找这本 ›"))
-                    ], 10, _hoisted_10$4);
+                      createBaseVNode("span", _hoisted_12$3, toDisplayString(it.source_display || it.source || ""), 1),
+                      isOwned(it.title) ? (openBlock(), createElementBlock("span", _hoisted_13$3, " ✓ 已在书架 ")) : (openBlock(), createElementBlock("span", _hoisted_14$3, "找这本 ›"))
+                    ], 10, _hoisted_11$3);
                   }), 128))
                 ]),
                 _: 1
-              })) : !loading.value ? (openBlock(), createElementBlock("div", _hoisted_14$3, [
+              })) : !loading.value ? (openBlock(), createElementBlock("div", _hoisted_15$2, [
                 createTextVNode(toDisplayString(emptyHint.value || "这个榜单暂时没有内容。") + " ", 1),
-                createVNode(unref(Button), {
-                  size: "tiny",
-                  quaternary: "",
-                  onClick: reload
-                }, {
-                  default: withCtx(() => [..._cache[2] || (_cache[2] = [
-                    createTextVNode("重试", -1)
-                  ])]),
-                  _: 1
-                })
-              ])) : createCommentVNode("", true),
-              error.value && items.value.length ? (openBlock(), createElementBlock("div", _hoisted_15$2, [
-                createTextVNode(" 刷新失败：" + toDisplayString(error.value) + " ", 1),
                 createVNode(unref(Button), {
                   size: "tiny",
                   quaternary: "",
@@ -17635,9 +17651,22 @@ ${style}
                   ])]),
                   _: 1
                 })
+              ])) : createCommentVNode("", true),
+              error.value && items.value.length ? (openBlock(), createElementBlock("div", _hoisted_16$2, [
+                createTextVNode(" 刷新失败：" + toDisplayString(error.value) + " ", 1),
+                createVNode(unref(Button), {
+                  size: "tiny",
+                  quaternary: "",
+                  onClick: reload
+                }, {
+                  default: withCtx(() => [..._cache[4] || (_cache[4] = [
+                    createTextVNode("重试", -1)
+                  ])]),
+                  _: 1
+                })
               ])) : createCommentVNode("", true)
-            ]),
-            createBaseVNode("div", _hoisted_16$2, [
+            ])) : createCommentVNode("", true),
+            createBaseVNode("div", _hoisted_17$2, [
               createTextVNode(toDisplayString(footLine.value) + " ", 1),
               createBaseVNode("button", {
                 class: "rk-link",
@@ -17650,7 +17679,7 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-f48810cd"]]);
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-8a2ba581"]]);
     const _hoisted_1$6 = ["src"];
     const _hoisted_2$6 = { class: "t" };
     const _hoisted_3$6 = { class: "a" };
@@ -18243,6 +18272,9 @@ ${style}
           }
           return "关掉上面的「只看能读的」看看原始结果，或者点开卡片看每个来源的状态 —— 有的站点目录能开、正文抓不到，卡片上会写清楚。";
         });
+        function toRanks() {
+          location.hash = "#ranks";
+        }
         function groupKey(b) {
           return `${(b.title || "").trim()}\0${(b.author || "").trim()}`;
         }
@@ -18436,7 +18468,7 @@ ${style}
                   key: i,
                   class: "skl"
                 }, [..._cache[8] || (_cache[8] = [
-                  createStaticVNode('<div class="b cv" data-v-b72df0d9></div><div class="col" data-v-b72df0d9><div class="b ln" style="width:52%;" data-v-b72df0d9></div><div class="b ln" style="width:32%;height:10px;" data-v-b72df0d9></div><div class="b ln" style="width:92%;height:10px;" data-v-b72df0d9></div><div class="b ln" style="width:70%;height:10px;" data-v-b72df0d9></div></div>', 2)
+                  createStaticVNode('<div class="b cv" data-v-f2c06905></div><div class="col" data-v-f2c06905><div class="b ln" style="width:52%;" data-v-f2c06905></div><div class="b ln" style="width:32%;height:10px;" data-v-f2c06905></div><div class="b ln" style="width:92%;height:10px;" data-v-f2c06905></div><div class="b ln" style="width:70%;height:10px;" data-v-f2c06905></div></div>', 2)
                 ])]);
               }), 64)) : list.value.length ? (openBlock(), createElementBlock(Fragment, { key: 1 }, [
                 byAuthor.value ? (openBlock(), createElementBlock("div", _hoisted_13$1, [
@@ -18565,7 +18597,14 @@ ${style}
                 "aria-hidden": "true"
               }, null, -1)),
               createBaseVNode("h3", null, toDisplayString(emptyTitle.value), 1),
-              createBaseVNode("p", null, toDisplayString(emptyText.value), 1)
+              createBaseVNode("p", null, toDisplayString(emptyText.value), 1),
+              !books.value.length ? (openBlock(), createElementBlock("button", {
+                key: 0,
+                id: "homeToRanks",
+                class: "btn ghost sm",
+                type: "button",
+                onClick: toRanks
+              }, "去推荐逛逛 ›")) : createCommentVNode("", true)
             ], 2),
             createBaseVNode("div", {
               id: "confirmBox",
@@ -18575,7 +18614,7 @@ ${style}
         };
       }
     };
-    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-b72df0d9"]]);
+    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-f2c06905"]]);
     const _hoisted_1$2 = { class: "rd-top" };
     const _hoisted_2$2 = { class: "ttl" };
     const _hoisted_3$2 = { id: "rdTitle" };

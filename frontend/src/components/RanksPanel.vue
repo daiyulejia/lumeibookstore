@@ -40,6 +40,15 @@
       </div>
     </div>
 
+    <!-- 拿不到榜单目录（老后端 / 断网 / 令牌不对）时的说明。
+         ⚠ 独立 tab 之后这里**必须说话**：整页空白会被当成"页面坏了"，
+           而在发现页时代"整块不显示"只是少一个区块，含义完全不同。
+           所以失败时也把容器露出来，给一句人话 + 一个重试入口。 -->
+    <div v-if="!kinds.length" class="rk-err" id="ranksKindsErr">
+      {{ kindsError || "榜单暂时取不到。" }}
+      <n-button id="ranksKindsRetry" size="tiny" quaternary @click="retryKinds">重试</n-button>
+    </div>
+
     <!-- 榜单类型切换 -->
     <!-- ⚠ 这里**没有**用 Naive 的 n-tabs，而是自己用按钮 + Naive 的视觉令牌实现。
          原因：n-tabs 内部渲染 `data-name`，而 tools/test_ranks_ui.py 的
@@ -48,7 +57,7 @@
          自己写这十几个标签一点也不亏：样式本来就要跟噜妹主题走，
          用 Naive 的反而还要再去覆盖它。
          （这正是"N 个标签"这种小控件不该引重组件库的地方。） -->
-    <div id="ranksTabs" class="rk-tabs" role="tablist">
+    <div v-if="kinds.length" id="ranksTabs" class="rk-tabs" role="tablist">
       <button
         v-for="k in kinds"
         :key="k.kind"
@@ -68,7 +77,9 @@
     <p v-if="curDesc" class="rk-desc" id="ranksDesc">{{ curDesc }}</p>
 
     <!-- 列表主体：骨架 / 数据 / 空 / 错误 四态 -->
-    <div class="rk-body">
+    <!-- ⚠ `v-if="kinds.length"`：拿不到榜单目录时这里什么都不该画 ——
+         否则会和上面那句"榜单暂时取不到"叠成两条互相矛盾的说明。 -->
+    <div v-if="kinds.length" class="rk-body">
       <!-- 加载骨架：用 Naive 的 skeleton，比手写灰条更规整 -->
       <div v-if="loading && !items.length" class="rk-skel">
         <n-skeleton v-for="i in 6" :key="i" height="46px" :sharp="false" />
@@ -140,7 +151,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { NButton, NIcon, NSkeleton } from "naive-ui";
-import { api, bus, toast, whenAuthReady } from "../legacy/util.js";
+import { api, bus, PRE, toast, whenAuthReady } from "../legacy/util.js";
 import { stagger } from "../legacy/motion.js";
 
 // 极简的刷新图标（内联 SVG，省一个图标库依赖）
@@ -157,7 +168,11 @@ const RefreshIcon = {
 const HUE = { allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268, size: 200, postdate: 145, lastupdate: 40 };
 
 const kinds = ref([]);
-const cur = ref("allvisit");
+/* 上次看的榜单类别跨刷新保留：常看「本周热读」的人不该每次回来都被
+   重置成「总点击榜」。取值在 loadKinds 里会做有效性校验（后端删类目
+   → 回落第一类），所以这里放心直接用存下来的值。 */
+const cur = ref(PRE.get("ranksKind", "allvisit"));
+const kindsError = ref("");   // 目录没取到时给用户看的人话（模板 #ranksKindsErr）
 const items = ref([]);
 const sources = ref([]);
 const loading = ref(false);
@@ -244,7 +259,10 @@ function ensureShelf(force) {
 }
 
 async function loadRanks(kind) {
-  if (kind) cur.value = kind;
+  if (kind) {
+    cur.value = kind;
+    PRE.set("ranksKind", kind);   // 换过类别就记住（见 cur 的注释）
+  }
   const want = cur.value;
   loading.value = true;
   error.value = "";
@@ -394,6 +412,43 @@ function toShelf() {
   location.hash = "#shelf";
 }
 
+/** 取榜单目录（标签列表）。
+ *
+ * ⚠ 2026-10-18 改：**失败时也要把容器露出来**。
+ *   旧写法是把整个容器藏起来（hidden=true）—— 在发现页时代只是"少一个区块"；
+ *   榜单升级成独立 tab 之后，同一个动作会让整页变成空白 ——
+ *   用户点进「推荐」看到一片白，只能猜"是我网坏了还是站坏了"。
+ *   现在：不论成败都 unhide，失败时由模板里的 #ranksKindsErr 说人话 + 重试。
+ */
+async function loadKinds() {
+  const box = document.getElementById("ranksBox");
+  kindsError.value = "";
+  // 允许重试一次：这里失败的话整页没内容，代价比多打一个请求大得多
+  let d = null;
+  for (let attempt = 0; attempt < 2 && !d; attempt++) {
+    try {
+      d = await api.get("/api/ranks/kinds");
+    } catch {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
+    }
+  }
+  kinds.value = (d && d.kinds) || [];
+  if (box) box.hidden = false;
+  if (!kinds.value.length) {
+    kindsError.value = d
+      ? "这个版本还没有榜单数据。"
+      : "榜单目录没拿到 —— 可能是网络不通，或访问令牌过期了。";
+    return;
+  }
+  // 上次看的类别可能已被后端下线 → 回落到第一类（否则标签全灰、列表永远空）
+  if (!kinds.value.some((k) => k.kind === cur.value)) cur.value = kinds.value[0].kind;
+  loadRanks();
+}
+
+function retryKinds() {
+  loadKinds();
+}
+
 /* ---------- 生命周期 ---------- */
 
 let off1 = null;
@@ -405,37 +460,10 @@ onMounted(async () => {
   //   而 Vue 是另一个 module，加载完立刻 mount —— onMounted 很可能跑在
   //   bootstrapAuth 之前，此时请求不带 t=，**线上 401**。
   //   本地 /api 不需要令牌，所以本地永远不复现，只在线上表现为
-  //   "榜单区块整块不显示"。见 legacy/util.js 的 whenAuthReady()。
+  //   "榜单整块不显示"。见 legacy/util.js 的 whenAuthReady()。
   await whenAuthReady();
 
-  const box = document.getElementById("ranksBox");
-
-  // 拿榜单目录。⚠ 允许重试一次 —— 这里失败的话整个区块都不显示，
-  //   用户连"榜单"两个字都看不到，代价比多打一个请求大得多。
-  //   （kinds 本身很轻，重试几乎不花钱。）
-  let d = null;
-  for (let attempt = 0; attempt < 2 && !d; attempt++) {
-    try {
-      d = await api.get("/api/ranks/kinds");
-    } catch {
-      if (attempt === 0) await new Promise((r) => setTimeout(r, 600));
-    }
-  }
-
-  try {
-    kinds.value = (d && d.kinds) || [];
-    if (!kinds.value.length) {
-      // 拿不到榜单目录（比如后端版本旧）→ 整个区块不显示，不打扰用户
-      if (box) box.hidden = true;
-      return;
-    }
-    if (!kinds.value.some((k) => k.kind === cur.value)) cur.value = kinds.value[0].kind;
-    if (box) box.hidden = false;
-    loadRanks();
-  } catch {
-    kinds.value = [];
-    if (box) box.hidden = true;
-  }
+  await loadKinds();
 
   // 书架变了 → 重画「已在书架」标记（走事件总线，与旧约定一致）
   ensureShelf(true);

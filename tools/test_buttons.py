@@ -332,6 +332,18 @@ def group_c(t: Tab, s: Suite):
     """C. 推荐（榜单）—— 2026-10-15 起是独立 tab，不再长在发现页里"""
     s.g("C. 榜单")
 
+    # ⚠ 进组先刷新一页干净的。
+    #   为什么：A 组（发现）会真的搜一次，页面上留下结果卡片；而本组要验的
+    #   「首屏空态 → 去推荐逛逛」只在**一本都还没搜过**时成立（`v-if="!books.length"`）。
+    #   共用同一个页面往下跑，这条必然红 —— 而且只在整套跑时红、
+    #   `--group C` 单跑时绿，是最难查的那种「顺序依赖假红」。
+    #   刷新后等 dataset.mounted（main.js 挂完骨架才打的），别只等元素出现。
+    clean = t.js("location.origin + location.pathname") or ""
+    if clean:
+        t.call("Page.navigate", url=clean)
+        t.wait("!!document.documentElement.dataset.mounted", timeout=25)
+        t.wait("!!document.querySelector('#q')", timeout=15)
+
     # ---- C0/C3 导航本体：推荐必须是「与发现/书架/文件并列的页面」----
     # 顶栏（桌面）和移动端底栏两处导航都该有入口。
     s.check("C0 顶栏+底栏都有「推荐」入口",
@@ -340,6 +352,28 @@ def group_c(t: Tab, s: Suite):
             t.js("!!document.querySelector('#view-ranks')"
                  " && document.querySelector('#view-ranks').classList"
                  ".contains('hidden')") is True)
+
+    # C0 首页空态 → 推荐（「不知道读什么」时的下一步，找书闭环的入口）
+    #
+    # ⚠ 这条必须**等**，不能一上来就 js() 查。
+    #   ship 里这套和其它 13 套真机并发跑，CPU 被抢，Vue 的首屏渲染会慢
+    #   一两秒；查早了就是 None，三条 C0 连锁变红 —— 看着像按钮没做出来，
+    #   其实只是"还没画到"。本地单跑时永远撞不上这个窗口。
+    #   失败信息里带上结果卡片数，好在"真的渲染了内容"时把它和时序区分开。
+    has_entry = t.wait("!!document.querySelector('#homeToRanks')", timeout=20)
+    books_n = t.js("document.querySelectorAll('#results .book').length") or 0
+    s.check("C0 首页空态有「去推荐逛逛」入口", bool(has_entry),
+            f"页面上有结果卡片 {books_n} 本（>0 说明首屏不是空态）")
+    if has_entry:
+        t.js("document.querySelector('#homeToRanks').click()")
+        to_ranks = t.wait("!document.querySelector('#view-ranks').classList"
+                          ".contains('hidden')", timeout=8)
+        s.check("C0 点「去推荐逛逛」进推荐页", to_ranks is True)
+    else:
+        s.check("C0 点「去推荐逛逛」进推荐页", False, "入口不存在，跳过")
+    t.js("(function(){var b=document.querySelector('[data-nav=\"home\"]');"
+         "if(b)b.click();})()")
+    time.sleep(0.5)
     # 深链直达：bootRoute 要认识 #ranks（刷新 / 分享出去能停在推荐页）
     t.js("location.hash='#ranks'")
     shown = t.wait("!document.querySelector('#view-ranks').classList"
@@ -355,6 +389,23 @@ def group_c(t: Tab, s: Suite):
     s.check("C3 点「发现」互斥切回（推荐页隐藏）",
             t.js("document.querySelector('#view-ranks').classList"
                  ".contains('hidden')") is True)
+
+    # ★ 同一个入口点**第二次**也必须能进。
+    #   这条钉住一个真实的静默故障（是这条测试逼出来的，不是臆想的）：
+    #     nav() 用 replaceState 改 hash，**不触发 hashchange**，于是
+    #     main.js 里那份「上一次处理过的 hash」(`_lastHash`) 停在旧值；
+    #     「在推荐页 → 点发现（hash 清空，_lastHash 还是 #ranks）→ 再点
+    #     去推荐逛逛」时，hashchange 明明来了却被当成重复而 return，
+    #     页面纹丝不动 —— 用户看到的就是"按钮坏了"。
+    #   只判"第一次能进"是抓不到的，必须第二次。
+    if has_entry:
+        t.js("document.querySelector('#homeToRanks').click()")
+        again = t.wait("!document.querySelector('#view-ranks').classList"
+                       ".contains('hidden')", timeout=8)
+        s.check("C0 第二次点同一入口仍能进推荐页", again is True)
+    else:
+        s.check("C0 第二次点同一入口仍能进推荐页", False,
+                "入口不存在（首屏不是空态），这条无从点起")
 
     s.check("C1 榜单面板存在", t.js("!!document.querySelector('#ranksBox')") is True)
 
@@ -423,6 +474,23 @@ def group_c(t: Tab, s: Suite):
         t.wait("!document.querySelector('#results .skl')", timeout=45)
     else:
         s.check("C5 有可点的榜单条目", False, "没有 data-title")
+
+    # C3 切页回到顶部
+    #   ⚠ 所有页面共用一个滚动位置：在推荐页滚到第 20 名再点「发现」，
+    #     不重置的话落地的发现页停在屏幕中间（搜索框/空态都在上面看不见），
+    #     看起来像"点了没反应"。
+    #   ⚠ 先确认"真的滚得动"，否则 scrollTo 后 scrollY 一直是 0，
+    #     这条就变成恒真了。
+    t.js("(function(){var b=document.querySelector('[data-nav=\"ranks\"]');"
+         "if(b)b.click();})()")
+    time.sleep(0.6)
+    scrolled = t.js("window.scrollTo(0, 700); window.scrollY") or 0
+    s.check(f"C3 推荐页能滚动（前提，scrollY={scrolled}）", scrolled > 0)
+    t.js("(function(){var b=document.querySelector('[data-nav=\"home\"]');"
+         "if(b)b.click();})()")
+    time.sleep(0.6)
+    sy = t.js("window.scrollY") or 0
+    s.check(f"C3 切页后回到顶部（scrollY={sy}）", sy == 0)
 
     # C1 切标签（先回推荐页 —— 上一段点完书名停在发现页）
     t.js("(function(){var b=document.querySelector('[data-nav=\"ranks\"]');"

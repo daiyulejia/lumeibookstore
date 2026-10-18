@@ -589,6 +589,34 @@ def main() -> int:
     check("「收起」功能整体下线（降级 JS 无残留）", "ranksFold" not in rk_js)
     check("旧折叠样式已清理", ".ranks.folded" not in css)
 
+    # -----------------------------------------------------------------
+    print()
+    print("== Q. 推荐页不留白 / 进出体验（静态检查）==")
+    # ⚠ 这一段的动机：榜单升级成**独立 tab** 之后，同类失败从"少一个区块"
+    #   变成了"点进去一片空白"—— 严重程度完全不同，判据必须跟上。
+    disc_vue = (ROOT / "frontend/src/components/DiscoverPanel.vue").read_text(encoding="utf-8")
+    check("取不到榜单目录时给出说明 + 重试（Vue 侧）",
+          'id="ranksKindsErr"' in vue and 'id="ranksKindsRetry"' in vue)
+    check("失败时同样把容器露出来（不再有 hidden=true 分支）",
+          "box.hidden = false" in vue and "hidden = true" not in vue)
+    check("降级路径也不再静默留白（有说明、无 hidden 分支）",
+          "ranksKindsErr" in rk_js and "hidden = true" not in rk_js)
+    check("切页回到顶部（否则会停在上个页面的半截位置）",
+          "window.scrollTo(0, 0);" in shell_js)
+    check("发现页空态给出去处：去推荐逛逛",
+          'id="homeToRanks"' in disc_vue and 'location.hash = "#ranks"' in disc_vue)
+    check("推荐页记住上次看的榜单类别",
+          'PRE.get("ranksKind"' in vue and 'PRE.set("ranksKind"' in vue)
+    # ⚠ 这条钉的是 hash 去重与 nav() 的同步。
+    #   nav() 用 replaceState 改 hash（不触发 hashchange），main.js 又靠
+    #   `_lastHash` 去重 —— 两者不同步时，"在推荐页 → 点发现 → 再点
+    #   去推荐逛逛" 这串操作里那一次 hashchange 会被当成重复吞掉，
+    #   页面纹丝不动。这是真浏览器测出来的，不是设想。
+    main_js = (ROOT / "app/static/js/main.js").read_text(encoding="utf-8")
+    check("nav() 改 hash 后会广播，main.js 同步去重变量",
+          'bus.emit("shell:nav"' in shell_js
+          and 'bus.on("shell:nav"' in main_js)
+
     print()
     if fails:
         print(f"✗ {len(fails)} 项失败：")

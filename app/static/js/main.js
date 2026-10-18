@@ -150,8 +150,15 @@ document.addEventListener("keydown", e => {
   // ⚠ 运行时改 hash 也要真的跳过去。
   // 没有这一行，`location.hash="#shelf"`（榜单里的「去看我的书架」就是这么调的）
   // 会静默无效 —— 页面停在原地，按钮看着像坏的。
-  // 记录上一次的 hash，避免 nav() 自己 replaceState 后又被这里回环触发一遍。
+  //
+  // 去重靠「上一次处理过的 hash」。⚠ 但 nav() 是用 replaceState 改 hash 的，
+  // **不触发 hashchange**，所以 _lastHash 不会自动跟上 —— 必须由 shell 广播
+  // `shell:nav` 同步（见下）。否则会出现这种静默故障：
+  //   在 #ranks → 点「发现」(hash 清空，_lastHash 还是 #ranks)
+  //   → 再点「去推荐逛逛」(location.hash="#ranks")
+  //   → hashchange 到了，却因为"和上次一样"被 return 掉，页面纹丝不动。
   let _lastHash = location.hash;
+  bus.on("shell:nav", () => { _lastHash = location.hash; });
   window.addEventListener("hashchange", () => {
     if (location.hash === _lastHash) return;
     _lastHash = location.hash;
