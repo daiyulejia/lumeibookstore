@@ -617,12 +617,11 @@ def main() -> int:
           'bus.emit("shell:nav"' in shell_js
           and 'bus.on("shell:nav"' in main_js)
     # 光有按钮不够 —— 它得在首屏折线以上，否则用户不滚就看不见。
-    # 真机判据在 test_buttons（固定 1280×800 / 390×780 各测一次）；
-    # 这里只钉住"紧凑档别被删"，防止有人当成多余的样式清掉。
-    check("首屏空态用紧凑档（不把「去推荐逛逛」推到折线以下）",
-          "#homeEmpty { padding-top: 28px" in disc_vue
-          and "min(160px, 44vw)" in disc_vue
-          and "min(116px, 34vw)" in disc_vue)
+    # 真机判据在 test_buttons（固定 1280×705 / 390×690 各测一次）；
+    # 这里只钉住"首屏极简档别被删"，防止有人当成多余的样式清掉。
+    check("首屏空态用极简档（不放第二张插画，免得把入口顶到折线以下）",
+          "#homeEmpty.no-books .empty-art { display: none; }" in disc_vue
+          and 'no-books' in disc_vue)
 
     print()
     if fails:

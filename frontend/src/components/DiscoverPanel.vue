@@ -165,7 +165,8 @@
 
     <!-- 首屏空态。插画走 CSS background（不要写 <img src="/static/...">，
          会被 Vite 当模块解析，把整份产物拖垮 —— 见 ShelfPanel 的长注释）。 -->
-    <div id="homeEmpty" class="empty" :class="{ hidden: !showHomeEmpty }">
+    <div id="homeEmpty" class="empty"
+         :class="{ hidden: !showHomeEmpty, 'no-books': !books.length }">
       <div class="empty-art" aria-hidden="true"></div>
       <h3>{{ emptyTitle }}</h3>
       <p>{{ emptyText }}</p>
@@ -255,7 +256,10 @@ const emptyTitle = computed(() => {
 });
 const emptyText = computed(() => {
   if (!books.value.length) {
-    return "搜到的每一本都会先验证一遍，确认真能读到正文，才敢说它「能读」。";
+    // ⚠ 这里要短。它多占一行，"去推荐逛逛"就往下掉 23px。
+    //   实测 1280×800 屏幕的浏览器视口只有 705，"每本都先验证一遍…
+    //   才敢说它能读"那种长句会把按钮顶出首屏。意思保留，字数砍半。
+    return "每本都先验一遍，真能读到正文才敢说「能读」。";
   }
   return "关掉上面的「只看能读的」看看原始结果，或者点开卡片看每个来源的状态 —— 有的站点目录能开、正文抓不到，卡片上会写清楚。";
 });
@@ -419,20 +423,22 @@ onUnmounted(() => {
   background-position: center;
 }
 
-/* 首屏空态用**紧凑档**。
-   ⚠ 这不是"审美偏好"，是可用性问题：实测 1280×900（innerHeight 805）下
-     Hero 437px + 空态 441px = 文档 1027px，"去推荐逛逛"落在 y=832 ——
-     **在首屏折线以下**。用户不滚就看不见那个按钮，等于没给去处。
-     所以插画缩到 160（240 → 160，高度 180 → 120）、上下留白 70 → 28。
-   ⚠ 只作用于 #homeEmpty，不动通用的 .empty —— 书架/文件页的空态
-     没有 Hero 跟它抢高度，留白大一点更舒服。 */
-#homeEmpty { padding-top: 28px; padding-bottom: 28px; }
-#homeEmpty .empty-art { width: min(160px, 44vw); }
-/* 手机上首屏更矮（真机 390×844 的 innerHeight 常只有 ~700），上面那一档
-   测出来余量只剩十几像素，再压一档才稳。Hero 已经有一张插画，这里不必大。 */
+/* 首屏空态（一本都还没有）用**极简档**。
+   ⚠ 这不是"审美偏好"，是可用性问题，而且是量出来的：
+     · Hero 435px + 空态 441px → 文档 1027
+     · 1280×800 的屏幕，浏览器视口只有 **705**（工具栏吃掉 ~95px）
+     · 「去推荐逛逛」落在 y=730／832 —— **在折线以下**，用户不滚就看不见
+   两条压缩都试过（插画 240→160→132、留白 70→28→22），最好也只差 10px ——
+   因为病根不在尺寸，在**首屏放了两张插画**：Hero 已经有一张噜噜/噜妹，
+   空态再来一张纯属重复装饰，却把最重要的入口顶下去。
+   所以首屏直接不要那张图：只留"标题 + 一句说明 + 入口"，按钮 y≈628。
+   ⚠ 搜过但没结果时（books 非空、只是没过验证）仍保留插画 —— 那种时候
+     用户需要安慰，而且他已经滚到结果区，不受首屏折线约束。
+   ⚠ 只作用于 #homeEmpty，不动通用的 .empty（书架/文件页空态保持原样）。 */
+#homeEmpty.no-books { padding-top: 20px; padding-bottom: 20px; }
+#homeEmpty.no-books .empty-art { display: none; }
 @media (max-width: 480px) {
-  #homeEmpty { padding-top: 16px; padding-bottom: 16px; }
-  #homeEmpty .empty-art { width: min(116px, 34vw); }
+  #homeEmpty.no-books { padding-top: 14px; padding-bottom: 14px; }
 }
 
 </style>

@@ -18268,7 +18268,7 @@ ${style}
         });
         const emptyText = computed(() => {
           if (!books.value.length) {
-            return "搜到的每一本都会先验证一遍，确认真能读到正文，才敢说它「能读」。";
+            return "每本都先验一遍，真能读到正文才敢说「能读」。";
           }
           return "关掉上面的「只看能读的」看看原始结果，或者点开卡片看每个来源的状态 —— 有的站点目录能开、正文抓不到，卡片上会写清楚。";
         });
@@ -18468,7 +18468,7 @@ ${style}
                   key: i,
                   class: "skl"
                 }, [..._cache[8] || (_cache[8] = [
-                  createStaticVNode('<div class="b cv" data-v-fe4da79e></div><div class="col" data-v-fe4da79e><div class="b ln" style="width:52%;" data-v-fe4da79e></div><div class="b ln" style="width:32%;height:10px;" data-v-fe4da79e></div><div class="b ln" style="width:92%;height:10px;" data-v-fe4da79e></div><div class="b ln" style="width:70%;height:10px;" data-v-fe4da79e></div></div>', 2)
+                  createStaticVNode('<div class="b cv" data-v-baa453b6></div><div class="col" data-v-baa453b6><div class="b ln" style="width:52%;" data-v-baa453b6></div><div class="b ln" style="width:32%;height:10px;" data-v-baa453b6></div><div class="b ln" style="width:92%;height:10px;" data-v-baa453b6></div><div class="b ln" style="width:70%;height:10px;" data-v-baa453b6></div></div>', 2)
                 ])]);
               }), 64)) : list.value.length ? (openBlock(), createElementBlock(Fragment, { key: 1 }, [
                 byAuthor.value ? (openBlock(), createElementBlock("div", _hoisted_13$1, [
@@ -18590,7 +18590,7 @@ ${style}
             ]),
             createBaseVNode("div", {
               id: "homeEmpty",
-              class: normalizeClass(["empty", { hidden: !showHomeEmpty.value }])
+              class: normalizeClass(["empty", { hidden: !showHomeEmpty.value, "no-books": !books.value.length }])
             }, [
               _cache[14] || (_cache[14] = createBaseVNode("div", {
                 class: "empty-art",
@@ -18614,7 +18614,7 @@ ${style}
         };
       }
     };
-    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-fe4da79e"]]);
+    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-baa453b6"]]);
     const _hoisted_1$2 = { class: "rd-top" };
     const _hoisted_2$2 = { class: "ttl" };
     const _hoisted_3$2 = { id: "rdTitle" };

@@ -369,9 +369,10 @@ def group_c(t: Tab, s: Suite):
         # 实测踩过：Hero 437px + 空态 441px 把按钮推到 y=832，而视口只有
         # 805，用户不滚根本看不见，"给去处"等于没给。
         #
-        # ⚠ 而且必须**固定视口**再测。不固定的话这条随 ship 窗口高度漂
-        #   （1360×960 下按钮再往下几十像素也"在首屏内"），变成恒绿的橡皮章。
-        #   所以按两种真实首屏尺寸各测一次：笔记本 1280×800、手机 390×780。
+        # ⚠ 而且必须**固定视口**再测，且视口要按**真实**的算。
+        #   1280×800 的屏幕，Chrome 视口只有 705（工具栏吃掉 ~95px）——
+        #   拿 800 当基准会得出"刚好在首屏内"的假结论（实测差 25px）。
+        #   所以按两种真实首屏各测一次：笔记本 1280×705、手机 390×690。
         def fold_bottom(w, h):
             t.call("Emulation.setDeviceMetricsOverride", width=w, height=h,
                    deviceScaleFactor=1, mobile=False)
@@ -383,7 +384,7 @@ def group_c(t: Tab, s: Suite):
                 "vh:window.innerHeight};})()") or {}
 
         try:
-            for w, h in ((1280, 800), (390, 780)):
+            for w, h in ((1280, 705), (390, 690)):
                 box = fold_bottom(w, h)
                 s.check(f"C0 「去推荐逛逛」在首屏内 @{w}×{h}"
                         f"（{box.get('bottom')} / {box.get('vh')}）",
