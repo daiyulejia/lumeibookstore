@@ -365,11 +365,40 @@ def group_c(t: Tab, s: Suite):
     s.check("C0 首页空态有「去推荐逛逛」入口", bool(has_entry),
             f"页面上有结果卡片 {books_n} 本（>0 说明首屏不是空态）")
     if has_entry:
+        # 光"存在"不够 —— 还得在**首屏折线以上**。
+        # 实测踩过：Hero 437px + 空态 441px 把按钮推到 y=832，而视口只有
+        # 805，用户不滚根本看不见，"给去处"等于没给。
+        #
+        # ⚠ 而且必须**固定视口**再测。不固定的话这条随 ship 窗口高度漂
+        #   （1360×960 下按钮再往下几十像素也"在首屏内"），变成恒绿的橡皮章。
+        #   所以按两种真实首屏尺寸各测一次：笔记本 1280×800、手机 390×780。
+        def fold_bottom(w, h):
+            t.call("Emulation.setDeviceMetricsOverride", width=w, height=h,
+                   deviceScaleFactor=1, mobile=False)
+            time.sleep(0.5)
+            return t.js(
+                "(function(){var b=document.querySelector('#homeToRanks');"
+                "if(!b) return null;var r=b.getBoundingClientRect();"
+                "return {top:Math.round(r.top),bottom:Math.round(r.bottom),"
+                "vh:window.innerHeight};})()") or {}
+
+        try:
+            for w, h in ((1280, 800), (390, 780)):
+                box = fold_bottom(w, h)
+                s.check(f"C0 「去推荐逛逛」在首屏内 @{w}×{h}"
+                        f"（{box.get('bottom')} / {box.get('vh')}）",
+                        bool(box) and box.get("bottom", 9999) <= box.get("vh", 0),
+                        "按钮在折线以下 —— 用户不滚看不到，等于没给去处")
+        finally:
+            t.call("Emulation.clearDeviceMetricsOverride")
+            time.sleep(0.4)
+
         t.js("document.querySelector('#homeToRanks').click()")
         to_ranks = t.wait("!document.querySelector('#view-ranks').classList"
                           ".contains('hidden')", timeout=8)
         s.check("C0 点「去推荐逛逛」进推荐页", to_ranks is True)
     else:
+        s.check("C0 「去推荐逛逛」在首屏内（无按钮）", False, "入口不存在，跳过")
         s.check("C0 点「去推荐逛逛」进推荐页", False, "入口不存在，跳过")
     t.js("(function(){var b=document.querySelector('[data-nav=\"home\"]');"
          "if(b)b.click();})()")

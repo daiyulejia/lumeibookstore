@@ -598,6 +598,14 @@ MUTATIONS: list[Mutation] = [
              '  bus.emit("shell:nav", name);\n',
              "",
              RANKS_TEST),
+    # ⚠ 紧凑档被删的后果不是"不好看"，是按钮掉到折线以下、用户看不见。
+    #   真机侧由 test_buttons 固定两个视口钉住，这里钉住别把规则清掉。
+    Mutation("rankstab", "首屏空态丢掉紧凑档（按钮被推到折线以下）",
+             DISC_VUE,
+             "#homeEmpty { padding-top: 28px; padding-bottom: 28px; }\n"
+             "#homeEmpty .empty-art { width: min(160px, 44vw); }\n",
+             "",
+             RANKS_TEST),
 ]
 
 

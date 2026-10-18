@@ -18468,7 +18468,7 @@ ${style}
                   key: i,
                   class: "skl"
                 }, [..._cache[8] || (_cache[8] = [
-                  createStaticVNode('<div class="b cv" data-v-f2c06905></div><div class="col" data-v-f2c06905><div class="b ln" style="width:52%;" data-v-f2c06905></div><div class="b ln" style="width:32%;height:10px;" data-v-f2c06905></div><div class="b ln" style="width:92%;height:10px;" data-v-f2c06905></div><div class="b ln" style="width:70%;height:10px;" data-v-f2c06905></div></div>', 2)
+                  createStaticVNode('<div class="b cv" data-v-fe4da79e></div><div class="col" data-v-fe4da79e><div class="b ln" style="width:52%;" data-v-fe4da79e></div><div class="b ln" style="width:32%;height:10px;" data-v-fe4da79e></div><div class="b ln" style="width:92%;height:10px;" data-v-fe4da79e></div><div class="b ln" style="width:70%;height:10px;" data-v-fe4da79e></div></div>', 2)
                 ])]);
               }), 64)) : list.value.length ? (openBlock(), createElementBlock(Fragment, { key: 1 }, [
                 byAuthor.value ? (openBlock(), createElementBlock("div", _hoisted_13$1, [
@@ -18614,7 +18614,7 @@ ${style}
         };
       }
     };
-    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-f2c06905"]]);
+    const DiscoverPanel = /* @__PURE__ */ _export_sfc(_sfc_main$4, [["__scopeId", "data-v-fe4da79e"]]);
     const _hoisted_1$2 = { class: "rd-top" };
     const _hoisted_2$2 = { class: "ttl" };
     const _hoisted_3$2 = { id: "rdTitle" };

@@ -616,6 +616,13 @@ def main() -> int:
     check("nav() 改 hash 后会广播，main.js 同步去重变量",
           'bus.emit("shell:nav"' in shell_js
           and 'bus.on("shell:nav"' in main_js)
+    # 光有按钮不够 —— 它得在首屏折线以上，否则用户不滚就看不见。
+    # 真机判据在 test_buttons（固定 1280×800 / 390×780 各测一次）；
+    # 这里只钉住"紧凑档别被删"，防止有人当成多余的样式清掉。
+    check("首屏空态用紧凑档（不把「去推荐逛逛」推到折线以下）",
+          "#homeEmpty { padding-top: 28px" in disc_vue
+          and "min(160px, 44vw)" in disc_vue
+          and "min(116px, 34vw)" in disc_vue)
 
     print()
     if fails:

@@ -418,4 +418,21 @@ onUnmounted(() => {
   background-size: cover;
   background-position: center;
 }
+
+/* 首屏空态用**紧凑档**。
+   ⚠ 这不是"审美偏好"，是可用性问题：实测 1280×900（innerHeight 805）下
+     Hero 437px + 空态 441px = 文档 1027px，"去推荐逛逛"落在 y=832 ——
+     **在首屏折线以下**。用户不滚就看不见那个按钮，等于没给去处。
+     所以插画缩到 160（240 → 160，高度 180 → 120）、上下留白 70 → 28。
+   ⚠ 只作用于 #homeEmpty，不动通用的 .empty —— 书架/文件页的空态
+     没有 Hero 跟它抢高度，留白大一点更舒服。 */
+#homeEmpty { padding-top: 28px; padding-bottom: 28px; }
+#homeEmpty .empty-art { width: min(160px, 44vw); }
+/* 手机上首屏更矮（真机 390×844 的 innerHeight 常只有 ~700），上面那一档
+   测出来余量只剩十几像素，再压一档才稳。Hero 已经有一张插画，这里不必大。 */
+@media (max-width: 480px) {
+  #homeEmpty { padding-top: 16px; padding-bottom: 16px; }
+  #homeEmpty .empty-art { width: min(116px, 34vw); }
+}
+
 </style>
