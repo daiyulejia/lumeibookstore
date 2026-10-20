@@ -36,6 +36,37 @@ TEXT_EXT = {".js", ".css", ".html", ".json", ".svg", ".txt"}
 MIN_BYTES = 1024
 
 
+def sweep_stale(static_dir: Path | str | None = None, verbose: bool = True) -> int:
+    """删掉"源文件已经不在了"的 `.gz` 残骸。
+
+    ⚠ 为什么必须有这一步：上面 build() 只遍历**源文件**，
+        所以源文件被删/改名之后，它那份 `.gz` 永远不会再被路过第二次 ——
+        残骸就一直躺在磁盘上。危害有两个：
+          1) 白占体积（一串已经没人会请求的文件）；
+          2) **有害**：`app/main.py::_gzip_response()` 是按"请求路径 + .gz"
+             去开文件的，只要文件名撞上就发 —— 残骸正好能喂出过期内容。
+        这种残骸**不会报错**，所以只能靠主动清扫。
+    """
+    base = Path(static_dir) if static_dir else STATIC
+    if not base.is_dir():
+        return 0
+    n = 0
+    for gz in sorted(base.rglob("*.gz")):
+        if not gz.is_file():
+            continue
+        src = gz.with_name(gz.name[:-3])
+        if src.is_file() and src.suffix.lower() in TEXT_EXT:
+            continue
+        try:
+            gz.unlink()
+            n += 1
+        except OSError:
+            pass
+    if verbose and n:
+        print(f"  ✓ 清掉 {n} 个没有源文件的 .gz 残骸")
+    return n
+
+
 def build(static_dir: Path | str | None = None, verbose: bool = True) -> tuple[int, int, int]:
     """生成/刷新 `.gz`。返回 (处理数, 原始总字节, 压缩后总字节)。"""
     base = Path(static_dir) if static_dir else STATIC
@@ -85,6 +116,7 @@ def build(static_dir: Path | str | None = None, verbose: bool = True) -> tuple[i
                   f"（省 {100 - gz_total * 100 // max(raw_total, 1)}%）")
         else:
             print("  ~ 没有需要预压缩的文本资源")
+    sweep_stale(base, verbose=verbose)
     return n, raw_total, gz_total
 
 

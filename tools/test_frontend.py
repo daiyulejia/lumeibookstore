@@ -137,13 +137,35 @@ def main() -> int:
                 bad(f"{r} → 文件不存在（改过产物名却没同步 index.html？）")
 
     # 反向：dist/ 里有没有"产出了但没人引用"的文件（漏引用 = 白屏）
+    #
+    # ⚠ `.gz` **不是**"另一个产物"，是**同一产物的另一种编码**
+    #   （tools/gzip_static.py 构建期压出来的）。浏览器永远按**源文件名**请求
+    #   （/static/dist/vue-app.js），能不能走 .gz 由请求头 Accept-Encoding 决定、
+    #   由服务端 app/main.py::_gzip_response() 挑 ——
+    #   所以它**不可能、也不应该**出现在 index.html 的 src/href 里。
+    #   上一版把它当孤儿，等于"凡是做了预压缩就必红"：判据本身错了，不是产品坏了。
+    #
+    #   但"不查"也不对：**没有源文件的 .gz 才是真孤儿**（源文件改了名或删了，
+    #   .gz 忘清理），这种残骸不会报错，只会白占体积、还可能喂给浏览器过期内容。
+    #   所以拆成两条：源文件集合照旧查孤儿，.gz 单独查"有没有对应的源"。
     if DIST.exists():
-        on_disk = {f"/static/dist/{p.name}" for p in DIST.iterdir() if p.is_file()}
+        names = {p.name for p in DIST.iterdir() if p.is_file()}
+        on_disk = {f"/static/dist/{n}" for n in names if not n.endswith(".gz")}
         orphan = on_disk - refs
         if orphan:
             bad(f"dist/ 里有产出了但 index.html 没引用的文件：{sorted(orphan)}")
         else:
             ok("dist/ 里的文件都被 index.html 引用了（无孤儿产物）")
+
+        # 预压缩残骸：.gz 在、源不在
+        gz_stale = sorted(f"/static/dist/{n}" for n in names
+                          if n.endswith(".gz") and n[:-3] not in names)
+        if gz_stale:
+            bad(f"dist/ 里有找不到源文件的 .gz 残骸：{gz_stale}\n"
+                f"      → 源文件改名/删掉后 .gz 没跟着清，会白占体积；\n"
+                f"        重跑 `python tools/gzip_static.py` 会清掉它们。")
+        else:
+            ok("没有 .gz 残骸（每个 .gz 都有对应的源文件）")
 
     print("\n" + "=" * 62)
     if bad_n == 0:
