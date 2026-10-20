@@ -285,6 +285,33 @@ check("score_multi", sc_both[0] > sc_both[1] + 20, True,
 check("score_multi", sc_both[1] >= _HIT_MIN and sc_both[2] >= _HIT_MIN, True,
       "只中一个词的结果应保留（≥ _HIT_MIN）")
 
+# —— 账目报告：说清楚「这批候选是怎么没的」 ——
+# 动机（2026-10-21 线上）：日志只有 `search.rank 原始=14 去噪后=2`，
+# 它说"14 条里留了 2 条"，但**不说那 12 条是什么、为什么被丢**。
+# 于是「这本书搜不到」无法复盘 —— "站点返回的全是别的书"和
+# "规则把好结果也挤掉了"在这一行里长得一模一样，处置却完全相反。
+print("\n[9] 账目报告 —— 被丢掉的候选要说得出理由")
+_rpt: dict = {}
+_books = [R("诡秘之主", "s1", "u1")]
+_books += [R(f"无关的书{i}", f"n{i}", f"n{i}") for i in range(6)]
+_out = rank(list(_books), "诡秘之主", report=_rpt)
+check("report", _rpt.get("kept"), len(_out), "留下的条数要和真实返回一致")
+check("report", _rpt.get("raw"), 7, "原始条数")
+check("report", _rpt.get("below_cut_n"), 6, "6 条无关书应记在「低于门槛」里")
+check("report", any("无关的书" in t for t, _ in _rpt.get("below_cut") or []), True,
+      "被丢的标题要能看见（否则等于没记）")
+check("report", _rpt.get("cut", 0) > 0, True, "门槛值要报出来（复盘时要判断是不是阈值太高）")
+
+# 不传 report 时必须照旧工作（不能因为加了埋点就要求人人都传）
+check("rank(不传 report)", len(rank(list(_books), "诡秘之主")), len(_out),
+      "加 report 不能改变原有行为")
+
+# 反向：一条都没丢时不要瞎报「丢了」——否则日志里全是噪声，等于没信号
+_rpt2: dict = {}
+rank([R("三体", "s1", "u1")], "三体", report=_rpt2)
+check("report", _rpt2.get("below_cut_n"), 0, "没丢东西就不能报丢弃")
+check("report", _rpt2.get("dropped_loose_n"), 0, "同上")
+
 print()
 if FAILS:
     print(f"❌ {len(FAILS)} 项未通过：")

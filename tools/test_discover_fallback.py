@@ -259,14 +259,39 @@ def _run() -> int:
     # 光靠上面那条还不够 —— 它命中的是扇出阶段；如果探测/联网阶段
     # 直接把原始 `should_stop` 透传下去，断开落在那些阶段时照样不记。
     # 这类"漏一个出口"的写法不会报错，只会在换一个掐断时机时失效。
+    #
+    # ⚠ 这里原先用 `eng_src.count("should_stop=_stop)")` 配一个写死的期望值 4。
+    #   它坏过两次，两次都不是产品坏了：
+    #     ① 给某个调用加了 `budget=` 参数 → 变成 `should_stop=_stop, budget=..)`，
+    #        收尾的 `)` 没了，计数直接掉到 0；
+    #     ② 多了一个「联网兜底后探测」的调用点 → 总数变成 5，"应为 4" 当场误报。
+    #   子串计数只认文本形状，不认语法结构 —— 换个换行就漂。改用 AST：
+    #   按**调用点**数，逐个检查它传的 should_stop 是不是 `_stop`。
+    #   这样加调用点、改参数顺序、拆成多行都不会误报，而"漏传原始函数"照样抓住。
+    import ast
+
     eng_src = (ROOT / "app" / "engine.py").read_text(encoding="utf-8")
-    passthru = eng_src.count("should_stop=_stop)")
-    leaked = "should_stop=should_stop)" in eng_src
-    if passthru == 4 and not leaked:
-        ok(f"探测/联网/抽样各阶段的收手都汇到 _stop()（{passthru} 处透传、无漏传）")
+    tree = ast.parse(eng_src)
+    phase_calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        and n.func.attr in ("probe_all", "verify_samples")
+    ]
+
+    def _stop_arg(call: ast.Call):
+        for kw in call.keywords:
+            if kw.arg == "should_stop":
+                return getattr(kw.value, "id", None) or "(非简单名)"
+        return None
+
+    wrong = [(c.lineno, _stop_arg(c)) for c in phase_calls
+             if _stop_arg(c) != "_stop"]
+    if len(phase_calls) >= 4 and not wrong:
+        ok(f"探测/联网/抽样各阶段的收手都汇到 _stop()"
+           f"（{len(phase_calls)} 个调用点全部传 _stop）")
     else:
-        bad(f"收手透传 _stop() 的处数 = {passthru}（应为 4）· 有地方直接透传原始 "
-            f"should_stop = {leaked} —— 那些阶段收手不会被记进 stats")
+        bad(f"有 {len(wrong)} 个阶段的收手没汇到 _stop()：{wrong}"
+            f"（共 {len(phase_calls)} 个调用点）—— 那些阶段的收手不会被记进 stats")
 
     print("\n" + "=" * 62)
     print(f"通过 {ok_n} · 失败 {bad_n}")

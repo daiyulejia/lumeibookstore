@@ -94,6 +94,10 @@ RANKS_TEST = ROOT / "tools" / "test_ranks.py"
 REGISTRY_TEST = ROOT / "tools" / "test_registry.py"
 REGSRC_TEST = ROOT / "tools" / "test_registry_source.py"
 FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
+# 搜索总预算 + 搜索账目（tools/test_engine_budget.py）
+BUDGET_TEST = ROOT / "tools" / "test_engine_budget.py"
+REL_TEST = ROOT / "tools" / "test_relevance.py"
+RELEVANCE = ROOT / "app" / "relevance.py"
 
 
 @dataclass
@@ -514,11 +518,101 @@ MUTATIONS: list[Mutation] = [
              "            if should_stop and should_stop():\n"
              "                return True",
              FALLBACK_TEST),
+    # ⚠ 靶点别写 `should_stop=_stop)` —— 那个收尾括号会随"给调用加个参数"
+    #   而消失（本轮加 budget= 就踩了，突变报"源码脱节"）。锚在**参数本身**上。
     Mutation("engine", "探测阶段直接透传原始 should_stop（绕过唯一的记账点）",
              ENGINE,
-             "                                       should_stop=_stop)",
-             "                                       should_stop=should_stop)",
+             "                               should_stop=_stop, budget=pb)",
+             "                               should_stop=should_stop, budget=pb)",
              FALLBACK_TEST),
+
+    # ------- 搜索总预算 + 搜索账目（tools/test_engine_budget.py）-------
+    # 线上实测的违约：对外说"最多等 20 秒"，实际 30.3 秒（`耗时ms=30313`）。
+    # 三段各有各的满额预算、谁也不看前面花了多少 —— 每段都"正常完成"，
+    # 一条错都不报。下面几条专打「某一段偷偷不受总预算约束」。
+    Mutation("budget", "预算算成负数（时间过冲时不钳到 0）",
+             ENGINE,
+             "    left = total - (time.time() - t_start)\n"
+             "    return max(0.0, min(want, left))",
+             "    left = total - (time.time() - t_start)\n"
+             "    return min(want, left)",
+             BUDGET_TEST),
+    Mutation("budget", "总预算默认值在 def 时求值（之后改常量全不生效）",
+             ENGINE,
+             "def budget_slice(t_start: float, want: float,\n"
+             "                 total: float | None = None) -> float:",
+             "def budget_slice(t_start: float, want: float,\n"
+             "                 total: float | None = 22.0) -> float:",
+             BUDGET_TEST),
+    Mutation("budget", "探测永远用满额（不看这一轮还剩多少）",
+             ENGINE,
+             "            for fut in as_completed(futs, timeout=budget):\n"
+             "                if should_stop and should_stop():\n"
+             "                    # 客户端断开 → 没必要再把剩下的候选一个个打开验证。",
+             "            for fut in as_completed(futs, timeout=PROBE_BUDGET):\n"
+             "                if should_stop and should_stop():\n"
+             "                    # 客户端断开 → 没必要再把剩下的候选一个个打开验证。",
+             BUDGET_TEST),
+    Mutation("budget", "预算用光时静默跳过探测（把「没验」伪装成「验过不可用」）",
+             ENGINE,
+             "                logger.info(\n"
+             "                    \"跳过探测：总预算 %.0fs 已用完（已耗 %.1fs）—— %d 个候选保持\"\n"
+             "                    \"「未验证」，不再为补徽标让用户多等\",\n"
+             "                    SEARCH_TOTAL_BUDGET, time.time() - t_start, len(results))",
+             "                pass",
+             BUDGET_TEST),
+    Mutation("budget", "stats 里不报预算数值（超了也没人知道）",
+             ENGINE,
+             '                "budget_s": _allow_s,',
+             '                "budget_s": 0,',
+             BUDGET_TEST),
+    Mutation("budget", "抽样那段不看预算（回到各段各自满额的老写法）",
+             ENGINE,
+             "                aborted = self.verify_samples(results, on_verified=on_verified,\n"
+             "                                              should_stop=_stop, budget=sb)",
+             "                aborted = self.verify_samples(results, on_verified=on_verified,\n"
+             "                                              should_stop=_stop)",
+             BUDGET_TEST),
+
+    # ------- 搜索账目：说清楚「候选是怎么没的」-------
+    # `search.rank 原始=14 去噪后=2` 说不出那 12 条是什么、为什么被丢，
+    # 于是「这本书搜不到」永远无法复盘。
+    Mutation("ledger", "被丢的候选不记标题（只留个数字，等于没记）",
+             RELEVANCE,
+             '            "below_cut": [(r.title[:24], round(r.score, 1))\n'
+             '                          for r in ordered if r.score < cut][:8],',
+             '            "below_cut": [],',
+             REL_TEST),
+    Mutation("ledger", "什么都没丢也报丢弃（日志全是噪声，真信号被淹）",
+             RELEVANCE,
+             '            "below_cut_n": sum(1 for r in ordered if r.score < cut),',
+             '            "below_cut_n": 1,',
+             REL_TEST),
+    Mutation("ledger", "不报门槛值（复盘时判不出是不是阈值太高）",
+             RELEVANCE,
+             '            "cut": round(cut, 1),',
+             '            "cut": 0.0,',
+             REL_TEST),
+    Mutation("ledger", "不传 report 时就不干活（埋点污染了主流程）",
+             RELEVANCE,
+             "    if report is not None:\n"
+             "        report.clear()",
+             "    if report is None:\n"
+             "        return []\n"
+             "    if report is not None:\n"
+             "        report.clear()",
+             REL_TEST),
+    Mutation("ledger", "引擎不发丢弃明细事件",
+             ENGINE,
+             'logger, "search.rank.drop", 关键词=keyword,',
+             'logger, "search.rank", 关键词=keyword,',
+             BUDGET_TEST),
+    Mutation("ledger", "丢弃明细里不带标题",
+             ENGINE,
+             '                例子=[t for t, _ in (rpt.get("below_cut") or [])[:3]]\n'
+             '                     + [t for t, _ in (rpt.get("dropped_loose") or [])[:3]])',
+             '                例子=[])',
+             BUDGET_TEST),
 
     # ------- 「推荐」独立 tab 的接线（tools/test_ranks.py P 段）-------
     Mutation("rankstab", "底栏没有「推荐」入口（手机上永远进不去推荐页）",

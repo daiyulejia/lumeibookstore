@@ -106,6 +106,36 @@ SEARCH_ANSWERED_RATIO = 0.75  # 已答源占比达到这个数就可以收手（
 # 所以策略是：**有结果才允许提前收手；没结果就继续等，最多等到这个硬上限**。
 SEARCH_HARD_DEADLINE = 20.0
 
+# ---------------------------------------------------------------------------
+# 「总预算」—— 修的是「搜一本书要等 30 秒」这个**契约被违反**的问题
+# ---------------------------------------------------------------------------
+# 病灶：20 秒硬上限只管**搜索扇出**那一段。扇出结束后还有两个阶段各自
+# 按**固定的满额预算**开跑：
+#     探测 probe_all      → PROBE_BUDGET  12s
+#     抽样 verify_samples → SAMPLE_BUDGET 10s
+# 三段相加最坏 42 秒，而且每一段都"不知道前面已经花掉多少"。
+#
+# 线上实测（2026-10-21，搜《重生之爷太重口了》）：
+#     02:11:56  search.done 耗时ms=20771
+#     02:13:59  search.done 耗时ms=20577
+#     02:17:47  search.done 耗时ms=30313   ← 20s 扇出 + 10s 探测/抽样
+# 用户看到的是「点了搜索，三十秒后才有结果」——而我们对外说的是 20 秒上限。
+# 这种违约最恶劣的一点是**不报错**：每段都"在自己预算内正常完成"。
+#
+# 修法：给整轮搜索一个总预算，后面每一段的预算 = min(本段满额, 总预算 - 已耗)。
+# 省下来的顺序是**先砍抽样、再砍探测**：抽样只是补一个"正文真能读"的绿标，
+# 探测补的是"目录能打开 + 章节数"，而候选本身第 1 秒就已经流式给前端了。
+# 两者都不该让用户多等一秒。
+SEARCH_TOTAL_BUDGET = 22.0
+# 给抽样预留的秒数。不预留给 10s 满额是因为抽样有 SAMPLE_ENOUGH=3 的
+# 提前收手，正常的书 1~2 秒就够；留 6 秒是"够用且不挤占探测"的折中。
+SAMPLE_RESERVE = 6.0
+# 联网兜底（本地一条都没有 → 出去搜）单独一个**更大但仍有上限**的总预算。
+# 为什么可以更大：用户要的是"搜到"，本地全灭时唯一的出路就是联网，
+# 这时候提前收手等于直接交出 0 条。但仍必须有上限 —— 不然"尽力找"
+# 就会退化成"永远在转圈"（实测串行联网能拖到 33s）。
+DISCOVER_TOTAL_BUDGET = SEARCH_TOTAL_BUDGET + 10.0
+
 # 并行联网兜底的预热阈值：本地零产出时，等过这个时间就把联网兜底
 # **并行**发出去（本地慢源继续等，谁先出结果用谁）。
 #
@@ -125,6 +155,29 @@ SAMPLE_WORKERS = 4
 SAMPLE_BUDGET = 10.0
 SAMPLE_PER_SOURCE = 2   # 同一来源最多抽样几本（抽样各要一次跨页请求）
 SAMPLE_ENOUGH = 3       # 验够几本正文本就收手
+
+
+def budget_slice(t_start: float, want: float,
+                 total: float | None = None) -> float:
+    """本轮还剩多少秒可以给这一阶段用。
+
+    返回 0 表示"总预算已经用完了"——**调用方必须如实说出来**
+    （打一条日志 / 在 stats 里标出来），不能静默跳过：
+    静默跳过会让"没探测"和"探测过但都不可用"看起来一模一样，
+    前端就会把一批没验证过的候选显示成"未验证"，而复盘时无从分辨。
+
+    want 是本阶段的满额预算，total 是整轮搜索的总墙钟上限。
+
+    ⚠ total 的默认值写成 None 再在函数体里取模块常量，**不是多此一举**：
+      写成 `total: float = SEARCH_TOTAL_BUDGET` 是在 def 那一刻求值，
+      之后无论怎么改模块里的 SEARCH_TOTAL_BUDGET，这个默认值都还是老数字。
+      踩过这个坑——测试里把总预算调到 1 秒，函数照样按 22 秒算，
+      于是"总预算被尊重"的判据**恒绿**，等于没测。
+    """
+    if total is None:
+        total = SEARCH_TOTAL_BUDGET
+    left = total - (time.time() - t_start)
+    return max(0.0, min(want, left))
 
 
 def source_meta(src: Source) -> dict:
@@ -550,13 +603,38 @@ class Engine:
                 logger.info("并行联网兜底超时未归（仍在运行），本轮不等它了")
 
         # 相关性打分 + 去噪 + 排序
-        results = rank(raw, keyword)
+        rpt: dict = {}
+        results = rank(raw, keyword, report=rpt)
         log_event(logger, "search.rank", 关键词=keyword,
                   原始=len(raw), 去噪后=len(results))
+        # 光有「原始=14 去噪后=2」没法复盘 —— 得知道那 12 条是什么、为什么被丢。
+        # 门槛砍掉的 vs 被「确切命中优先」挤掉的，处置方式完全相反：
+        #   前者往往是站点返回了一堆别的书（该换源/该调阈值），
+        #   后者往往说明规则太狠（明明有相关结果却一条都没留下）。
+        # 只在**真的丢了东西**时打，免得正常的搜索把日志刷满。
+        if raw and (rpt.get("below_cut_n") or rpt.get("dropped_loose_n")):
+            log_event(
+                logger, "search.rank.drop", 关键词=keyword,
+                门槛=rpt.get("cut"), 最高分=rpt.get("best"), 留下=rpt.get("kept"),
+                低于门槛=rpt.get("below_cut_n"),
+                非确切命中被挤掉=rpt.get("dropped_loose_n"),
+                # 只举 3 个例子：日志要看趋势，不是要看全量清单
+                例子=[t for t, _ in (rpt.get("below_cut") or [])[:3]]
+                     + [t for t, _ in (rpt.get("dropped_loose") or [])[:3]])
 
         if probe and results:
-            self.probe_all(results, on_verified=on_verified, top=probe_top,
-                           should_stop=_stop)
+            # 探测预算 = min(满额, 总预算 - 已耗 - 给抽样预留的那份)。
+            # 扇出已经烧掉 20 秒时这里会算出 0 —— 那就干脆别探，并**说出来**。
+            pb = budget_slice(t_start, PROBE_BUDGET,
+                              SEARCH_TOTAL_BUDGET - SAMPLE_RESERVE)
+            if pb <= 0.0:
+                logger.info(
+                    "跳过探测：总预算 %.0fs 已用完（已耗 %.1fs）—— %d 个候选保持"
+                    "「未验证」，不再为补徽标让用户多等",
+                    SEARCH_TOTAL_BUDGET, time.time() - t_start, len(results))
+            else:
+                self.probe_all(results, on_verified=on_verified, top=probe_top,
+                               should_stop=_stop, budget=pb)
             results = self.refine(results, keyword)
 
         # ---- 本地一条可读的都没有？出去找 ----
@@ -596,28 +674,52 @@ class Engine:
         already_web = web_thread is not None
         if discover and need_web and not already_web:
             web = self._find_source(DISCOVER_SOURCE)
-            if web is not None:
+            # 联网兜底也是**串行**加在后面的，同样得看总预算 ——
+            # 否则前面 20 秒扇出 + 10 秒联网 = 又回到 30 秒。
+            wb = budget_slice(t_start, 30.0, DISCOVER_TOTAL_BUDGET)
+            if web is not None and wb > 0.0:
                 extra = self._discover(web, keyword, on_result, on_progress,
                                        search_kw=search_kws)
                 if extra:
                     if probe:
-                        self.probe_all(extra, on_verified=on_verified, top=len(extra),
-                                       should_stop=_stop)
+                        # 联网换来的候选必须探测 —— 它的价值就在于"本地没有、
+                        # 远端有"，不验一下等于把不知道能不能读的东西端上去。
+                        self.probe_all(
+                            extra, on_verified=on_verified, top=len(extra),
+                            should_stop=_stop,
+                            budget=budget_slice(t_start, PROBE_BUDGET,
+                                                DISCOVER_TOTAL_BUDGET))
                     results = rank(results + extra, keyword)
                     results = self.refine(results, keyword)
+            elif web is not None:
+                logger.info("跳过联网兜底：总预算已用完（已耗 %.1fs）",
+                            time.time() - t_start)
         elif discover and need_web and already_web:
             # 并行已发起、本地仍无结果 → 给 web_extra 探测 + 重排
             # （上面 raw 已 extend，这里 results=rank(raw) 已包含 web_extra）
             if results and probe:
-                self.probe_all(results, on_verified=on_verified, top=probe_top,
-                               should_stop=_stop)
+                self.probe_all(
+                    results, on_verified=on_verified, top=probe_top,
+                    should_stop=_stop,
+                    budget=budget_slice(t_start, PROBE_BUDGET,
+                                        DISCOVER_TOTAL_BUDGET))
                 results = self.refine(results, keyword)
 
         if sample and results:
-            aborted = self.verify_samples(results, on_verified=on_verified,
-                                          should_stop=_stop)
+            sb = budget_slice(t_start, SAMPLE_BUDGET)
+            if sb <= 0.0:
+                logger.info(
+                    "跳过正文抽样：总预算 %.0fs 已用完（已耗 %.1fs）—— %d 个候选"
+                    "保持「正文未验证」，不再为此让用户多等",
+                    SEARCH_TOTAL_BUDGET, time.time() - t_start, len(results))
+            else:
+                aborted = self.verify_samples(results, on_verified=on_verified,
+                                              should_stop=_stop, budget=sb)
 
         if stats is not None:
+            # 这一轮适用哪个上限：走了联网兜底就有更大的额度（见 DISCOVER_TOTAL_BUDGET）
+            _allow_s = (DISCOVER_TOTAL_BUDGET if (discover and need_web)
+                        else SEARCH_TOTAL_BUDGET)
             stats.update({
                 "raw": len(raw),
                 "kept": len(results),
@@ -630,6 +732,14 @@ class Engine:
                 "timed_out": max(0, len(targets) - done_count),
                 "search_ms": int((time.time() - t_search) * 1000),
                 "ms": int((time.time() - t_start) * 1000),
+                # 总预算有没有被突破。**这是对外契约的判据**：
+                # "搜一本书最多等 22 秒"这句话，只能靠一个明确的布尔量来验，
+                # 不能靠"人肉看日志里的耗时ms"——没人会天天去看。
+                # 各阶段自报"我在自己预算内完成了"是不够的，加起来超了就是超了。
+                # 走了联网兜底的那一轮允许更长的上限（DISCOVER_TOTAL_BUDGET），
+                # 否则"本地全灭、出去找"这条路径会永远被判超预算。
+                "budget_s": _allow_s,
+                "over_budget": (time.time() - t_start) > _allow_s,
                 "discovered": sum(1 for r in results if r.source == DISCOVER_SOURCE),
                 # 断开收手是否真的触发了（供真机测试断言）。
                 # ⚠ 用它而不是"耗时是不是更短"来验证收手 —— 耗时受源站快慢
@@ -706,6 +816,7 @@ class Engine:
         on_verified: Optional[Callable[[BookResult], None]] = None,
         top: int = DEFAULT_PROBE_TOP,
         should_stop: Optional[Callable[[], bool]] = None,
+        budget: float = PROBE_BUDGET,
     ) -> list[BookResult]:
         """并发探测候选，可用的排到前面。
 
@@ -733,7 +844,7 @@ class Engine:
         futs = {pool.submit(self._probe_one, r): r for r in head}
         ok = 0
         try:
-            for fut in as_completed(futs, timeout=PROBE_BUDGET):
+            for fut in as_completed(futs, timeout=budget):
                 if should_stop and should_stop():
                     # 客户端断开 → 没必要再把剩下的候选一个个打开验证。
                     # 探测是整轮搜索里最贵的一段（每个候选都要打一次详情页），
@@ -844,6 +955,7 @@ class Engine:
         on_verified: Optional[Callable[[BookResult], None]] = None,
         top: int = SAMPLE_TOP,
         should_stop: Optional[Callable[[], bool]] = None,
+        budget: float = SAMPLE_BUDGET,
     ) -> bool:
         """对最靠前的「目录可达」候选，抽一章正文验证内容是真的。
 
@@ -888,7 +1000,7 @@ class Engine:
         ok = 0
         aborted = False
         try:
-            for fut in as_completed(futs, timeout=SAMPLE_BUDGET):
+            for fut in as_completed(futs, timeout=budget):
                 if should_stop and should_stop():
                     aborted = True
                     logger.info("客户端已断开，停止正文抽样（已验 %d 本）", ok)

@@ -488,6 +488,7 @@ def rank(
     threshold: float = 28.0,
     keep_min: int = 3,
     limit: int = 60,
+    report: dict | None = None,
 ) -> list[BookResult]:
     """打分、去噪、去重、排序。
 
@@ -495,7 +496,21 @@ def rank(
     - 只有「确实没找到像样的结果」时才放宽门槛兜底，
       避免因为阈值过严导致「明明有结果却显示没找到」。
     - 关键词含空格时按多词处理（「余华 活着」，见 score_multi）。
+
+    report: 传入一个 dict，会填入**这批候选是怎么被筛掉的**。调用方拿它写日志。
+    ------------------------------------------------------------------
+    为什么需要这个东西：线上日志只有一行 `search.rank 原始=14 去噪后=2`。
+    它说"从 14 条里留下了 2 条"，但**不说那 12 条是什么、为什么被丢**。
+    于是「这本书搜不到」永远无法复盘 —— 分不清是
+    ①站点返回的全是无关书（该换源）、
+    ②门槛定太高（该调阈值）、
+    ③"确切命中"优先规则把好结果一起滤了（该改规则）。
+    这三种的处置完全不同，而它们在一行 `原始=14 去噪后=2` 里长得一模一样。
     """
+    if report is not None:
+        report.clear()
+        report.update({"raw": len(results), "below_cut": [], "dropped_loose": [],
+                       "cut": 0.0, "kept": 0})
     if not results:
         return []
     multi = len(_split_terms(keyword)) > 1
@@ -536,7 +551,30 @@ def rank(
         elif (len(kept) < keep_min and ordered[0].score < CONFIDENT
                 and ordered[0].score >= FALLBACK_FLOOR):
             kept = ordered[:keep_min]
-    return _dedup(kept)[:limit]
+
+    out = _dedup(kept)[:limit]
+
+    # —— 账目：说清楚这批候选是怎么没的 ——
+    # 分三类，因为三类的处置完全不同（见函数 docstring）：
+    #   below_cut     分数没够上自适应门槛 → 站点返回的是别的书 / 阈值太高
+    #   dropped_loose 分数够、但不是"确切命中"，被"确切命中优先"规则挤掉
+    #   dedup/limit   去重和条数上限裁掉的（不算质量问题）
+    if report is not None:
+        keep_ids = {id(r) for r in out}
+        tight_ids = {id(r) for r in kept}
+        report.update({
+            "cut": round(cut, 1),
+            "best": round(ordered[0].score, 1),
+            "kept": len(out),
+            "below_cut": [(r.title[:24], round(r.score, 1))
+                          for r in ordered if r.score < cut][:8],
+            "below_cut_n": sum(1 for r in ordered if r.score < cut),
+            "dropped_loose": [(r.title[:24], round(r.score, 1))
+                              for r in ordered
+                              if id(r) in tight_ids and id(r) not in keep_ids][:8],
+            "dropped_loose_n": max(0, len(kept) - len(out)),
+        })
+    return out
 
 
 def looks_like_book(title: str) -> bool:
