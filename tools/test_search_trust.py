@@ -99,6 +99,71 @@ REAL = "斗破苍穹"
 def main() -> int:
     install()
 
+    print("\n—— 控制实验三态：两轮定案，判不了 ≠ 判真 ——")
+    # 为什么单独一组：单次采样会**翻转**。`www.zxs8.net` 上一轮复核因为
+    # 限流吐静态页、两次结果集不同 → 判"真"→ 盖了"已核实"章 → 从此不再查；
+    # 这一轮实测：真书名 9 条、搜不到的书名 9 条，Jaccard **1.00**（铁假）。
+    # 所以判据必须对称：两轮都判假才撤、两轮都判真才盖章、有分歧就"没结论"。
+    A = {"https://h.com/a/1.html", "https://h.com/a/2.html"}
+    B = {"https://h.com/b/1.html", "https://h.com/b/2.html"}
+    seq: list[tuple] = []
+    real_ex = sitelearn._fetch_hits_ex
+
+    def _seq_ex(*a, **k):
+        return seq.pop(0)
+
+    sitelearn._fetch_hits_ex = _seq_ex
+    try:
+        seq[:] = [(2, A, True), (2, A, True)]
+        check("★ 两轮结果集完全相同 → 判假（铁假）",
+              sitelearn.judge_by_control("/?s={kw}", "h.com",
+                                         urls=A, hits=2) == "fake")
+        seq[:] = [(2, B, True), (2, B, True)]
+        check("★ 两轮结果集都不同 → 判真",
+              sitelearn.judge_by_control("/?s={kw}", "h.com",
+                                         urls=A, hits=2) == "real")
+        seq[:] = [(0, set(), True), (0, set(), True)]
+        check("★ 控制词「请求成功但 0 条」→ 判真（那正是真站行的行为）",
+              sitelearn.judge_by_control("/?s={kw}", "h.com",
+                                         urls=A, hits=2) == "real")
+        seq[:] = [(0, set(), False), (0, set(), False)]
+        check("★ 两轮请求都失败 → 判不了（绝不当成真站盖章）",
+              sitelearn.judge_by_control("/?s={kw}", "h.com",
+                                         urls=A, hits=2) == "unknown")
+        seq[:] = [(2, A, True), (2, B, True)]
+        check("★ 两轮结论打架 → 判不了（单次采样翻转正是 zxs8 躲过复核的原因）",
+              sitelearn.judge_by_control("/?s={kw}", "h.com",
+                                         urls=A, hits=2) == "unknown")
+        seq[:] = [(0, set(), False), (2, A, True)]
+        check("★ 一轮失败一轮说一样 → 判不了（凑不够两轮）",
+              sitelearn.judge_by_control("/?s={kw}", "h.com",
+                                         urls=A, hits=2) == "unknown")
+        seq[:] = [(2, A, True)]
+        check("学站阶段仍是单轮判假（control_says_fake 兼容）",
+              sitelearn.control_says_fake("/?s={kw}", "h.com",
+                                          urls=A, hits=2) is True)
+    finally:
+        sitelearn._fetch_hits_ex = real_ex
+
+    # 「请求失败」和「成功但 0 条」必须分得开 —— `_fetch_hits` 分不开，
+    # 所以控制实验换用 `_fetch_hits_ex`（第三位 = 这次到底成没成）。
+    PAGES["zero.com"] = {"*": []}
+    n0, _u0, ok0 = sitelearn._fetch_hits_ex("/?s={kw}", "zero.com", "随便", min_hits=3)
+    check("★ 请求成功但 0 条时 ok=True（真站行为）", n0 == 0 and ok0 is True,
+          f"n={n0} ok={ok0}")
+    _saved = utils.fetch_text
+
+    def _boom(*a, **k):
+        raise OSError("连不上")
+
+    utils.fetch_text = _boom
+    try:
+        n1, _u1, ok1 = sitelearn._fetch_hits_ex("/?s={kw}", "boom.com", "随便")
+    finally:
+        utils.fetch_text = _saved
+    check("★ 请求失败时 ok=False（判不了，不能当真站盖章）", n1 == 0 and ok1 is False,
+          f"n={n1} ok={ok1}")
+
     print("\n—— 控制实验：换一个搜不到的书名，结果集一模一样 → 判假 ——")
     # 假的：不管关键词是啥都吐同一批"像章节的链接"
     PAGES["fake.com"] = {"*": ["https://fake.com/x/1.html",

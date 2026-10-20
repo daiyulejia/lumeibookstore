@@ -469,7 +469,14 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
         enc = s.get("search_enc") or "utf-8"
         method = (s.get("search_method") or "get").lower()
         body = s.get("search_body")
-        fake = judged = False
+        # ⚠ 判据用**三态**（fake / real / unknown），不是"判假/不判假"。
+        #   单次采样会翻转：`www.zxs8.net` 上一轮因为限流吐静态页导致
+        #   两次结果集不同 → 判"真"→ 盖章 → 再也不查；这一轮实测
+        #   真书名 9 条 / 搜不到的书名 9 条、Jaccard **1.00**（铁假）。
+        #   所以只有当**每一轮**都判假才撤，每一轮都判真才盖章，
+        #   有分歧就是"没结论"——留在队列下次再查。
+        #   `rounds=2`：一个站 2 个请求，只在夜里复核跑，换"不误撤、不漏撤"。
+        fake = real = False
         for probe in probes:
             try:
                 with fast_mode(retries=0, timeout=10.0):
@@ -478,32 +485,36 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
                                                     body=body)
                     if not n:
                         continue
-                    judged = True      # 这个探测词真拿到了结果，有结论了
-                    if sitelearn.control_says_fake(
-                            tpl, host, enc=enc, scheme=scheme, method=method,
-                            body=body, urls=urls, hits=n):
-                        fake = True
-                        break
+                    verdict = sitelearn.judge_by_control(
+                        tpl, host, enc=enc, scheme=scheme, method=method,
+                        body=body, urls=urls, hits=n, rounds=2)
             except Exception as e:  # noqa: BLE001
                 logger.info("复核 %s（探测词《%s》）出错，继续试下一个：%s",
                             host, probe, e)
+                continue
+            if verdict == "fake":
+                fake = True
+                break
+            if verdict == "real":
+                real = True
+                break
         if fake:
             if registry.clear_search_tpl(host, why="复核：模板不认关键词（假搜索）"):
                 dropped += 1
                 logger.info("撤掉假搜索模板：%s %s", host, tpl)
             continue
-        if judged:
-            # 有结论、且不是假的 → 盖上新版本号，下次不再复核
+        if real:
+            # 每一轮都有结论、且都判真 → 盖上新版本号，下次不再复核
             registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)
             kept += 1
             continue
-        # ⚠ **没有结论时不许盖"已核实"的章**。两个探测词都搜不到东西，
-        #   说明这次没法判断真假 —— 盖上章它就永远不再被查了。
+        # ⚠ **没有结论时不许盖"已核实"的章**。探测词搜不到东西、或者两轮
+        #   结论打架，都说明这次没法判断真假 —— 盖上章它就永远不再被查了。
         #   实测代价：`www.xxsy.net` 上一轮就是这么被盖了章（当时只有站上
         #   那本书可探、而它搜不到），于是它带着"永远返回同一批书"的假模板
         #   活到了下一轮，再也不会被检查。不盖章的代价只是每晚多查两次。
         unjudged += 1
-        logger.info("复核 %s 没拿到结论（%d 个探测词都搜不到），下次再查",
+        logger.info("复核 %s 没拿到结论（%d 个探测词都搜不到、或两轮结论不一致），下次再查",
                     host, len(probes))
     if dropped:
         say("撤掉假的可搜源", f"{dropped} 个站其实没在按关键词搜，已撤掉", False)

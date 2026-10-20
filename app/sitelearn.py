@@ -487,45 +487,81 @@ def _fetch_hits(tpl: str, host: str, keyword: str, *,
     ⚠ 但它**只回答"这一页像不像结果页"，不回答"结果是不是由关键词筛出来的"**
       —— 后者要靠 `verify_search()` 的控制实验。别拿这个函数的返回值当结论。
     """
+def _fetch_hits_ex(tpl: str, host: str, keyword: str, *,
+                   enc: str = "utf-8", scheme: str = "https",
+                   method: str = "get", body: Optional[dict] = None,
+                   min_hits: int = 3) -> tuple[int, set[str], bool]:
+    """同 `_fetch_hits`，多回一个「这次请求到底成没成」。
+
+    ⚠ 为什么必须区分（2026-10-21 晚，控制实验的第二版判据）：
+      `_fetch_hits` 把「网络失败/页面太短/掉回首页/抽不出链接」和
+      「请求成功、但一页结果都没有」**都**返回 `(0, set())`。
+      它们在控制实验里意义**完全相反**：
+        · 请求成功但 0 条   → 这站确实按关键词过滤了（这是**真站**的证据）
+        · 请求失败          → 什么都不能说明（判不了，**不能**盖章）
+      不区分的话，要么把打不开的站当"真"盖章（假站从此免检），
+      要么把真站永远判成"没结论"（每晚白查一遍）。
+
+    返回 `(命中数, 结果 URL 集合, 这次成不成)`。
+    """
     from . import webfetch        # 延迟导入：避免启动期的循环依赖
     from .utils import fetch_text
 
     url = build_url(tpl, host, keyword, enc=enc, scheme=scheme)
     if not url:
-        return 0, set()
+        return 0, set(), False
 
     data = None
     if (method or "get").lower() == "post":
-        # POST 搜索：关键词放请求体，URL 里不带参数
         data = {k: str(v).replace("{kw}", keyword)
                 for k, v in (body or {"s": "{kw}"}).items()}
-        # URL 去掉 `?…` 部分（POST 的 tpl 本来就没带）
         url = build_url(tpl, host, "", enc=enc, scheme=scheme) or url
 
     try:
         html, final = fetch_text(url, with_url=True, data=data)
     except Exception as e:  # noqa: BLE001
         logger.debug("搜索模板验证失败 %s: %s", url, e)
-        return 0, set()
+        return 0, set(), False
     if not html or len(html) < 400:
-        return 0, set()
+        return 0, set(), False
 
     # 跟随重定向后掉回首页 → 这个模板是假的「能搜」
     fp = urlparse(final or url)
     fpath = (fp.path or "/").rstrip("/")
     if fpath in ("", "/", "/index.php") and fp.query == "":
-        return 0, set()
+        return 0, set(), False
 
     try:
         toc = webfetch.extract_toc(html, final or url)
     except Exception:  # noqa: BLE001
-        return 0, set()
+        return 0, set(), False
     toc = toc or []
     urls = {str(t.get("url") or "") for t in toc if isinstance(t, dict)}
     urls.discard("")
     if len(toc) < min_hits:
-        return 0, set()
-    return len(toc), urls
+        # ⚠ 这里 `ok=True`：请求**成功了**，只是这一页没凑够像章节的链接。
+        #   对控制实验来说"成功但没结果"正是真站的行为，不能算失败。
+        return 0, set(), True
+    return len(toc), urls, True
+
+
+def _fetch_hits(tpl: str, host: str, keyword: str, *,
+                enc: str = "utf-8", scheme: str = "https",
+                method: str = "get", body: Optional[dict] = None,
+                min_hits: int = 3) -> tuple[int, set[str]]:
+    """请求一次，回 `(命中章节数, 结果 URL 集合)`。不成立回 `(0, set())`。
+
+    判据用「有没有一堆看起来像章节的链接」而不是「页面里有没有关键词」——
+    很多站搜不到时会**回首页**（首页当然有链接，但那是导航不是结果），
+    只数关键词会把它误判成成功。
+
+    ⚠ 但它**只回答"这一页像不像结果页"，不回答"结果是不是由关键词筛出来的"**
+      —— 后者要靠 `verify_search()` 的控制实验。别拿这个函数的返回值当结论。
+    ⚠ 也**不区分**"请求失败"和"成功但 0 条" —— 需要区分请用 `_fetch_hits_ex`。
+    """
+    n, urls, _ok = _fetch_hits_ex(tpl, host, keyword, enc=enc, scheme=scheme,
+                                  method=method, body=body, min_hits=min_hits)
+    return n, urls
 
 
 def verify_tpl(tpl: str, host: str, probe_keyword: str, *,
@@ -579,6 +615,66 @@ def verify_search(tpl: str, host: str, probe_keyword: str, *,
     return {"hits": n, "enc": enc}
 
 
+def judge_by_control(tpl: str, host: str, *, enc: str = "utf-8",
+                     scheme: str = "https", method: str = "get",
+                     body: Optional[dict] = None, urls: set[str],
+                     hits: int, min_hits: int = 3, rounds: int = 2,
+                     control_kw: str = _CONTROL_KW) -> str:
+    """控制实验的**三态**结论：`"fake"` / `"real"` / `"unknown"`。
+
+    `urls` / `hits` 传调用方**已经拿到**的那次真实探测结果 —— 少发一个请求。
+
+    为什么要三态而不是"判假/不判假"（2026-10-21 线上实测）
+    ----------------------------------------------------
+    单次采样判真假会**翻转**：`www.zxs8.net` 上一轮复核因为限流吐了静态页、
+    两次结果集不同 → 判"真"→ 盖了"已核实"章 → 从此不再复核；
+    这一轮再测：真书名 9 条、`zzqqxxbuCunZaiDeShuMing` 9 条，Jaccard **1.00**
+    （结果集完全相同，铁假）。一个假站就这样躲过了一整轮。
+
+    所以判据要对称：
+      · `rounds` 次采样**全部**"结果集相同" → 判假
+      · `rounds` 次采样**全部**"结果集不同" → 判真
+      · 有分歧 / 控制词根本没搜到 → **没结论**（既不撤也不盖章，下次再查）
+    "判不了"绝不等于"判真" —— 那是上一轮 `www.xxsy.net` 躲过复核的同一条教训。
+
+    ⚠ 成本：`rounds=2` 时每个站 2 个请求。只用于**夜间复核**；
+      学站阶段（`learn_site`）用 `rounds=1` 换速度 —— 学到之后本来还有复核兜底。
+    """
+    if not control_kw:
+        return "unknown"
+    same_rounds = 0
+    diff_rounds = 0
+    for _ in range(max(1, int(rounds))):
+        n2, urls2, ok = _fetch_hits_ex(tpl, host, control_kw, enc=enc,
+                                       scheme=scheme, method=method, body=body,
+                                       min_hits=min_hits)
+        if not ok:
+            continue          # 请求就没成 —— 这一轮什么都不说明，不参与定案
+        if not n2:
+            # 请求成功、但那串不可能存在的书名**一条都没搜到** →
+            # 这是站点确实按关键词过滤的正面证据（真站的行为）。
+            diff_rounds += 1
+            continue
+        union = urls | urls2
+        same = (len(urls & urls2) / len(union)) if union else 1.0
+        if same >= _CONTROL_SAME_RATIO:
+            same_rounds += 1
+        else:
+            logger.debug("控制实验判真：%s %s 重合 %.0f%%", host, tpl, same * 100)
+            diff_rounds += 1
+    need = max(1, int(rounds))
+    if same_rounds >= need:
+        logger.info("模板不认关键词，判假：%s %s —— 真实探测 %d 条，"
+                    "换成搜不到的书名后结果集仍然一样（%d 轮一致）",
+                    host, tpl, hits, same_rounds)
+        return "fake"
+    if diff_rounds >= need:
+        return "real"
+    # 有分歧（一轮说有、一轮说没有）或全都请求失败 → 没结论。
+    # ⚠ 「判不了」绝不等于「判真」—— 盖章意味着以后不再查它。
+    return "unknown"
+
+
 def control_says_fake(tpl: str, host: str, *, enc: str = "utf-8",
                       scheme: str = "https", method: str = "get",
                       body: Optional[dict] = None, urls: set[str],
@@ -586,27 +682,16 @@ def control_says_fake(tpl: str, host: str, *, enc: str = "utf-8",
                       control_kw: str = _CONTROL_KW) -> bool:
     """控制实验：同一个模板换成"绝对搜不到的书名"，结果集是不是**一模一样**。
 
-    `urls` / `hits` 传调用方**已经拿到**的那次真实探测结果 —— 少发一个请求。
-    返回 True = 判假（站点不认这个参数）。
+    返回 True = 判假（站点不认这个参数）。内部走 `judge_by_control(rounds=1)`，
+    只给"学站阶段"用 —— 复核要更稳，请直接调三态版本。
 
     ⚠ 单独抽成函数是为了让 `learn_site()` 能复用它手上已有的探测结果，
       否则每验一个候选都要把真实探测重跑一遍（一个候选 3 个请求，实测
       一半的学站时间耗在重复请求上）。
     """
-    if not control_kw or control_kw == "":
-        return False
-    n2, urls2 = _fetch_hits(tpl, host, control_kw, enc=enc, scheme=scheme,
-                            method=method, body=body, min_hits=min_hits)
-    if not n2:
-        return False
-    union = urls | urls2
-    same = (len(urls & urls2) / len(union)) if union else 1.0
-    if not union or same >= _CONTROL_SAME_RATIO:
-        logger.info(
-            "模板不认关键词，判假：%s %s —— 真书名 %d 条 / 搜不到的书名 %d 条，重合 %.0f%%",
-            host, tpl, hits, n2, same * 100)
-        return True
-    return False
+    return judge_by_control(tpl, host, enc=enc, scheme=scheme, method=method,
+                            body=body, urls=urls, hits=hits, min_hits=min_hits,
+                            rounds=1, control_kw=control_kw) == "fake"
 
 
 def probe_keyword_once(tpl: str, host: str, keyword: str, *,

@@ -791,8 +791,8 @@ MUTATIONS: list[Mutation] = [
     # 那 9 个站永远贡献不了结果，每次搜索却要多打它们一遍。
     Mutation("trust", "控制实验恒放行（等于没做控制实验，假模板照样学会）",
              SITELEARN,
-             '    if not control_kw or control_kw == "":\n        return False',
-             '    if True:\n        return False',
+             '    if not control_kw:\n        return "unknown"',
+             '    if True:\n        return "unknown"',
              TRUST_TEST),
     Mutation("trust", "learn_site 跳过控制实验（只数链接就认）",
              SITELEARN,
@@ -825,15 +825,8 @@ MUTATIONS: list[Mutation] = [
              TRUST_TEST),
     # 线上实测：www.xxsy.net 上一轮"没判出结论"（站上那本书搜不到）却被盖了
     # 已核实的章，于是它带着假模板活到下一轮，再也不会被检查。
-    Mutation("trust", "复核没结论也盖章（假站从此永远不再被检查）",
-             DISCOVERY,
-             "        if judged:\n"
-             "            # 有结论、且不是假的 → 盖上新版本号，下次不再复核\n"
-             "            registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)",
-             "        if True:\n"
-             "            # 有结论、且不是假的 → 盖上新版本号，下次不再复核\n"
-             "            registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)",
-             TRUST_TEST),
+    # ⚠ 原先这里有一条「复核没结论也盖章」，现在由 `verdict` 组的同名突变负责
+    #   （锚点更短、覆盖三态语义）—— 留两条只会有一条先脱节，白吵。
 
     # ------------------------------------------------------------------
     # 学站失败账必须带学习器版本号（tools/test_registry.py）
@@ -964,6 +957,31 @@ MUTATIONS: list[Mutation] = [
              "                if items or not err:",
              "                if True:",
              HEALTH_TEST),
+    # ---------------- 控制实验三态：两轮定案（tools/test_search_trust.py）----------------
+    # ⚠ 背景：单次采样判真假会翻着玩 —— `www.zxs8.net` 上一轮因为限流吐静态页、
+    #   两次结果集不同 → 判"真"→ 盖了"已核实"章 → 再也不查；这一轮实测
+    #   真书名 9 条 / 搜不到的书名 9 条、Jaccard 1.00（铁假）。
+    #   现在：两轮都判假才撤、两轮都判真才盖章、有分歧=没结论（下次再查）。
+    Mutation("verdict", "请求失败也算真站证据（打不开的站会被当成「已核实」盖章）",
+             SITELEARN,
+             "        if not ok:",
+             "        if not ok:\n            diff_rounds += 1",
+             TRUST_TEST),
+    Mutation("verdict", "一轮判假就撤（单次采样翻转就误撤真站）",
+             SITELEARN,
+             "    if same_rounds >= need:",
+             "    if same_rounds >= 1:",
+             TRUST_TEST),
+    Mutation("verdict", "「请求成功但 0 条」当成请求失败（真站全被判成没结论，每晚白查）",
+             SITELEARN,
+             "        return 0, set(), True\n    return len(toc), urls, True",
+             "        return 0, set(), False\n    return len(toc), urls, True",
+             TRUST_TEST),
+    Mutation("verdict", "复核把「没结论」也盖章（假站从此免检 —— xxsy/zxs8 就是这么躲过去的）",
+             DISCOVERY,
+             "        if real:",
+             "        if True:",
+             TRUST_TEST),
 ]
 
 
