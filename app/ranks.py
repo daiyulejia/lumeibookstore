@@ -765,11 +765,29 @@ def _kick_bg_refresh(kind: str) -> None:
     threading.Thread(target=_work, name=f"ranks-bg-{kind}", daemon=True).start()
 
 
+# 「立即刷新」的总预算与并发度。
+# ⚠ 为什么要这两条（线上实测 2026-10-21）：
+#   `/api/ranks/refresh` 两次分别用了 **47.2 秒 / 33.0 秒**
+#   （日志：`status=200 ms="47229 慢"`，其中一次正好在 01:00 榜单定时任务之后）。
+#   调用方是**定时任务（不带 kind = 全部 7 类）**；界面上的「刷新」按钮
+#   只带一个 kind（单类并发抓 3~4 个源），所以按钮本身并不慢。
+#   根因：refresh() 把 7 个类别**串行**跑 —— 每个类别内部虽然并发，
+#   但类别之间一个接一个，总时长 = 7 份单类耗时相加 ≈ 40 秒，和实测对得上。
+#   这直接拖长夜间任务的窗口（顺带挤占同一时段的学习任务带宽）。
+#   现在类别之间也并发（3 个一批，和 get_many 用同一个并发度），
+#   并且给整次刷新一个总预算：到点就收手，**已经抓到的照样写缓存**，
+#   没跑完的如实放进 `pending` 返回（收手可以，不许沉默地收手）。
+RANKS_REFRESH_BUDGET = 25.0
+RANKS_REFRESH_WORKERS = 3
+
+
 def refresh(kinds_: Optional[list[str]] = None, force: bool = True) -> dict[str, Any]:
     """主动刷新榜单。给定时任务和「立即刷新」按钮用。
 
     force=True 时**无视 TTL 重抓**（定时任务要的就是这个）；否则只补过期的。
     返回一份结果摘要，方便定时任务打日志。
+
+    `pending` = 撞总预算收手时**还没跑完**的类别（这些的缓存保持旧值）。
     """
     _load_from_disk()
     want = [k for k in (kinds_ or [d["kind"] for d in SUPPORTED]) if k in _KINDS]
@@ -781,32 +799,68 @@ def refresh(kinds_: Optional[list[str]] = None, force: bool = True) -> dict[str,
     ]
 
     ok, failed, skipped = 0, 0, len(want) - len(targets)
-    for k in targets:
+
+    def _one(k: str) -> Optional[bool]:
+        """抓一类。返回 True=成功 / False=失败 / None=跳过（别人正在抓）。"""
         # ⚠ 别和后台自动刷新撞车：同一类榜单同时在抓两次，纯属浪费
         #   （第三方站有速率限制，多抓一次就多一分被限流的风险）。
         #   已经有后台线程在刷 → 跳过，等它写完缓存就是最新的了。
-        #   注意也要计入 skipped —— 循环开始时那个 skipped 只算了
-        #   "因 TTL 未过期而没进 targets 的"，这里是第二类跳过原因。
         with _lock:
             if k in _BG or k in _inflight:
-                skipped += 1
-                continue
+                return None
+            _inflight.add(k)
         try:
             items = _fetch_one(k)
             if items:
                 with _lock:
                     _CACHE[k] = (time.time(), items)
-                ok += 1
-            else:
-                # 抓到空：多半是站点抽风。不覆盖旧缓存，计入 failed。
-                failed += 1
+                return True
+            # 抓到空：多半是站点抽风。不覆盖旧缓存，计入 failed。
+            return False
         except Exception as e:  # noqa: BLE001
-            failed += 1
             print(f"  [ranks] refresh {k} 失败：{e}", flush=True)
+            return False
+        finally:
+            with _lock:
+                _inflight.discard(k)
+
+    done: dict[str, Optional[bool]] = {}
+    if targets:
+        pool = ThreadPoolExecutor(
+            max_workers=min(RANKS_REFRESH_WORKERS, len(targets)))
+        futs = {pool.submit(_one, k): k for k in targets}
+        try:
+            for f in as_completed(futs, timeout=RANKS_REFRESH_BUDGET):
+                k = futs[f]
+                try:
+                    # ⚠ 必须是三态原样保存：True=成功 / False=失败 / None=跳过。
+                    #   写 `bool(f.result())` 会把 None 压成 False ——
+                    #   "别人正在抓、我跳过"就被算成"抓失败了"，
+                    #   统计上凭空多出一批失败（实测就是这么被测试抓到的）。
+                    done[k] = f.result()
+                except Exception:  # noqa: BLE001
+                    done[k] = False
+        except Exception:  # noqa: BLE001  超预算（含 futures.TimeoutError）
+            print(f"  [ranks] 刷新超预算（{RANKS_REFRESH_BUDGET:.0f}s），先收手："
+                  f"已完成 {len(done)}/{len(targets)}", flush=True)
+        finally:
+            # 不等没回来的慢源 —— 它们在后台自然结束（每次抓取都有 timeout），
+            # 这一轮的调用方不该陪着它们等。
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    for r in done.values():
+        if r is None:
+            skipped += 1
+        elif r:
+            ok += 1
+        else:
+            failed += 1
+    pending = [k for k in targets if k not in done]
     if ok:
         _save_to_disk()
     return {
         "ok": ok, "failed": failed, "skipped": skipped,
+        "pending": len(pending), "pending_kinds": pending,
         "targets": targets, "elapsed": round(time.time() - started, 2),
         "status": cache_status(),
     }
