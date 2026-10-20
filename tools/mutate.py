@@ -610,10 +610,15 @@ MUTATIONS: list[Mutation] = [
              'logger, "search.rank.drop", 关键词=keyword,',
              'logger, "search.rank", 关键词=keyword,',
              BUDGET_TEST),
+    Mutation("ledger", "把「同站重名去重」算成「非确切命中被挤掉」（账目错比没账目更坏）",
+             RELEVANCE,
+             '            "loose": [(r.title[:24], round(r.score, 1)) for r in loose][:8],',
+             '            "loose": [(r.title[:24], round(r.score, 1)) for r in deduped][:8],',
+             REL_TEST),
     Mutation("ledger", "丢弃明细里不带标题",
              ENGINE,
              '                例子=[t for t, _ in (rpt.get("below_cut") or [])[:3]]\n'
-             '                     + [t for t, _ in (rpt.get("dropped_loose") or [])[:3]])',
+             '                     + [t for t, _ in (rpt.get("loose") or [])[:3]])',
              '                例子=[])',
              BUDGET_TEST),
 

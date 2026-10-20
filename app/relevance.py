@@ -520,6 +520,7 @@ def rank(
     ordered = sorted(results, key=lambda r: -r.score)
     cut = _adaptive_threshold(ordered[0].score, threshold)
     kept = [r for r in ordered if r.score >= cut]
+    pre_tight = list(kept)      # 门槛之后、规则过滤之前 —— 账目要按阶段算
 
     # —— 确切命中优先 ——
     # 只要这批里确实有「像这本书」的，就**不再**把沾边的端上来。
@@ -551,17 +552,28 @@ def rank(
         elif (len(kept) < keep_min and ordered[0].score < CONFIDENT
                 and ordered[0].score >= FALLBACK_FLOOR):
             kept = ordered[:keep_min]
+    post_rule = list(kept)      # 规则过滤之后、去重之前
 
-    out = _dedup(kept)[:limit]
+    out = _dedup(post_rule)[:limit]
 
     # —— 账目：说清楚这批候选是怎么没的 ——
     # 分三类，因为三类的处置完全不同（见函数 docstring）：
-    #   below_cut     分数没够上自适应门槛 → 站点返回的是别的书 / 阈值太高
-    #   dropped_loose 分数够、但不是"确切命中"，被"确切命中优先"规则挤掉
-    #   dedup/limit   去重和条数上限裁掉的（不算质量问题）
+    #   below_cut  分数没够上自适应门槛 → 站点返回的是别的书 / 阈值太高
+    #   loose      分数够、但不是"确切命中"，被"确切命中优先"挤掉
+    #   deduped    同站重名/超条数被并掉（不是质量问题，别当成"规则太狠"）
+    #
+    # ⚠ 第一版把这三类混成了两类，实测当场错报：
+    #   线上 `search.rank.drop 关键词=斗破苍穹 … 非确切命中被挤掉=1
+    #   例子=['[玄幻]斗破苍穹：与女王陛下的爱恨情仇', '斗破苍穹']`
+    #   第二条 `斗破苍穹` 分数 100 且 tightness=1.0，它**不是**被规则挤掉的，
+    #   是被 `_dedup` 当成"同站重名"合并了（该站把同一本书挂在两个路径下）。
+    #   把去重算进"规则太狠"，复盘就会去改本来就对的阈值 —— 账目错比没有账目更坏。
     if report is not None:
-        keep_ids = {id(r) for r in out}
-        tight_ids = {id(r) for r in kept}
+        out_ids = {id(r) for r in out}
+        post_ids = {id(r) for r in post_rule}
+        # 「确切命中优先」真的生效时（tight 非空），被它挤掉的才算 loose
+        loose = ([r for r in pre_tight if not r.tight] if tight else [])
+        deduped = [r for r in post_rule if id(r) not in out_ids]
         report.update({
             "cut": round(cut, 1),
             "best": round(ordered[0].score, 1),
@@ -569,10 +581,10 @@ def rank(
             "below_cut": [(r.title[:24], round(r.score, 1))
                           for r in ordered if r.score < cut][:8],
             "below_cut_n": sum(1 for r in ordered if r.score < cut),
-            "dropped_loose": [(r.title[:24], round(r.score, 1))
-                              for r in ordered
-                              if id(r) in tight_ids and id(r) not in keep_ids][:8],
-            "dropped_loose_n": max(0, len(kept) - len(out)),
+            "loose": [(r.title[:24], round(r.score, 1)) for r in loose][:8],
+            "loose_n": len(loose),
+            "deduped": [(r.title[:24], round(r.score, 1)) for r in deduped][:8],
+            "deduped_n": max(0, len(post_rule) - len(out)),
         })
     return out
 

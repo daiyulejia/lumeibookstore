@@ -306,11 +306,37 @@ check("report", _rpt.get("cut", 0) > 0, True, "门槛值要报出来（复盘时
 check("rank(不传 report)", len(rank(list(_books), "诡秘之主")), len(_out),
       "加 report 不能改变原有行为")
 
-# 反向：一条都没丢时不要瞎报「丢了」——否则日志里全是噪声，等于没信号
+# —— 反向：一条都没丢时不要瞎报「丢了」——否则日志里全是噪声，等于没信号
 _rpt2: dict = {}
 rank([R("三体", "s1", "u1")], "三体", report=_rpt2)
 check("report", _rpt2.get("below_cut_n"), 0, "没丢东西就不能报丢弃")
-check("report", _rpt2.get("dropped_loose_n"), 0, "同上")
+check("report", _rpt2.get("loose_n"), 0, "同上")
+check("report", _rpt2.get("deduped_n"), 0, "同上")
+
+# —— ★ 同站重名是「去重」，不许算成「规则太狠」 ——
+# 线上实测错报（2026-10-21）：
+#   search.rank.drop 关键词=斗破苍穹 … 非确切命中被挤掉=1
+#   例子=['[玄幻]斗破苍穹：与女王陛下的爱恨情仇', '斗破苍穹']
+# 第二条《斗破苍穹》分数 100、tightness=1.0，它根本不是被规则挤掉的，
+# 是被 _dedup 当成"同站同名"合并了（该站把同一本书挂在两个路径下）。
+# 把去重算进"规则太狠"，复盘就会去改本来就对的阈值 —— 账目错比没账目更坏。
+_rpt3: dict = {}
+_same = [R("斗破苍穹", "s1", "u1", "天蚕土豆"), R("斗破苍穹", "s1", "u9", "天蚕土豆"),
+         R("[玄幻]斗破苍穹：与女王陛下的爱恨情仇", "s1", "u2", "天蚕土豆")]
+_out3 = rank(_same, "斗破苍穹", report=_rpt3)
+check("report", _rpt3.get("deduped_n"), 1, "同站同名那条应记在「去重」里")
+check("report", any("斗破苍穹" == t for t, _ in _rpt3.get("deduped") or []), True,
+      "被并掉的正主书名要能看见")
+check("report", _rpt3.get("loose_n"), 1,
+      "非确切命中被挤掉的是那条玄幻同人（1 条），不是正主")
+check("report", all("玄幻" in t for t, _ in _rpt3.get("loose") or []), True,
+      "「非确切命中被挤掉」里只许出现确实不是确切命中的那些")
+check("report", len(_out3), 1, "最终只剩 1 条（另一条同站重名被并掉）")
+
+# 反向：没有「确切命中」时，loose 必须是 0（那时规则没生效，谁都没被挤掉）
+_rpt4: dict = {}
+rank([R("三体漫谈", "s1", "u1"), R("三体艺术", "s2", "u2")], "三体", report=_rpt4)
+check("report", _rpt4.get("loose_n"), 0, "没有确切命中时不该报「被挤掉」")
 
 print()
 if FAILS:

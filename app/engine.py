@@ -612,15 +612,19 @@ class Engine:
         #   前者往往是站点返回了一堆别的书（该换源/该调阈值），
         #   后者往往说明规则太狠（明明有相关结果却一条都没留下）。
         # 只在**真的丢了东西**时打，免得正常的搜索把日志刷满。
-        if raw and (rpt.get("below_cut_n") or rpt.get("dropped_loose_n")):
+        if raw and (rpt.get("below_cut_n") or rpt.get("loose_n")
+                    or rpt.get("deduped_n")):
             log_event(
                 logger, "search.rank.drop", 关键词=keyword,
                 门槛=rpt.get("cut"), 最高分=rpt.get("best"), 留下=rpt.get("kept"),
                 低于门槛=rpt.get("below_cut_n"),
-                非确切命中被挤掉=rpt.get("dropped_loose_n"),
+                非确切命中被挤掉=rpt.get("loose_n"),
+                # 同站重名被并掉 —— 这一类**不是**质量问题，单独记，
+                # 免得复盘时把它当成"规则太狠"去改本来就对的阈值。
+                同站重名被并掉=rpt.get("deduped_n"),
                 # 只举 3 个例子：日志要看趋势，不是要看全量清单
                 例子=[t for t, _ in (rpt.get("below_cut") or [])[:3]]
-                     + [t for t, _ in (rpt.get("dropped_loose") or [])[:3]])
+                     + [t for t, _ in (rpt.get("loose") or [])[:3]])
 
         if probe and results:
             # 探测预算 = min(满额, 总预算 - 已耗 - 给抽样预留的那份)。
