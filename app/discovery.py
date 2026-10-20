@@ -21,6 +21,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
+from urllib.parse import urlparse
 
 from . import registry, sitelearn, webfetch, websearch
 from .models import BookResult
@@ -220,7 +221,7 @@ _LEARN_WORKERS = 3
 #   正常也得 4~10 秒，14 秒顶多覆盖 3~4 个站。
 #   所以改成「每站 8 秒、上限 120 秒」：小批量跑得完，大批量也总有个头，
 #   超出的部分由下面的 `pending` 如实报出来，下一轮接着学。
-_LEARN_BUDGET_PER_SITE = 12.0
+_LEARN_BUDGET_PER_SITE = 16.0
 _LEARN_BUDGET_MIN = 14.0
 _LEARN_BUDGET_MAX = 120.0
 # 学站时抓「首页」的超时（秒，`retries=0`，最多两次：https 失败再试 http）。
@@ -239,6 +240,15 @@ _LEARN_BUDGET_MAX = 120.0
 # 学站是**后台的锦上添花**，不是用户正在等的请求 —— 一个站打不通就该
 # 十几秒内放弃、换下一个，而不是陪着它把超时重试耗完。
 _LEARN_FETCH_TIMEOUT = 6.0
+# 学站时「爆破搜索路径」最多验几个候选。
+#
+# ⚠ 原值是 6，而 `sitelearn.SEARCH_PATHS` 有 19 项、`guess_templates()`
+#   还在后面追加了「经典路径 × 参数名」和杰奇 CMS 组合 —— 也就是说
+#   预算 6 只能覆盖到表的前 6 条，**表尾那些高频组合永远轮不到**。
+#   实测 `book.washai.net`：真实搜索是 `/?s={kw}`（`/?s=` 在表里第 17 位），
+#   预算 6 时一次都试不到，于是被记成"这个站没有搜索接口"。
+#   所以预算必须够走完整张表（见 `guess_templates()` 的重排）。
+_LEARN_GUESS_BUDGET = 12
 
 
 def _learn_budget(n_targets: int) -> float:
@@ -304,13 +314,36 @@ def learn_sites(
             logger.debug("学 %s 时抓首页失败: %s", host, e)
             html, final = "", f"https://{host}/"
 
-        # 探测词：优先用这次搜的书名（一般能搜到），否则用「小说」
-        probe = (keyword or "").strip() or "小说"
+        # ⚠ 首页根本打不开（DNS 挂了 / 连不上）就不要往下爆破。
+        #   实测 `www.52shuwu.top` 已经是 `getaddrinfo failed`（域名死了），
+        #   但旧代码照样往下走：`guess_templates()` 给 6 个候选、发 6 个请求、
+        #   全部连接失败，白等 7 秒，然后把原因记成「没找到可用的搜索接口」——
+        #   于是排查时看到的是"这站没有搜索框"，而真相是"这站没了"。
+        #   两种情况的处置完全不同（前者放弃学，后者该清库/换域名）。
+        if not (html or "").strip():
+            registry.note_search_fail(host, reason="首页打不开（DNS/连接失败）")
+            logger.info("学 %s 失败：首页打不开（域名死了或连不上），不爆破", host)
+            return False
+
+        # 探测词：优先用这次搜的书名（一般能搜到），否则用**这个站上确实有**
+        # 的一本书的书名，再不然才退回「小说」。
+        # ⚠ 为什么不能只用「小说」：搜出来的书名里根本不含"小说"两个字，
+        #   既不好判断相关性，也让控制实验（换成搜不到的词）失去意义。
+        probe = ((keyword or "").strip() or registry.probe_title(host)
+                 or "小说")
+        # scheme 取**实际抓成功那一页**的 —— 老站只有 http，
+        # 写死 https 会让「明明有现成 form」的站学不到（见 sitelearn._resolve_scheme）
+        sch = ""
         try:
-            with fast_mode(retries=0, timeout=20.0):
+            sch = urlparse(final or page_url).scheme.lower()
+        except Exception:  # noqa: BLE001
+            sch = ""
+        try:
+            with fast_mode(retries=0, timeout=8.0):
                 got = sitelearn.learn_site(
                     host, page_url=(final or page_url), html=html,
-                    probe_keyword=probe, allow_guess=True, budget=6,
+                    probe_keyword=probe, allow_guess=True, budget=_LEARN_GUESS_BUDGET,
+                    scheme=sch,
                 )
         except Exception as e:  # noqa: BLE001
             logger.debug("学 %s 失败: %s", host, e)
@@ -381,6 +414,76 @@ def learn_sites(
         say("自有来源扩大", f"新学会 {learned} 个站的搜索，下次直接用", True)
     return {"learned": learned, "failed": failed, "skipped": skipped,
             "pending": pending}
+
+
+def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
+    """复核旧版学习器学出来的搜索模板，**撤掉假的**。
+
+    为什么需要这一趟：旧判据只问"这一页像不像结果页"，不问"结果是不是
+    由关键词筛出来的"。线上实测 21 个已学模板里 **9 个是假的** ——
+    站点根本不认那个参数，照常返回首页/分类导航（首页当然有一堆像章节
+    的链接，于是全判成"搜到了"）。这批假模板已经写进库里，光把学习器
+    改好**清不掉它们**：它们带着 `search_tpl` 蹲在那儿，每次搜索都被打
+    一遍，还把"综合 N 站"这个数字撑大 —— 用户看到的来源广度是掺水的。
+
+    复核方式：拿这个站上**确实有**的一本书的书名去搜，再拿绝对搜不到的
+    书名搜一次，结果集一模一样 → 判假撤掉。
+    """
+    def say(title: str, detail: str = "", ok: bool = True) -> None:
+        if not log:
+            return
+        try:
+            log(title, detail, ok)
+        except Exception:  # noqa: BLE001
+            pass
+
+    todo = [h for h in dict.fromkeys(h or "" for h in hosts) if h]
+    if not todo:
+        return {"checked": 0, "dropped": 0, "kept": 0, "no_probe": 0}
+
+    checked = dropped = kept = no_probe = 0
+    for host in todo:
+        s = registry.known_site(host)
+        tpl = (s.get("search_tpl") or "").strip()
+        if not tpl:
+            continue
+        probe = registry.probe_title(host)
+        if not probe:
+            # 这站库里有模板、却没有一本书的书名可探 —— 复核不了，
+            # **不动它**（宁可留着，也不要凭"没法验证"去撤别人的模板）。
+            no_probe += 1
+            logger.info("复核跳过 %s：库里没有它的书名可当探测词", host)
+            continue
+        checked += 1
+        scheme = (s.get("search_scheme") or "https").strip() or "https"
+        enc = s.get("search_enc") or "utf-8"
+        method = (s.get("search_method") or "get").lower()
+        body = s.get("search_body")
+        try:
+            with fast_mode(retries=0, timeout=10.0):
+                n, urls = sitelearn._fetch_hits(tpl, host, probe, enc=enc,
+                                                scheme=scheme, method=method,
+                                                body=body)
+                fake = bool(n) and sitelearn.control_says_fake(
+                    tpl, host, enc=enc, scheme=scheme, method=method, body=body,
+                    urls=urls, hits=n)
+        except Exception as e:  # noqa: BLE001
+            logger.info("复核 %s 出错（先不动它）：%s", host, e)
+            continue
+        if fake:
+            if registry.clear_search_tpl(host, why="复核：模板不认关键词（假搜索）"):
+                dropped += 1
+                logger.info("撤掉假搜索模板：%s %s（用《%s》探过）", host, tpl, probe)
+        else:
+            # 真的就盖上新版本号，下次不再复核
+            registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)
+            kept += 1
+    if dropped:
+        say("撤掉假的可搜源", f"{dropped} 个站其实没在按关键词搜，已撤掉", False)
+    logger.info("模板复核完成：查了 %d，撤掉 %d，留下 %d，没法探 %d",
+                checked, dropped, kept, no_probe)
+    return {"checked": checked, "dropped": dropped, "kept": kept,
+            "no_probe": no_probe}
 
 
 def discover(

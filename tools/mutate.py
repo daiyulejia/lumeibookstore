@@ -103,6 +103,8 @@ UTILS = ROOT / "app" / "utils.py"
 HTTP_TEST = ROOT / "tools" / "test_http_client.py"
 # 学站吞吐（tools/test_registry.py 的「学站吞吐」组）
 DISCOVERY = ROOT / "app" / "discovery.py"
+# 可搜源「是不是真的在按关键词搜」（tools/test_search_trust.py）
+TRUST_TEST = ROOT / "tools" / "test_search_trust.py"
 
 
 @dataclass
@@ -769,6 +771,80 @@ MUTATIONS: list[Mutation] = [
              "#homeEmpty.no-books .empty-art { display: none; }\n",
              "",
              RANKS_TEST),
+
+    # ------------------------------------------------------------------
+    # 可搜源必须真的在按关键词搜（tools/test_search_trust.py）
+    # ------------------------------------------------------------------
+    # 线上实测（2026-10-21）：21 个"已学会搜索"的站里 **9 个是假的**。
+    # 它们形如 `/?q={kw}`，站点不认这个参数，照常返回首页/分类导航 ——
+    # 首页当然有一堆"像章节的链接"，旧判据（数到 ≥3 条就算成）全放过。
+    # 后果不是"搜出错书"，而是"综合 N 站"这个数字掺水：
+    # 那 9 个站永远贡献不了结果，每次搜索却要多打它们一遍。
+    Mutation("trust", "控制实验恒放行（等于没做控制实验，假模板照样学会）",
+             SITELEARN,
+             '    if not control_kw or control_kw == "":\n        return False',
+             '    if True:\n        return False',
+             TRUST_TEST),
+    Mutation("trust", "learn_site 跳过控制实验（只数链接就认）",
+             SITELEARN,
+             "        if control_says_fake(tpl, host, enc=enc, scheme=scheme, method=method,",
+             "        if False and control_says_fake(tpl, host, enc=enc, scheme=scheme, method=method,",
+             TRUST_TEST),
+    Mutation("trust", "阈值放宽到 0.9（假站的分类导航页就漏过去了）",
+             SITELEARN,
+             "CONTROL_SAME_RATIO = 0.5",
+             "CONTROL_SAME_RATIO = 0.9",
+             TRUST_TEST),
+    Mutation("trust", "scheme 写死 https（老站只有 http，明明有 form 也验不过）",
+             SITELEARN,
+             '        if s in ("http", "https"):\n            return s\n    return detect_scheme(host)',
+             '        s = ""\n    return "https"',
+             TRUST_TEST),
+    Mutation("trust", "爆破表又把 `/?s=` 挪到后面（预算覆盖不到 = 表里没有）",
+             SITELEARN,
+             '    for path in ("/?s=", "/?q=", "/?search="):',
+             '    for path in ("/?q=", "/?search="):',
+             TRUST_TEST),
+
+    # ------------------------------------------------------------------
+    # 学站失败账必须带学习器版本号（tools/test_registry.py）
+    # ------------------------------------------------------------------
+    # 线上 92 个站没有搜索模板，其中 89 个 search_fail 顶到 3（永久放弃），
+    # 而那批失败正是学习器自己的缺陷造成的。修好学习器却不动历史计数，
+    # 那 89 个站仍然被挡在门外 —— 用户看到的可搜源**一个都不会变**。
+    Mutation("learnver", "判失败次数时不看版本号（学习器改好了也救不回那 89 个站）",
+             REGISTRY,
+             '    if int(site.get("search_fail_ver") or 0) != LEARN_VER:\n'
+             "        return 0\n"
+             '    return int(site.get("search_fail") or 0)',
+             '    return int(site.get("search_fail") or 0)',
+             REGISTRY_TEST),
+    Mutation("learnver", "换版本后第一次失败不重置计数（旧账立刻又被抄回来）",
+             REGISTRY,
+             '        if int(cur.get("search_fail_ver") or 0) != LEARN_VER:\n'
+             '            cur["search_fail"] = 0\n',
+             "",
+             REGISTRY_TEST),
+    Mutation("learnver", "复核清单挑不出旧模板（学好了也清不掉库里那 9 个假的）",
+             REGISTRY,
+             '        if int(s.get("search_ver") or 0) >= LEARN_VER:\n            continue',
+             "        if True:\n            continue",
+             REGISTRY_TEST),
+    Mutation("learnver", "撤假模板时用 pop（合并落盘时又复活，撤了等于没撤）",
+             REGISTRY,
+             '        cur["search_tpl"] = ""',
+             '        cur.pop("search_tpl", None)',
+             REGISTRY_TEST),
+    Mutation("learnver", "学站清单不按书页证据排序（船艇站/百科站排到小说站前面）",
+             REGISTRY,
+             '        out.append((-has_book, -has_toc, -int(site.get("ok") or 0), host))',
+             '        out.append((0, -has_toc, -int(site.get("ok") or 0), host))',
+             REGISTRY_TEST),
+    Mutation("learnver", "探测词不剥页面标题的尾巴（拿「…最新章节列表」去搜，一搜一个空）",
+             REGISTRY,
+             "            if t.endswith(junk) and len(t) > len(junk) + 1:",
+             "            if False and t.endswith(junk) and len(t) > len(junk) + 1:",
+             REGISTRY_TEST),
 ]
 
 

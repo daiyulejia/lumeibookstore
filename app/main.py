@@ -1210,7 +1210,7 @@ async def registry_prune(all: int = 0):
 
 
 @app.post("/api/registry/learn")
-async def registry_learn(host: str = "", limit: int = 0):
+async def registry_learn(host: str = "", limit: int = 0, reverify: bool = True):
     """给来源库里的站点学「站内搜索接口」，让它们变成可搜源。
 
     这是 L 源自我壮大的入口 —— 学过之后，下次搜**别的**书就能直接
@@ -1218,6 +1218,10 @@ async def registry_learn(host: str = "", limit: int = 0):
 
     host 为空时：自动挑「还没学过、健康、且没反复失败」的站来学。
     limit 限制一次学几个（默认不限制）。
+
+    `reverify=True`（默认）：顺手把**旧版学习器**学出来的模板复核一遍，
+    撤掉那些"站点不认参数、照常吐首页"的假模板 —— 线上实测 21 个
+    已学模板里 9 个是假的（见 `discovery.reverify_sites()`）。
 
     ⚠ 挑站必须走 `registry.learn_candidates()`，不要在这里拿
       `should_try_learn()` 自己拼清单 —— 那会把已判死的站和非小说站
@@ -1236,7 +1240,12 @@ async def registry_learn(host: str = "", limit: int = 0):
     loop = asyncio.get_running_loop()
     rep = await loop.run_in_executor(
         None, lambda: discovery.learn_sites(targets))
-    return {"ok": True, "targets": targets, **rep,
+    rev = {}
+    if reverify and not host:
+        todo = registry.reverify_candidates()
+        rev = await loop.run_in_executor(
+            None, lambda: discovery.reverify_sites(todo))
+    return {"ok": True, "targets": targets, **rep, "reverify": rev,
             "searchable": len(registry.searchable_sites())}
 
 

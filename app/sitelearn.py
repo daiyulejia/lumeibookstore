@@ -354,67 +354,99 @@ def _replace_value_with_kw(tpl: str) -> str:
 def guess_templates(host: str) -> list[dict]:
     """爆破候选：常见搜索路径 × 常见参数名。
 
-    这些是**没有证据的猜测**，必须一个个发请求验证（靠 `verify_tpl`）。
-    排在前面的是中文小说站里命中率最高的组合，先试中的先赢。
+    这些是**没有证据的猜测**，必须一个个发请求验证。
+
+    ⚠ 顺序就是生死 —— 预算只有十几个候选，排在后面 = **永远轮不到**。
+      旧版是按 `SEARCH_PATHS` 的字面顺序「路径 × ?q=」铺开，结果
+      `/?s=`（极简站/移动站的常态）排在第 17 位、杰奇组合排在最后，
+      而预算 6 只能覆盖到第 6 条 —— 表尾那些高频组合**结构上取不到**。
+
+      实测（2026-10-21，18 个"能抓目录但学不会搜索"的真实小说站）：
+        · `/?s={kw}`                 命中 2 个站（luoxiaks / washai）
+        · `/modules/article/search.php?searchkey=`  命中 1 个（sudugu）
+        · 其余全部落空
+      线上已验证可用的模板里，`/search.php?q=` `/?q=` `/search/?q=`
+      `/category.php?keyword=` 也都在用。所以按**实测命中率**分四档重排。
     """
     out: list[dict] = []
     seen: set[str] = set()
-    # 参数名优先用高频的，路径也用高频的 —— 交叉时按路径分组，
-    # 让「/search.php?q=」这种经典组合排最前。
+
+    def add(tpl: str) -> None:
+        if tpl and tpl not in seen and "{kw}" in tpl:
+            seen.add(tpl)
+            out.append({"tpl": tpl, "enc": "utf-8", "via": "guess",
+                        "method": "get"})
+
+    # 第一档：实测命中过的、以及线上已证明在用的
+    for path, pname in _JIECI_COMBOS:
+        add(f"{path}?{pname}={{kw}}")
+    for path in ("/?s=", "/?q=", "/?search="):
+        add(path + "{kw}")
+    for path, pname in (("/search.php", "q"), ("/search", "keyword"),
+                        ("/search", "q"), ("/search/", "q"),
+                        ("/search.html", "q"), ("/s", "q"), ("/s", "wd")):
+        add(f"{path}?{pname}={{kw}}")
+
+    # 第二档：其它常见「路径 × 参数名」组合
     for path in SEARCH_PATHS:
         if path.endswith("="):
-            # `/?q=` 这种路径本身带参数名
-            tpl = path + "{kw}"
+            add(path + "{kw}")          # `/?q=` 这种路径本身带参数名
         elif "?" in path:
-            sep = "&" if path.endswith(("?", "&")) else "&"
-            tpl = f"{path}{sep}q={{kw}}"
+            add(f"{path}&q={{kw}}")
         else:
-            tpl = f"{path}?q={{kw}}"
-        if tpl not in seen:
-            seen.add(tpl)
-            out.append({"tpl": tpl, "enc": "utf-8", "via": "guess", "method": "get"})
-    # 再补一批「路径 + 其它参数名」的组合（只在经典路径上换参数名）
-    for path in ("/search.php", "/search", "/search/", "/so.php", "/s"):
+            add(f"{path}?q={{kw}}")
+    for path in ("/search.php", "/search", "/search/", "/so.php", "/s",
+                 "/search.html"):
         for pname in ("keyword", "kw", "wd", "searchkey", "key", "searchword", "s"):
-            tpl = f"{path}?{pname}={{kw}}"
-            if tpl not in seen:
-                seen.add(tpl)
-                out.append({"tpl": tpl, "enc": "utf-8", "via": "guess", "method": "get"})
-    # 杰奇 CMS 系（老笔趣阁）的经典组合，单独优先补进去
-    for path, pname in _JIECI_COMBOS:
-        tpl = f"{path}?{pname}={{kw}}"
-        if tpl not in seen:
-            seen.add(tpl)
-            out.append({"tpl": tpl, "enc": "utf-8", "via": "guess", "method": "get"})
+            add(f"{path}?{pname}={{kw}}")
+
+    # 第三档：CMS 的 GET 路由形态（`/index.php?m=search&q=` 这类）
+    for path in ("/index.php?m=search", "/plus/search.php", "/e/search/index.php"):
+        for pname in ("q", "keyword", "kw", "wd"):
+            add(f"{path}&{pname}={{kw}}")
     return out
 
 
 # ---------------------------------------------------------------------------
 # 验证一个模板到底能不能搜
 # ---------------------------------------------------------------------------
-def verify_tpl(tpl: str, host: str, probe_keyword: str, *,
-               enc: str = "utf-8", scheme: str = "https",
-               method: str = "get", body: Optional[dict] = None,
-               min_hits: int = 3) -> Optional[int]:
-    """拿探测词去请求一次，回内容里有章节链接就算成。
+# 控制实验用的"绝对搜不到"的书名。故意带不可能出现在任何小说标题里的字母串。
+CONTROL_KW = "zzqqxxbuCunZaiDeShuMing"
+_CONTROL_KW = CONTROL_KW      # 兼容内部旧引用
+# 真关键词的结果集和"搜不到的词"的结果集，重合度超过这个就认为**根本没在筛**。
+#
+# 0.5 是**量出来的**，不是拍的：拿线上 21 个已学模板做控制实验，
+# 真站的 Jaccard 最高 0.24（`www.xizids.com`），假站最低 0.66
+# （`www.chamabooks.net` 返的是「全部/言情/耽美」分类导航）——
+# 中间是一段干净的空档，取中间值 0.5。
+CONTROL_SAME_RATIO = 0.5
+_CONTROL_SAME_RATIO = CONTROL_SAME_RATIO   # 兼容内部旧引用
 
-    返回命中的章节链接数（够多才算真的搜到了）；不成立返回 None。
+
+def _fetch_hits(tpl: str, host: str, keyword: str, *,
+                enc: str = "utf-8", scheme: str = "https",
+                method: str = "get", body: Optional[dict] = None,
+                min_hits: int = 3) -> tuple[int, set[str]]:
+    """请求一次，回 `(命中章节数, 结果 URL 集合)`。不成立回 `(0, set())`。
 
     判据用「有没有一堆看起来像章节的链接」而不是「页面里有没有关键词」——
     很多站搜不到时会**回首页**（首页当然有链接，但那是导航不是结果），
     只数关键词会把它误判成成功。
+
+    ⚠ 但它**只回答"这一页像不像结果页"，不回答"结果是不是由关键词筛出来的"**
+      —— 后者要靠 `verify_search()` 的控制实验。别拿这个函数的返回值当结论。
     """
     from . import webfetch        # 延迟导入：避免启动期的循环依赖
     from .utils import fetch_text
 
-    url = build_url(tpl, host, probe_keyword, enc=enc, scheme=scheme)
+    url = build_url(tpl, host, keyword, enc=enc, scheme=scheme)
     if not url:
-        return None
+        return 0, set()
 
     data = None
     if (method or "get").lower() == "post":
         # POST 搜索：关键词放请求体，URL 里不带参数
-        data = {k: str(v).replace("{kw}", probe_keyword)
+        data = {k: str(v).replace("{kw}", keyword)
                 for k, v in (body or {"s": "{kw}"}).items()}
         # URL 去掉 `?…` 部分（POST 的 tpl 本来就没带）
         url = build_url(tpl, host, "", enc=enc, scheme=scheme) or url
@@ -423,24 +455,132 @@ def verify_tpl(tpl: str, host: str, probe_keyword: str, *,
         html, final = fetch_text(url, with_url=True, data=data)
     except Exception as e:  # noqa: BLE001
         logger.debug("搜索模板验证失败 %s: %s", url, e)
-        return None
+        return 0, set()
     if not html or len(html) < 400:
-        return None
+        return 0, set()
 
     # 跟随重定向后掉回首页 → 这个模板是假的「能搜」
     fp = urlparse(final or url)
     fpath = (fp.path or "/").rstrip("/")
     if fpath in ("", "/", "/index.php") and fp.query == "":
-        return None
+        return 0, set()
 
     try:
         toc = webfetch.extract_toc(html, final or url)
     except Exception:  # noqa: BLE001
+        return 0, set()
+    toc = toc or []
+    urls = {str(t.get("url") or "") for t in toc if isinstance(t, dict)}
+    urls.discard("")
+    if len(toc) < min_hits:
+        return 0, set()
+    return len(toc), urls
+
+
+def verify_tpl(tpl: str, host: str, probe_keyword: str, *,
+               enc: str = "utf-8", scheme: str = "https",
+               method: str = "get", body: Optional[dict] = None,
+               min_hits: int = 3) -> Optional[int]:
+    """拿探测词去请求一次，回内容里有章节链接就算成。
+
+    返回命中的章节链接数（够多才算真的搜到了）；不成立返回 None。
+
+    ⚠ 这是**单次**判据，只说明"这一页像结果页"。要判断"这个模板真的在按
+      关键词筛"，必须用 `verify_search()` —— 见那里关于 5 个假模板的注释。
+    """
+    n, _ = _fetch_hits(tpl, host, probe_keyword, enc=enc, scheme=scheme,
+                       method=method, body=body, min_hits=min_hits)
+    return n or None
+
+
+def verify_search(tpl: str, host: str, probe_keyword: str, *,
+                  enc: str = "utf-8", scheme: str = "https",
+                  method: str = "get", body: Optional[dict] = None,
+                  min_hits: int = 3, control_kw: str = _CONTROL_KW,
+                  ) -> Optional[dict]:
+    """**真正**验证一个模板：既要"像结果页"，还要"结果随关键词变"。
+
+    做法是**控制实验**：同一个模板再发一次，关键词换成绝对搜不到的书名。
+      · 两次结果集重合度 ≥ `_CONTROL_SAME_RATIO` → 这个站根本不认这个参数，
+        只是照常吐首页/列表页 → **不是搜索**
+      · 重合度低 → 真的在按关键词筛 → 成立
+
+    ⚠ 为什么必须有第二个条件（线上实测，2026-10-21）：
+      21 个已学模板里 **5 个是假的** —— `www.xxsy.net` `www.tmwk.cc`
+      `www.mhxs.cc` `www.taishuaile.com` `www.tzkibb.com`。它们形如
+      `/?q={kw}` / `/search.php?q={kw}`，站点不理这个参数，照常返回
+      首页或通用列表（首页当然有一堆像章节的链接）。旧判据只数链接，
+      于是全判成"搜到了"。
+      后果不是"搜出错书"（相关性排序会把它们筛掉），而是：
+        · 界面上"综合 21 站"里有 5 个**永远不可能**贡献一条结果
+        · 每次搜索都要多打这 5 个站、多等它们
+      也就是说，掺假的可搜源会把"我们的来源有多广"这件事变成假话。
+
+    返回 `{"hits": n}` 或 None。
+    """
+    n, urls = _fetch_hits(tpl, host, probe_keyword, enc=enc, scheme=scheme,
+                          method=method, body=body, min_hits=min_hits)
+    if not n:
         return None
-    n = len(toc or [])
-    if n < min_hits:
+    if control_says_fake(tpl, host, enc=enc, scheme=scheme, method=method,
+                         body=body, urls=urls, hits=n, min_hits=min_hits):
         return None
-    return n
+    return {"hits": n, "enc": enc}
+
+
+def control_says_fake(tpl: str, host: str, *, enc: str = "utf-8",
+                      scheme: str = "https", method: str = "get",
+                      body: Optional[dict] = None, urls: set[str],
+                      hits: int, min_hits: int = 3,
+                      control_kw: str = _CONTROL_KW) -> bool:
+    """控制实验：同一个模板换成"绝对搜不到的书名"，结果集是不是**一模一样**。
+
+    `urls` / `hits` 传调用方**已经拿到**的那次真实探测结果 —— 少发一个请求。
+    返回 True = 判假（站点不认这个参数）。
+
+    ⚠ 单独抽成函数是为了让 `learn_site()` 能复用它手上已有的探测结果，
+      否则每验一个候选都要把真实探测重跑一遍（一个候选 3 个请求，实测
+      一半的学站时间耗在重复请求上）。
+    """
+    if not control_kw or control_kw == "":
+        return False
+    n2, urls2 = _fetch_hits(tpl, host, control_kw, enc=enc, scheme=scheme,
+                            method=method, body=body, min_hits=min_hits)
+    if not n2:
+        return False
+    union = urls | urls2
+    same = (len(urls & urls2) / len(union)) if union else 1.0
+    if not union or same >= _CONTROL_SAME_RATIO:
+        logger.info(
+            "模板不认关键词，判假：%s %s —— 真书名 %d 条 / 搜不到的书名 %d 条，重合 %.0f%%",
+            host, tpl, hits, n2, same * 100)
+        return True
+    return False
+
+
+def probe_keyword_once(tpl: str, host: str, keyword: str, *,
+                       scheme: str = "https", method: str = "get",
+                       body: Optional[dict] = None,
+                       min_hits: int = 3) -> tuple[str, int, set[str]]:
+    """把「探编码」和「探命中」合并成一次最小成本探测。
+
+    返回 `(用哪个编码才通, 命中数, 结果 URL 集合)`；都不通回
+    `("utf-8", 0, set())`。
+
+    ⚠ 为什么要合并：旧流程是 `detect_encoding()`（最多 2 个请求）
+      再 `verify_tpl()`（1 个请求），一个**失败**的候选要花 3 个请求；
+      而爆破表里绝大多数候选都是失败的，于是预算全花在"确认它不行"上
+      （实测一个站学不动，一半时间耗在这里）。合并后失败候选最多 2 个请求。
+    """
+    for enc in ("utf-8", "gb18030"):
+        try:
+            n, urls = _fetch_hits(tpl, host, keyword, enc=enc, scheme=scheme,
+                                  method=method, body=body, min_hits=min_hits)
+        except Exception:  # noqa: BLE001
+            continue
+        if n:
+            return enc, n, urls
+    return "utf-8", 0, set()
 
 
 def detect_encoding(host: str, tpl: str, probe_keyword: str, *, scheme: str = "https",
@@ -453,20 +593,43 @@ def detect_encoding(host: str, tpl: str, probe_keyword: str, *, scheme: str = "h
 
     返回 "utf-8" 或 "gb18030"。
     """
-    for enc in ("utf-8", "gb18030"):
-        try:
-            n = verify_tpl(tpl, host, probe_keyword, enc=enc, scheme=scheme,
-                           method=method, body=body)
-        except Exception:  # noqa: BLE001
-            continue
-        if n:
-            return enc
-    return "utf-8"
+    enc, _, _ = probe_keyword_once(tpl, host, probe_keyword, scheme=scheme,
+                                   method=method, body=body)
+    return enc
 
 
 # ---------------------------------------------------------------------------
 # 总入口：学一个站
 # ---------------------------------------------------------------------------
+def _resolve_scheme(host: str, page_url: str, scheme: str) -> str:
+    """这个站该按 http 还是 https 去验证。
+
+    ⚠ 这里原先写死 `scheme="https"`，是个**静默的真缺陷**：老小说站
+    大量只有 http（`www.tengc.com` 的 https 直接 403）。于是：
+      · `detect_encoding()` 按 https 试两次，都失败 → 退回 "utf-8"
+      · `verify_tpl()` 按 https 请求，也失败 → 返回 None
+      · `learn_site()` 于是对**明明有现成 form** 的站返回 `{}`
+    实测 `www.tengc.com`：`learn_from_html()` 正确学到
+    `/search49.html` + `searchkey`，用 http 一验就 **25 条章节链接**，
+    可整条链路报的却是"找不到搜索接口" —— 三次失败后
+    `search_fail=3`，这个站被**永久**踢出学站清单。
+
+    `page_url` 是我们**刚刚抓成功**的那一页，它的 scheme 就是真相，
+    比再去 HEAD 一次更准更省。
+    """
+    sc = (scheme or "").strip().lower()
+    if sc in ("http", "https"):
+        return sc
+    if page_url:
+        try:
+            s = urlparse(page_url).scheme.lower()
+        except Exception:  # noqa: BLE001
+            s = ""
+        if s in ("http", "https"):
+            return s
+    return detect_scheme(host)
+
+
 def learn_site(
     host: str,
     *,
@@ -474,7 +637,7 @@ def learn_site(
     html: str = "",
     probe_keyword: str = "",
     allow_guess: bool = True,
-    scheme: str = "https",
+    scheme: str = "",
     budget: int = 6,
     js_budget: int = 2,
 ) -> dict:
@@ -483,6 +646,7 @@ def learn_site(
     · `html` + `page_url`：手上有现成的页面时用（零成本，只在其中找 form / 链接）
     · `allow_guess=True`：还可以爆破常见路径（要发请求，`budget` 限制次数）
     · `js_budget`：最多再去读几个外部 JS 文件找 JS 写出来的搜索框
+    · `scheme`：留空即从 `page_url` 推断（推荐）—— 见 `_resolve_scheme()`
 
     返回::
 
@@ -492,6 +656,7 @@ def learn_site(
     host = (host or "").strip().lower()
     if not host:
         return {}
+    scheme = _resolve_scheme(host, page_url, scheme)
 
     tried: set[str] = set()
     cands: list[dict] = []
@@ -511,40 +676,47 @@ def learn_site(
 
     # 先验证「有证据」的候选：它们命中率远高于猜的
     ordered = cands + guessed
-    n_req = 0
+    n_tried = 0
     for c in ordered:
         tpl = c.get("tpl") or ""
         if not tpl or tpl in tried:
             continue
         tried.add(tpl)
-        if n_req >= budget:
+        if n_tried >= budget:
             break
-        n_req += 1
+        n_tried += 1
         method = c.get("method", "get")
         body = c.get("body")
-        enc = (detect_encoding(host, tpl, probe_keyword, scheme=scheme,
-                               method=method, body=body)
-               if probe_keyword else "utf-8")
-        hits = (verify_tpl(tpl, host, probe_keyword, enc=enc, scheme=scheme,
-                           method=method, body=body)
-                if probe_keyword else None)
-        if hits is None and not probe_keyword:
-            # 没有探测词就没法验证 —— 只把 form 学到的当候选，交给上层再定
+
+        if not probe_keyword:
+            # 没有探测词就**没法验证** —— 只把 form 学到的当结论，交给上层去验。
+            # （爆破出来的都是纯猜测，没验证过的一律不认。）
             if c.get("via") in ("form", "form-post"):
-                got = {"search_tpl": tpl, "search_enc": enc,
+                got = {"search_tpl": tpl, "search_enc": "utf-8",
                        "search_via": c["via"]}
                 if method == "post":
                     got["search_method"] = "post"
                     got["search_body"] = body
                 return got
             continue
-        if hits:
-            got = {"search_tpl": tpl, "search_enc": enc,
-                   "search_via": c.get("via", "")}
-            if method == "post":
-                got["search_method"] = "post"
-                got["search_body"] = body
-            return got
+
+        # 一次探测同时定「编码」和「命中数」；通了再花一个请求做控制实验。
+        enc, hits, urls = probe_keyword_once(
+            tpl, host, probe_keyword, scheme=scheme, method=method, body=body)
+        if not hits:
+            continue
+        # ⚠ 必须做控制实验：只数链接会把"站点不认参数、照常吐首页"判成搜到了。
+        #   线上 21 个已学模板里 9 个是这么混进来的（见 verify_search 的注释）。
+        if control_says_fake(tpl, host, enc=enc, scheme=scheme, method=method,
+                             body=body, urls=urls, hits=hits):
+            continue
+
+        got = {"search_tpl": tpl, "search_enc": enc,
+               "search_via": c.get("via", "")}
+        if method == "post":
+            got["search_method"] = "post"
+            got["search_body"] = body
+        return got
 
     return {}
 
@@ -604,6 +776,8 @@ def detect_scheme(host: str) -> str:
 
 __all__ = [
     "learn_site", "learn_from_html", "guess_templates", "verify_tpl",
+    "verify_search", "control_says_fake", "probe_keyword_once", "CONTROL_KW",
+    "CONTROL_SAME_RATIO",
     "build_url", "make_tpl", "detect_encoding", "detect_scheme",
     "SEARCH_PARAMS", "SEARCH_PATHS",
 ]

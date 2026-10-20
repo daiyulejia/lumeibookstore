@@ -63,6 +63,10 @@ STATIC_SUITES = [
     ("test_registry_source.py", "自有来源搜索"),
     ("test_relevance.py", "结果相关性"),
     ("test_sitelearn.py", "站点学习"),
+    # 「可搜源」必须真的在按关键词搜。线上 21 个已学模板里 9 个是假的
+    # （站点不认参数、照常吐首页），后果是「综合 N 站」这个数字掺水 ——
+    # 不报错、不写日志，人工回归必漏。
+    ("test_search_trust.py", "可搜源真假"),
     ("test_deobfuscate.py", "反混淆"),
     # 纯逻辑、不用服务。之前漏在外面，结果"改了安全策略却没人验"。
     ("test_security.py", "安全策略"),

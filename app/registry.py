@@ -562,6 +562,11 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
         for k, v in notes.items():
             if v not in (None, ""):
                 cur[k] = v
+        # 盖上"用哪版学习器学出来的"。将来学习器再改进时，靠它能挑出
+        # 需要复核的旧模板（见 `reverify_candidates()`）。
+        cur["search_ver"] = LEARN_VER
+        cur["search_fail"] = 0          # 学会了，失败账清零
+        cur["search_fail_ver"] = LEARN_VER
         cur["ok"] = int(cur.get("ok", 0)) + 1
         cur["last_ok"] = _now()
         if "first_seen" not in cur:
@@ -579,6 +584,10 @@ def note_search_fail(host: str, *, reason: str = "") -> None:
     不是为了惩罚它，而是为了**下次别重复爆破** —— 爆破一次要发好几个请求，
     而同一批站里总有那么几个真的没有站内搜索（纯静态站）。
     记下来之后 `should_try_learn` 会跳过它。
+
+    ⚠ 失败次数上要盖一个**学站逻辑版本号**（`LEARN_VER`）——
+    见 `should_try_learn()` 里那段长注释：不盖版本号的话，学习器自己的
+    缺陷会把健康的小说站**永久**钉死，改好学习器也救不回来。
     """
     host = (host or "").strip().lower()
     if not host:
@@ -586,7 +595,14 @@ def note_search_fail(host: str, *, reason: str = "") -> None:
     with _lock:
         db = _load()
         cur = db["sites"].setdefault(host, {})
+        # ⚠ 换过版本就**从头记**，不能接着旧的次数往上加。
+        #   否则"旧版记了 3 次"的站只要再用新版失败 1 次，计数就变成 4，
+        #   立刻又满额被放弃 —— 等于版本号根本没起作用（`should_try_learn()`
+        #   虽然不算旧账，但这里又把它抄回来了）。
+        if int(cur.get("search_fail_ver") or 0) != LEARN_VER:
+            cur["search_fail"] = 0
         cur["search_fail"] = int(cur.get("search_fail", 0)) + 1
+        cur["search_fail_ver"] = LEARN_VER
         if reason:
             cur["search_fail_why"] = reason[:60]
         cur["updated"] = _now()
@@ -598,9 +614,29 @@ def note_search_fail(host: str, *, reason: str = "") -> None:
 # 一个站最多爆破几次。3 次都不成就认命 —— 它多半真的没有站内搜索。
 SEARCH_LEARN_MAX_TRIES = 3
 
+# 学站逻辑的版本号。**每次改「怎么学」都要 +1。**
+#
+# 为什么需要它（线上实测，2026-10-21）：来源库 92 个站没有搜索模板，
+# 其中 **89 个的 `search_fail` 已经顶到 3** —— 也就是"永久放弃"。
+# 后来查出这批失败是学习器自己的缺陷造成的：
+#   · 验证一律按 https，而老的小说站大量只有 http → 永远验不过
+#   · 爆破预算 6 条，而高频的 `/?s=` 排在候选表第 17 位 → 永远轮不到
+# 也就是说这 89 条"认命"记录里混着一大批**本来能学会**的站。
+# 把学习器修好却不动历史计数，修了等于没修 —— 用户看到的可搜源数量
+# 一个都不会变。所以计数必须带版本号：老版本记的失败自动不计入，
+# 升级后那批站重新回到候选里，用**新的**学习器再试 3 次。
+LEARN_VER = 2
+
 
 def should_try_learn(host: str) -> bool:
-    """还要不要为这个站花预算去学搜索接口。"""
+    """还要不要为这个站花预算去学搜索接口。
+
+    ⚠ 失败计数**只算当前学习器版本记下的那些**。
+      老版本记的失败一律不计入 —— 因为那些失败可能正是学习器自己的缺陷
+      造成的（见 `LEARN_VER`）。不加版本号的话，修好学习器之后这批站
+      仍然被历史计数挡在门外，「修好了」在用户那里**一点感觉都没有**：
+      可搜源数量一个都不变。实测就踩过：92 个无模板站里 89 个顶到 3 次。
+    """
     h = (host or "").strip().lower()
     if not h:
         return False
@@ -609,7 +645,143 @@ def should_try_learn(host: str) -> bool:
         return False                    # 没见过的站先别学
     if (s.get("search_tpl") or "").strip():
         return False                    # 已经会了
-    return int(s.get("search_fail", 0)) < SEARCH_LEARN_MAX_TRIES
+    return learn_tries(s) < SEARCH_LEARN_MAX_TRIES
+
+
+def learn_tries(site: dict) -> int:
+    """这个站**在当前学习器版本下**失败过几次。"""
+    if int(site.get("search_fail_ver") or 0) != LEARN_VER:
+        return 0
+    return int(site.get("search_fail") or 0)
+
+
+def reverify_candidates() -> list[str]:
+    """有搜索模板、但那是**旧版学习器**学出来的站 —— 需要复核一遍。
+
+    为什么必须有这条：旧判据只问"这一页像不像结果页"，不问"结果是不是由
+    关键词筛出来的"。实测线上 21 个已学模板里 9 个是假的（站点根本不认
+    那个参数，照常吐首页/分类页）。这批假模板已经写进库里了，
+    光把学习器改好**清不掉它们** —— 它们带着 `search_tpl` 蹲在那里，
+    每次搜索都会被打一遍，还把"综合 N 站"这个数字撑大。
+    所以要有"按版本挑出来复核"的入口，见 `discovery.reverify_sites()`。
+    """
+    out: list[str] = []
+    for host, s in sites().items():
+        if not isinstance(s, dict):
+            continue
+        if not (s.get("search_tpl") or "").strip():
+            continue
+        if int(s.get("search_ver") or 0) >= LEARN_VER:
+            continue
+        out.append(host)
+    return sorted(out)
+
+
+# 书名后面常见的"尾巴"。来源库里 `title` 存的是**页面标题**（`<title>`），
+# 所以长这样：`药鼎仙途最新章节列表` / `《神通者》-天蚕土豆-章节目录` /
+# `欢迎进入梦魇直播间笔趣阁`。拿这种串当探测词去搜站内搜索，**一搜一个空**，
+# 于是明明有搜索接口的站也会被判成"学不会"。
+# 实测（2026-10-21，29 个站演练）：探测词全是这种脏标题，只学会 3 个。
+_TITLE_JUNK = (
+    "最新章节列表", "最新章节", "章节目录", "章节列表", "全文阅读", "全文免费阅读",
+    "无弹窗", "免费阅读", "免费全文阅读", "在线阅读", "笔趣阁", "小说阅读网",
+    "小说", "阅读", "全文", "目录", "列表",
+)
+_TITLE_SEP_RE = re.compile(r"[-_|—–~·:：,，/\\]|\s{2,}")
+
+
+def clean_book_title(title: str) -> str:
+    """把页面标题收拾成**能拿去搜**的书名。收拾不出来就回空串。"""
+    t = (title or "").strip()
+    if not t:
+        return ""
+    t = t.replace("《", "").replace("》", "").replace("〈", "").replace("〉", "")
+    # 页面标题常常是「书名 - 作者 - 站点」，取第一段就是书名
+    head = _TITLE_SEP_RE.split(t, 1)[0].strip()
+    if len(head) >= 2:
+        t = head
+    # 反复剥尾巴（"…最新章节列表笔趣阁"要剥两层）
+    changed = True
+    while changed:
+        changed = False
+        for junk in _TITLE_JUNK:
+            if t.endswith(junk) and len(t) > len(junk) + 1:
+                t = t[: -len(junk)].strip()
+                changed = True
+            elif t.startswith(junk) and len(t) > len(junk) + 1:
+                t = t[len(junk):].strip()
+                changed = True
+    t = t.strip(" -_|—–~·:：,，/\\!！?？")
+    # 太短/只剩符号的不要（"活着"两个字是合法书名，所以门槛是 2）
+    if len(t) < 2:
+        return ""
+    if not re.search(r"[\u4e00-\u9fffA-Za-z]", t):
+        return ""
+    return t[:40]
+
+
+def probe_title(host: str) -> str:
+    """这个站上**确实有**的一本书的书名 —— 学站时拿它当探测词。
+
+    为什么不能随口用「小说」或"这次搜的书名"当探测词：
+      · 用「小说」：搜出来的是一堆书名里不含"小说"的书，没法判断相关性；
+      · 用"这次搜的书名"：这本书可能根本**不在这站上**（它是从别的站搜来的），
+        于是这站明明有搜索接口，也会因为"搜不到"被记成学不会。
+    拿站上真实的书名去探，才既搜得到、又对得上。
+
+    ⚠ 必须过 `clean_book_title()` —— 库里的 `title` 是页面标题，
+      直接拿去搜基本必空（实测踩过，见 `_TITLE_JUNK` 的注释）。
+      另外要排除"书名其实就是本站站名"的记录（那是抓页面标题时抓成了站名）。
+    """
+    h = (host or "").strip().lower()
+    if not h:
+        return ""
+    label = site_label(h)
+    best, best_ok = "", -1
+    for b in books().values():
+        if not isinstance(b, dict):
+            continue
+        if (b.get("host") or "").strip().lower() != h:
+            continue
+        t = clean_book_title(str(b.get("title") or ""))
+        if not t or t == label or t == h:
+            continue
+        ok = int(b.get("ok") or 0)
+        if ok > best_ok:
+            best, best_ok = t, ok
+    return best
+
+
+def clear_search_tpl(host: str, *, why: str = "") -> bool:
+    """把一个**验证不成立**的搜索模板撤掉。返回是否真的撤掉了。
+
+    ⚠ 键必须写 `""` 而不是 `pop` —— 落盘走 `_merge()`，内存里没有的键
+      会从盘上复活（和 `note_book(note="")` 同一个坑，见那里的注释）。
+
+    `search_fail` 同时 +1 并盖版本号：撤掉之后这个站会回到"待学"队列，
+    但不会立刻又被学一遍（要等 `SEARCH_LEARN_MAX_TRIES` 用完）。
+    """
+    h = (host or "").strip().lower()
+    if not h:
+        return False
+    with _lock:
+        db = _load()
+        cur = db["sites"].get(h)
+        if not isinstance(cur, dict) or not (cur.get("search_tpl") or "").strip():
+            return False
+        cur["search_tpl"] = ""
+        cur["search_enc"] = ""
+        cur["search_body"] = {}
+        cur["search_ver"] = 0
+        cur["search_fail"] = int(cur.get("search_fail") or 0) + 1
+        cur["search_fail_ver"] = LEARN_VER
+        if why:
+            cur["search_fail_why"] = why[:60]
+        cur["updated"] = _now()
+        global _dirty
+        _dirty = True
+        _maybe_save()
+        return True
 
 
 def site_label(host: str) -> str:
@@ -644,8 +816,19 @@ def learn_candidates() -> list[str]:
     排序理由：**已经成功抓到过目录的站优先**（`toc_tpl` 在）——
     它证明过「这个站能给整本书」，学会了搜索就是直接变可用源；
     只 ok 过几次的站次之。同档内按成功次数降序。
+
+    ⚠ 排序**就是**筛选：一批只跑得完十几个站（`_LEARN_BUDGET_MAX=120s`），
+    而线上有 92 个待学站。所以"谁排前面"直接决定"这轮学的是不是有用的站"。
+    实测：70 个没有 `toc_tpl` 的站里混着企查查 / 酷狗音乐 / 豆包漫画 /
+    wikiwand / 大英百科 / 船艇网 —— 它们永远学不出能用的搜索，但只要
+    排在真小说站前面，就要白花一次预算。现在用「有书页证据 > 有目录模板 >
+    历史成功数」三级排序，这 42 个已证明能读整本书的站稳稳排在最前。
     """
-    out: list[tuple[int, int, str]] = []
+    book_hosts = {
+        (b.get("host") or "").strip().lower()
+        for b in books().values() if isinstance(b, dict)
+    }
+    out: list[tuple[int, int, int, str]] = []
     for host, site in sites().items():
         if not isinstance(site, dict):
             continue
@@ -655,9 +838,10 @@ def learn_candidates() -> list[str]:
             continue
         if _is_offtopic_site(host, site) or _is_video_site(host, site):
             continue
+        has_book = 1 if host in book_hosts else 0
         has_toc = 1 if (site.get("toc_tpl") or "").strip() else 0
-        out.append((-has_toc, -int(site.get("ok") or 0), host))
-    return [h for _, _, h in sorted(out)]
+        out.append((-has_book, -has_toc, -int(site.get("ok") or 0), host))
+    return [h for _, _, _, h in sorted(out)]
 
 
 def is_healthy(site: dict) -> bool:

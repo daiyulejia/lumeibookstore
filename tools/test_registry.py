@@ -285,7 +285,7 @@ def main() -> int:
             R.note_site("learn-dead.com", ok=False)     # 判死
         R.note_site("learn-junk.com", ok=True, name="菜鸟教程")  # 非小说站
         for _ in range(3):
-            R.note_site("learn-giveup.com", ok=True, search_fail=3)  # 放弃过
+            R.note_search_fail("learn-giveup.com")      # 当前版本下放弃过
 
         cand = R.learn_candidates()
         check("能拿目录的健康站入选", "learn-toc.com" in cand, str(cand))
@@ -300,6 +300,103 @@ def main() -> int:
         R.note_search_tpl("learn-plain.com", "/search?q={kw}")
         check("已经会搜了的站不再入选", "learn-plain.com" not in R.learn_candidates(),
               str(R.learn_candidates()))
+
+        # -----------------------------------------------------------------
+        print("\n—— 学站失败计数：必须带学习器版本号，否则改好学习器也救不回来 ——")
+        # 线上实测（2026-10-21）：92 个站没有搜索模板，其中 **89 个 search_fail
+        # 已经顶到 3**（永久放弃）。而查下来那批失败正是学习器自己的缺陷：
+        #   ① 验证一律按 https，老小说站大量只有 http
+        #   ② 爆破预算 6 条，高频的 `/?s=` 排在候选表第 17 位，永远轮不到
+        # 修好学习器却不动历史计数，那 89 个站仍然被挡在门外 ——
+        # 用户看到的可搜源数量**一个都不会变**，等于白修。
+        R.note_site("learn-oldfail.com", ok=True,
+                    search_fail=3)             # 旧版本记的 3 次失败（没有 ver）
+        check("旧版本记的失败不再挡人（学习器升级后自动复活）",
+              R.should_try_learn("learn-oldfail.com"),
+              str(R.known_site("learn-oldfail.com")))
+        check("学习器升级后这类站重新进入学站清单",
+              "learn-oldfail.com" in R.learn_candidates())
+        for _ in range(R.SEARCH_LEARN_MAX_TRIES - 1):
+            R.note_search_fail("learn-oldfail.com")
+        check("当前版本下失败没满额时还算候选",
+              R.should_try_learn("learn-oldfail.com"))
+        R.note_search_fail("learn-oldfail.com")
+        check("当前版本下满额才真的放弃",
+              not R.should_try_learn("learn-oldfail.com"),
+              str(R.known_site("learn-oldfail.com")))
+
+        # -----------------------------------------------------------------
+        print("\n—— 假搜索模板：旧版学出来的必须挑出来复核，假的要能撤掉 ——")
+        # 线上实测 21 个已学模板里 9 个是假的（站点不认参数、照常吐首页）。
+        # 光把学习器改好清不掉它们 —— 它们带着 search_tpl 蹲在库里，
+        # 每次搜索都白打一遍，还把"综合 N 站"撑大。
+        R.note_site("tpl-fresh.com", ok=True)
+        R.note_search_tpl("tpl-fresh.com", "/?q={kw}")
+        check("当前版本学出来的模板不需要复核",
+              "tpl-fresh.com" not in R.reverify_candidates(),
+              str(R.reverify_candidates()))
+        saved_ver = R.LEARN_VER
+        try:
+            R.LEARN_VER = saved_ver + 1      # 模拟"学习器又改好了"
+            check("★ 学习器升版后，旧模板进入待复核清单",
+                  "tpl-fresh.com" in R.reverify_candidates(),
+                  str(R.reverify_candidates()))
+        finally:
+            R.LEARN_VER = saved_ver
+
+        R.note_site("tpl-bad.com", ok=True)
+        R.note_search_tpl("tpl-bad.com", "/x?q={kw}")
+        check("撤之前它确实是「可搜源」",
+              bool((R.known_site("tpl-bad.com").get("search_tpl") or "")))
+        check("撤掉返回 True", R.clear_search_tpl("tpl-bad.com", why="复核：假搜索"))
+        check("★ 撤掉之后不再是可搜源",
+              not (R.known_site("tpl-bad.com").get("search_tpl") or ""))
+        check("撤掉算一次学习失败（别立刻又去学一遍）",
+              R.learn_tries(R.known_site("tpl-bad.com")) == 1,
+              str(R.known_site("tpl-bad.com")))
+        R.flush()
+        check("★ 落盘的是空串而不是「键消失」（键消失会在合并时从盘上复活）",
+              disk()["sites"]["tpl-bad.com"].get("search_tpl") == "",
+              str(disk()["sites"]["tpl-bad.com"].get("search_tpl")))
+        check("撤掉后它回到待学队列（还能再学一次真的）",
+              "tpl-bad.com" in R.learn_candidates())
+        check("本来就没模板的站，撤掉返回 False（不能凭空记一次失败）",
+              R.clear_search_tpl("tpl-fresh.com") is True
+              and R.clear_search_tpl("learn-toc.com") is False)
+
+        # -----------------------------------------------------------------
+        print("\n—— 学站探测词：必须是从页面标题收拾出来的真书名 ——")
+        # 库里的 title 存的是**页面标题**：`药鼎仙途最新章节列表` /
+        # `《神通者》-天蚕土豆-章节目录`。拿这种串去搜，一搜一个空，
+        # 于是明明有搜索接口的站也被记成"学不会"。
+        # 实测：29 个站演练用脏标题只学会 3 个。
+        R.note_book("http://pt.com/1", title="药鼎仙途最新章节列表",
+                    host="pt.com", ok=True)
+        check("★ 页面标题被收拾成能搜的书名",
+              R.probe_title("pt.com") == "药鼎仙途", repr(R.probe_title("pt.com")))
+        check("「书名-作者-站点」只取书名",
+              R.clean_book_title("《神通者》-天蚕土豆-章节目录") == "神通者",
+              repr(R.clean_book_title("《神通者》-天蚕土豆-章节目录")))
+        check("短书名不许被当成噪声丢掉（「活着」是合法书名）",
+              R.clean_book_title("活着") == "活着", repr(R.clean_book_title("活着")))
+        R.note_site("pt2.com", ok=True, name="落霞读书")
+        R.note_book("http://pt2.com/1", title="落霞读书", host="pt2.com", ok=True)
+        check("书名其实就是站名的记录不拿来当探测词",
+              R.probe_title("pt2.com") == "", repr(R.probe_title("pt2.com")))
+
+        # -----------------------------------------------------------------
+        print("\n—— 学站清单：读过整本书的站排最前 ——")
+        # 一批只跑得完十几个站，而线上有 92 个待学站 —— 排序就是筛选。
+        # 70 个没有目录模板的站里混着企查查/酷狗音乐/豆包漫画/大英百科。
+        R.note_site("kb-book.com", ok=True)                     # 只有书，没目录
+        R.note_book("http://kb-book.com/1", title="三体",
+                    host="kb-book.com", ok=True)
+        R.note_site("kb-toc.com", ok=True, toc_tpl="/mulu/")    # 只有目录，没书
+        cand2 = R.learn_candidates()
+        check("★ 有书页证据（真读过整本书）的排在只有目录模板的前面",
+              "kb-book.com" in cand2 and "kb-toc.com" in cand2
+              and cand2.index("kb-book.com") < cand2.index("kb-toc.com"),
+              str(cand2))
 
         # -----------------------------------------------------------------
         print("\n—— 学站预算：撞上限必须报 pending ——")
@@ -325,7 +422,11 @@ def main() -> int:
             hosts = ["stall1.com", "stall2.com", "stall3.com"]
             D._learn_budget = lambda n: 0.01
             D.registry.should_try_learn = lambda h: True
-            D.fetch_text = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("停在这"))
+            # ⚠ 首页必须给**非空** HTML —— 空 HTML 现在会走"首页打不开"快路径
+            #   直接失败返回（不爆破），那样三个站都在预算内跑完了，
+            #   这条判据就永远测不到 pending。要测的是"学到一半撞预算"。
+            D.fetch_text = lambda *a, **k: ("<html>" + "x" * 800 + "</html>",
+                                            "https://x.com/")
             # 爆破那一步也必须卡住 —— 不然它会真的去连 stall1.com 这种不存在的域名
             D.sitelearn.learn_site = lambda *a, **k: (time.sleep(0.6), {})[1]
             rep = D.learn_sites(hosts)
