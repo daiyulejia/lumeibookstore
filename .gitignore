@@ -13,6 +13,13 @@ dist/
 !app/static/dist/
 !app/static/dist/**
 
+# 静态预压缩产物（tools/gzip_static.py 生成，ship 每次重建）
+# 为什么不进版本库：它是**源文件的纯派生品**（gzip(源文件) 一个函数就能还原），
+# 进了库只会让每次改一行 JS 都拖一个二进制 diff 进来。
+# 不进库也安全：app/main.py::_gzip_response() 找不到 .gz 就回退明文，
+# 也就是说缺了它**不会坏**，只是少了体积优化 —— 正确性不依赖它。
+app/static/**/*.gz
+
 # 前端依赖：几万个文件，机器上有 npm 就能重装
 frontend/node_modules/
 

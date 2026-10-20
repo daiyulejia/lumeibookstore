@@ -144,6 +144,14 @@ export const api = {
 
 /* ---------- Toast ---------- */
 export function toast(msg, kind) {
+  // ⚠ 令牌门在场时，不再弹"需要访问令牌"的红条。
+  //   实测（线上、不带 t= 直接打开）：门弹出来的同时，书架/文件各弹一条
+  //   "读取书架失败：需要访问令牌"，三条红条正压在门的输入框上 ——
+  //   用户想粘贴令牌都点不到，整页又被半透明遮罩蒙着，观感就是"挂了"。
+  //   门已经把该说的话说清楚了，**令牌相关的提示统一由门负责**。
+  //   注意别用 /令牌/ 做判据："令牌不对"必须照常弹出来（那是门里的反馈）。
+  if (kind === "err" && /需要访问令牌/.test(String(msg))
+      && document && document.querySelector(".gate")) return;
   const el = document.createElement("div");
   el.className = "toast" + (kind ? " " + kind : "");
   el.textContent = msg;

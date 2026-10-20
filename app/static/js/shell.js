@@ -74,6 +74,13 @@ function showAuthGate() {
   //   的结果是**三四个输入框叠在一起**，用户输完按回车，只有最上面那个消失，
   //   下面还压着 —— 看起来像"令牌输对了也进不去"。已经有一个就别再造。
   if (document.querySelector(".gate")) return;
+  // 门出现之前，各数据面板可能已经各自 catch 了 401、各弹了一条红条
+  // （"读取书架失败：需要访问令牌"…）。它们会正压在下面的输入框上，
+  // 用户想粘贴令牌都点不到 —— 实测线上就是这样，"页面像挂了"。
+  // 门已经解释了原因，把这些重复提示先清掉。
+  $$("#toasts .toast").forEach(el => {
+    if (/需要访问令牌/.test(el.textContent || "")) el.remove();
+  });
   const d = document.createElement("div");
   d.className = "drawer-host";
   d.innerHTML = `

@@ -59,6 +59,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import mimetypes
+import os
 import re
 import socket
 import threading
@@ -2065,10 +2067,59 @@ class _NoCacheCode(StaticFiles):
     """
 
     async def get_response(self, path: str, scope):
+        # 预压缩优先：构建期由 tools/gzip_static.py 生成 `<name>.gz`。
+        # ⚠ 只作用于 /static（这个类就是 /static 的挂载点），不碰 /api ——
+        #   所以 /api/search 的 SSE 不会被 gzip 攒块拖成"最后一起出"。
+        #   为什么不用 GZipMiddleware：它作用于**所有**响应，正好会压 SSE。
+        hit = self._gzip_response(path, scope)
+        if hit is not None:
+            return hit
         resp = await super().get_response(path, scope)
         if resp.status_code == 200 and path.endswith((".js", ".css")):
             resp.headers["Cache-Control"] = "no-cache, must-revalidate"
         return resp
+
+    #: 允许回预压缩版本的扩展名（文本类；图片/字体本身已压缩）
+    _GZ_EXT = (".js", ".css", ".html", ".json", ".svg")
+
+    def _gzip_response(self, path: str, scope):
+        """有 `.gz` 且比源新、且客户端接受 gzip → 直接发它。否则 None（走原路径）。"""
+        if not path.lower().endswith(self._GZ_EXT):
+            return None
+        enc = ""
+        for k, v in scope.get("headers") or []:
+            if k.lower() == b"accept-encoding":
+                enc = v.decode("latin-1", "ignore")
+                break
+        if "gzip" not in enc.lower():
+            return None
+        try:
+            base = os.path.realpath(self.directory)
+            full = os.path.realpath(os.path.join(base, path.replace("/", os.sep)))
+            # 穿越防护：越界就交回原来的 StaticFiles 处理（它会 404）
+            if full != base and not full.startswith(base + os.sep):
+                return None
+            gz = full + ".gz"
+            if not (os.path.isfile(full) and os.path.isfile(gz)):
+                return None
+            # gz 比源旧 = 有人改了源码却忘了重新预压缩。
+            # 这时发旧字节比发未压缩更糟（用户会看到"改了没生效"），
+            # 所以回头走原文件 —— 正确性优先于体积。
+            if os.path.getmtime(gz) < os.path.getmtime(full):
+                return None
+            data = Path(gz).read_bytes()
+        except OSError:
+            return None
+        ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+        headers = {
+            "content-encoding": "gzip",
+            "vary": "Accept-Encoding",
+            "content-type": ctype,
+            "content-length": str(len(data)),
+        }
+        if path.endswith((".js", ".css")):
+            headers["cache-control"] = "no-cache, must-revalidate"
+        return Response(content=data, status_code=200, headers=headers)
 
 
 app.mount("/static", _NoCacheCode(directory=STATIC_DIR), name="static")

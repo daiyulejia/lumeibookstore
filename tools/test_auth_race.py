@@ -36,6 +36,7 @@ import argparse
 import json
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -270,8 +271,111 @@ def main() -> int:
             info("组件还停在下骨架态（可能仍在等/重试）")
         else:
             ok("组件没有永久卡在加载态")
+
+        # ---- 令牌门能不能**真的用起来** ----
+        # 这一段直接编码线上"看起来挂了"（2026-10-21 实测）：
+        #   不带 t= 打开，画面上只有一层半透明遮罩，下面压着三条红条
+        #   「读取书架失败：需要访问令牌」，令牌输入框被红条盖住 ——
+        #   输不了令牌，整页又点不动。
+        # 所以要判的不是"门存在"，而是**输入框能不能被点到**
+        # （用 elementFromPoint 取中心点，谁在最上层就是谁）。
+        needs_token = False
+        try:
+            urllib.request.urlopen(base + "/api/library", timeout=8).read()
+        except urllib.error.HTTPError as e:  # noqa: PERF203
+            needs_token = e.code == 401
+        except Exception:  # noqa: BLE001
+            pass
+        if not needs_token:
+            info("这个环境不需要令牌（本地免鉴权），跳过令牌门断言")
+        else:
+            if b2.js("!!document.querySelector('.gate')"):
+                ok("令牌门出现了")
+            else:
+                bad("401 了却没有令牌门 —— 用户完全不知道该干什么")
+            noise = b2.js("""Array.from(document.querySelectorAll('#toasts .toast'))
+                .filter(e => /需要访问令牌/.test(e.textContent||'')).length""") or 0
+            if noise:
+                bad(f"门旁边还叠着 {noise} 条「需要访问令牌」红条（会压住输入框）")
+            else:
+                ok("没有重复的令牌红条压住门")
+            hit = b2.js("""(function(){
+                var i=document.querySelector('#tokIn');
+                if(!i) return 'no-input';
+                var r=i.getBoundingClientRect();
+                if(!r.width || !r.height) return 'invisible';
+                var el=document.elementFromPoint(r.left+r.width/2, r.top+r.height/2);
+                return !!el && (el===i || i.contains(el));
+            })()""")
+            if hit is True:
+                ok("令牌输入框点得到（没被别的元素盖住）")
+            else:
+                bad(f"令牌输入框点不到（{hit}）—— 用户输不了令牌，观感就是挂了")
+            if b2.js("!!document.querySelector('#tokGo')"):
+                ok("门里有「进入」按钮")
+            else:
+                bad("门里没有「进入」按钮")
     finally:
         b2.close()
+
+    # -------------------------------------------------------------
+    # 6. 令牌门的**可操作性**（不依赖"这个环境要不要令牌"，所以永远有牙）
+    #
+    #    做法：把 /api/* 全部打成 401，等于强制进入"没令牌"状态。
+    #    这样本地（免鉴权）也能跑，ship 里也不会因为"本地不要令牌"而跳过。
+    #
+    #    为什么要专门验这个（2026-10-21 线上实况）：
+    #      用户从书签打开不带 t= 的地址，画面上只有一层半透明遮罩，
+    #      遮罩下面压着三条红条「读取书架失败：需要访问令牌」，
+    #      令牌输入框正好被红条盖住 —— 输不了令牌，整页又点不动。
+    #      用户的原话是"线上挂了"。所以判据必须是
+    #      **输入框能不能被点到**，不是"门存不存在"。
+    section("6. 令牌门可操作（强制 401）")
+    b3 = Browser()
+    try:
+        b3.t.call("Page.addScriptToEvaluateOnNewDocument", source="""
+          (function(){
+            var of = window.fetch;
+            window.fetch = function(u, o){
+              var s = String(u);
+              if (s.indexOf('/api/') >= 0) {
+                return Promise.resolve(new Response(
+                  '{"error":"需要访问令牌"}',
+                  {status: 401, headers: {'Content-Type': 'application/json'}}));
+              }
+              return of.apply(this, arguments);
+            };
+          })();
+        """)
+        b3.goto(base + "/", settle=9.0)
+        if b3.js("!!document.querySelector('.gate')"):
+            ok("401 时弹出令牌门")
+        else:
+            bad("401 时没有令牌门 —— 用户不知道要做什么")
+        noise = b3.js("""Array.from(document.querySelectorAll('#toasts .toast'))
+            .filter(e => /需要访问令牌/.test(e.textContent||'')).length""") or 0
+        if noise:
+            bad(f"门旁边还叠着 {noise} 条「需要访问令牌」红条（会压住输入框）")
+        else:
+            ok("没有重复的令牌红条压住门")
+        hit = b3.js("""(function(){
+            var i=document.querySelector('#tokIn');
+            if(!i) return 'no-input';
+            var r=i.getBoundingClientRect();
+            if(!r.width || !r.height) return 'invisible';
+            var el=document.elementFromPoint(r.left+r.width/2, r.top+r.height/2);
+            return !!el && (el===i || i.contains(el));
+        })()""")
+        if hit is True:
+            ok("令牌输入框点得到（没被别的元素盖住）")
+        else:
+            bad(f"令牌输入框点不到（{hit}）—— 用户输不了令牌，观感就是挂了")
+        if b3.js("!!document.querySelector('#tokGo')"):
+            ok("门里有「进入」按钮")
+        else:
+            bad("门里没有「进入」按钮")
+    finally:
+        b3.close()
 
     print("\n" + "=" * 62)
     if bad_n == 0:

@@ -229,6 +229,10 @@ LIVE_SUITES = [
     # 榜单整块不显示，而**本地因 /api 免令牌永远不复现**。
     # 这条不看结果看时序（请求发车时 authReady 了没），本地也有牙。
     ("test_auth_race.py", "鉴权时序"),
+    # 静态资源压缩（纯 HTTP，秒级）。实测线上未压缩时首屏要 5~6 秒才挂上
+    # Vue（638KB 明文）—— 这条既钉"该压的压了"，也钉
+    # "别图省事挂 GZipMiddleware"（那会把 SSE 攒块，搜书不再逐条出结果）。
+    ("test_static_gzip.py", "静态压缩"),
     # 书架页（Vue 迁移后）。test_buttons 的 E 组只验"点了会怎样"，
     # 验不到渲染层：组件挂错容器（真踩过，一个 app 管多处 DOM，
     # 书架被渲进榜单区内部、页面静默空白）、插画消失、请求回声。
@@ -294,6 +298,7 @@ LIVE_ARGS = {
     "test_telemetry.py": "--url",
     "test_disconnect.py": "--url",
     "test_auth_race.py": "--url",
+    "test_static_gzip.py": "--base",
     "test_shelf_ui.py": "--url",
     "test_files_ui.py": "--url",
     "test_discover_ui.py": "--url",
@@ -444,6 +449,29 @@ def _find_node_bin() -> tuple[str | None, str | None]:
     return None, None
 
 
+def _ensure_gzip() -> bool:
+    """构建完立刻做静态资源预压缩（`tools/gzip_static.py`）。
+
+    ⚠ 为什么这一步必须在 ship 里、不能靠"记得手动跑"：
+      `app/main.py` 的静态挂载只在 **.gz 比源文件新** 时才发 gz，
+      否则回退明文（宁可慢也不发旧字节）。所以"改了前端却忘了预压缩"
+      不会出错，只会**悄悄退回 638KB 明文** —— 首屏又变 6 秒，
+      而且所有测试都是绿的（它们不测体积）。
+      把它钉在构建之后，这个退化就不可能发生。
+    """
+    try:
+        import gzip_static  # 同目录
+    except Exception as e:  # noqa: BLE001
+        print(f"  ✗ 预压缩模块导入失败：{type(e).__name__}: {e}")
+        return False
+    try:
+        gzip_static.build()
+    except Exception as e:  # noqa: BLE001
+        print(f"  ✗ 静态预压缩失败：{type(e).__name__}: {e}")
+        return False
+    return True
+
+
 def build_frontend(dry_run: bool = False) -> bool:
     """构建前端 + 自检产物。没有 node 时**不阻断**（只是警告）。
 
@@ -455,13 +483,13 @@ def build_frontend(dry_run: bool = False) -> bool:
     """
     if not FRONTEND.exists():
         print("  ~ 没有 frontend/ 目录，跳过（还没迁到 Vue？）")
-        return True
+        return _ensure_gzip()
 
     node_dir, npm = _find_node_bin()
     if not npm:
         print("  ~ 找不到 node/npm，跳过构建（用现有产物继续）")
         print("    装了 node 之后重跑，产物才会是最新的。")
-        return True
+        return _ensure_gzip()
 
     env = dict(os.environ)
     for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
@@ -482,7 +510,7 @@ def build_frontend(dry_run: bool = False) -> bool:
     if r.returncode == 0:
         tail = lines[-1:] or [""]
         print(f"  ✓ 构建 + 产物自检  {tail[0][:70]}")
-        return True
+        return _ensure_gzip()
 
     print("  ✗ 前端构建/自检失败 —— 产物没更新，**不能上线**")
     # 和 run_suite 同理：把 ✗ 行连上下文抓出来，别让人只看个"失败"
