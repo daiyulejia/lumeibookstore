@@ -681,9 +681,36 @@ class Engine:
             # 联网兜底也是**串行**加在后面的，同样得看总预算 ——
             # 否则前面 20 秒扇出 + 10 秒联网 = 又回到 30 秒。
             wb = budget_slice(t_start, 30.0, DISCOVER_TOTAL_BUDGET)
+            # ⚠ 「断开后不再出去搜」这条判断**只写在 `_discover` 内部**，这里不重复。
+            #   联网兜底一轮要 3~10 秒（两个搜索引擎 + 十几个站核实），
+            #   而断开后没有任何人还在听 —— 纯白烧，还去撞搜索站的反爬配额。
+            #   这段原先**完全不认 should_stop**，于是：
+            #     · 断开后照样跑完；
+            #     · `aborted` 报 False → 断连止损在换一个掐断时机时**偶发假红**
+            #       （ship 实测三轮全 False，单独重跑又绿）。
+            #   修法是在 `_discover` 的"逐个词"循环里检查 —— 那里既能拦住
+            #   进入前就断开的，也能拦住"多词搜到一半断了"的。
+            #   这里再写一遍外层检查是**死代码**（内层第一轮就 break），
+            #   反证当场证明了这一点（删掉外层检查，测试照样绿），所以删掉。
             if web is not None and wb > 0.0:
                 extra = self._discover(web, keyword, on_result, on_progress,
-                                       search_kw=search_kws)
+                                       search_kw=search_kws, should_stop=_stop)
+                if extra:
+                    if probe:
+                        # 联网换来的候选必须探测 —— 它的价值就在于"本地没有、
+                        # 远端有"，不验一下等于把不知道能不能读的东西端上去。
+                        self.probe_all(
+                            extra, on_verified=on_verified, top=len(extra),
+                            should_stop=_stop,
+                            budget=budget_slice(t_start, PROBE_BUDGET,
+                                                DISCOVER_TOTAL_BUDGET))
+                    results = rank(results + extra, keyword)
+                    results = self.refine(results, keyword)
+            elif web is not None:
+                logger.info("跳过联网兜底：总预算已用完（已耗 %.1fs）",
+                            time.time() - t_start)
+                extra = self._discover(web, keyword, on_result, on_progress,
+                                       search_kw=search_kws, should_stop=_stop)
                 if extra:
                     if probe:
                         # 联网换来的候选必须探测 —— 它的价值就在于"本地没有、
@@ -761,6 +788,7 @@ class Engine:
         on_result: Optional[Callable[[BookResult], None]],
         on_progress: Optional[Callable[[str, str, bool], None]],
         search_kw: Optional[object] = None,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> list[BookResult]:
         """唤起联网发现来源，拿回它的候选。
 
@@ -780,7 +808,13 @@ class Engine:
             web.set_log(on_progress)
             extra: list[BookResult] = []
             seen_u: set[str] = set()
-            for look_for in looks:
+            for i_look, look_for in enumerate(looks):
+                # 多词并列最长时这里要搜好几个词，每个词都是一次完整联网搜索。
+                # 客户端走了就别再搜下一个 —— 没人会看到结果。
+                if should_stop and should_stop():
+                    logger.info("客户端已断开，联网兜底提前收手（还有 %d 个词没搜）",
+                                len(looks) - i_look)
+                    break
                 for it in (web.search(look_for) or []):
                     u = getattr(it, "url", "") or ""
                     if u and u in seen_u:

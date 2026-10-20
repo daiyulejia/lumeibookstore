@@ -220,9 +220,25 @@ _LEARN_WORKERS = 3
 #   正常也得 4~10 秒，14 秒顶多覆盖 3~4 个站。
 #   所以改成「每站 8 秒、上限 120 秒」：小批量跑得完，大批量也总有个头，
 #   超出的部分由下面的 `pending` 如实报出来，下一轮接着学。
-_LEARN_BUDGET_PER_SITE = 8.0
+_LEARN_BUDGET_PER_SITE = 12.0
 _LEARN_BUDGET_MIN = 14.0
 _LEARN_BUDGET_MAX = 120.0
+# 学站时抓「首页」的超时（秒，`retries=0`，最多两次：https 失败再试 http）。
+#
+# ⚠ 为什么必须显式限定 —— 线上实测（2026-10-21 03:20）：
+#       `站点学习超预算，先收手（还剩 23 个没学完）`，接口耗时 120011ms
+#   也就是一整批 120 秒预算，只学完 0~1 个站，剩下 23 个原样留着。
+#   根因：这一段抓首页**没走 fast_mode**，用的是全站默认
+#       retries=3 + timeout=25s → 一个打不通的站最坏 4×25=100 秒，
+#       https 再叠一次 http 兜底 = **200 秒**。
+#   于是 `_LEARN_BUDGET_PER_SITE=8` 这个预算假设跟实际差了一个数量级：
+#   3 个线程、120 秒，只够跑完一两个"死站"。
+#   后果是来源库 113 个站里 97 个永远学不到搜索模板（可搜源只有 16 个），
+#   而"每夜 3 批"的节奏按这个吞吐要跑几十天。
+#
+# 学站是**后台的锦上添花**，不是用户正在等的请求 —— 一个站打不通就该
+# 十几秒内放弃、换下一个，而不是陪着它把超时重试耗完。
+_LEARN_FETCH_TIMEOUT = 6.0
 
 
 def _learn_budget(n_targets: int) -> float:
@@ -274,13 +290,16 @@ def learn_sites(
 
     def _learn_one(host: str) -> bool:
         try:
-            # 先用首页 —— 搜索框 / 搜索链接都在那儿
+            # 先用首页 —— 搜索框 / 搜索链接都在那儿。
+            # ⚠ 必须 fast_mode：这里跟着的是"整个学站任务"的时钟，
+            #   不是用户请求的时钟（见 _LEARN_FETCH_TIMEOUT 的注释）。
             page_url = f"https://{host}/"
-            try:
-                html, final = fetch_text(page_url, with_url=True)
-            except Exception:  # noqa: BLE001
-                page_url = f"http://{host}/"      # 老站只有 http
-                html, final = fetch_text(page_url, with_url=True)
+            with fast_mode(retries=0, timeout=_LEARN_FETCH_TIMEOUT):
+                try:
+                    html, final = fetch_text(page_url, with_url=True)
+                except Exception:  # noqa: BLE001
+                    page_url = f"http://{host}/"      # 老站只有 http
+                    html, final = fetch_text(page_url, with_url=True)
         except Exception as e:  # noqa: BLE001
             logger.debug("学 %s 时抓首页失败: %s", host, e)
             html, final = "", f"https://{host}/"

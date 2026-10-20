@@ -339,6 +339,51 @@ def main() -> int:
              D.sitelearn.learn_site) = saved
 
         # -----------------------------------------------------------------
+        print("\n—— 学站吞吐：单站成本必须与预算假设同量级 ——")
+        # 线上实测（2026-10-21 03:20）：
+        #     `站点学习超预算，先收手（还剩 23 个没学完）`，接口耗时 120011ms
+        # 一整批 120 秒只学完 0~1 个站。根因是抓首页那一步**没走 fast_mode**，
+        # 用全站默认 retries=3 + timeout=25s → 一个死站最坏 100 秒（https 再
+        # 叠 http 兜底 200 秒），而预算按"每站 8 秒"算。差了一个数量级。
+        # 后果：113 个站里 97 个永远学不到模板（可搜源只有 16 个）。
+        #
+        # 判据不能写"耗时小于 X 秒"（随站点快慢漂），要验**抓首页时实际用的
+        # 线程局部参数** —— retries 必须 0、timeout 必须有界。
+        from app import utils as _U
+        _seen: list[tuple[int, float | None]] = []
+
+        def _probe_fetch(url, *a, **k):
+            _seen.append((_U.current_retries(), _U.current_timeout()))
+            raise RuntimeError("打不通")     # 模拟死站：走最短路径
+
+        saved2 = (D.registry.should_try_learn, D.fetch_text,
+                  D.sitelearn.learn_site, D._learn_budget)
+        try:
+            D.registry.should_try_learn = lambda h: True
+            D.fetch_text = _probe_fetch
+            D.sitelearn.learn_site = lambda *a, **k: {}
+            D._learn_budget = lambda n: 5.0
+            D.learn_sites(["dead1.com", "dead2.com"])
+        finally:
+            (D.registry.should_try_learn, D.fetch_text,
+             D.sitelearn.learn_site, D._learn_budget) = saved2
+
+        check("学站时真的去抓了首页（否则下面等于没测）", len(_seen) >= 2,
+              f"抓了 {len(_seen)} 次")
+        check("★ 抓首页不重试（retries=0）—— 死站不该被重试 3 次耗掉 100 秒",
+              all(r == 0 for r, _ in _seen), f"{_seen}")
+        check("★ 抓首页超时受控（≤ _LEARN_FETCH_TIMEOUT，不是全站默认 25 秒）",
+              all((t or 99) <= D._LEARN_FETCH_TIMEOUT + 0.01 for _, t in _seen),
+              f"{_seen}（上限 {D._LEARN_FETCH_TIMEOUT}）")
+        # 预算假设必须与最坏单站成本同量级，否则 pending 数（"还剩 N 个"）
+        # 就是假的：预算说能跑 15 个，实际一个都跑不完。
+        worst_per_site = 2 * D._LEARN_FETCH_TIMEOUT      # https + http 兜底
+        check("★ 每站预算 ≥ 最坏单站成本（https+http 两次抓取）",
+              D._LEARN_BUDGET_PER_SITE >= worst_per_site - 0.01,
+              f"每站预算 {D._LEARN_BUDGET_PER_SITE}s < 最坏成本 {worst_per_site}s —— "
+              f"「还剩 N 个」这个数会失真")
+
+        # -----------------------------------------------------------------
         print("\n—— 护栏：全清要显式确认 ——")
         # 先落一次盘：缩水护栏是拿「盘上那份」当基准的，
         # 上面这些 note_* 都还压在内存里（落盘有 1 秒节流）

@@ -101,6 +101,8 @@ RELEVANCE = ROOT / "app" / "relevance.py"
 # HTTP 客户端复用（tools/test_http_client.py）
 UTILS = ROOT / "app" / "utils.py"
 HTTP_TEST = ROOT / "tools" / "test_http_client.py"
+# 学站吞吐（tools/test_registry.py 的「学站吞吐」组）
+DISCOVERY = ROOT / "app" / "discovery.py"
 
 
 @dataclass
@@ -621,6 +623,46 @@ MUTATIONS: list[Mutation] = [
              '                     + [t for t, _ in (rpt.get("loose") or [])[:3]])',
              '                例子=[])',
              BUDGET_TEST),
+
+    # ------- 学站吞吐：单站成本必须与预算同量级 -------
+    # 线上实测：120 秒预算只学完 0~1 个站（还剩 23 个），因为抓首页没走
+    # fast_mode，一个死站最坏 200 秒。见 app/discovery.py 的注释。
+    Mutation("learn", "学站抓首页不走 fast_mode（死站最坏 200 秒）",
+             DISCOVERY,
+             "            with fast_mode(retries=0, timeout=_LEARN_FETCH_TIMEOUT):\n"
+             "                try:\n"
+             "                    html, final = fetch_text(page_url, with_url=True)\n"
+             "                except Exception:  # noqa: BLE001\n"
+             "                    page_url = f\"http://{host}/\"      # 老站只有 http\n"
+             "                    html, final = fetch_text(page_url, with_url=True)",
+             "            try:\n"
+             "                html, final = fetch_text(page_url, with_url=True)\n"
+             "            except Exception:  # noqa: BLE001\n"
+             "                page_url = f\"http://{host}/\"      # 老站只有 http\n"
+             "                html, final = fetch_text(page_url, with_url=True)",
+             REGISTRY_TEST),
+    Mutation("learn", "每站预算比最坏单站成本还小（「还剩 N 个」变成假数）",
+             DISCOVERY,
+             "_LEARN_BUDGET_PER_SITE = 12.0",
+             "_LEARN_BUDGET_PER_SITE = 8.0",
+             REGISTRY_TEST),
+
+    # ------- 联网兜底也要认「客户端已断开」（test_discover_fallback §6）-------
+    # 这一段原先完全不认 should_stop，而它是最贵的一段（3~10 秒）。
+    # 后果：用户走了还在往外搜，且 aborted 漏报 → 断连测试偶发假红。
+    # ⚠ 只在 `_discover` 内部检查一次就够了（外层再查是死代码，已删）；
+    #   这条突变就是"内部不检查"——反证能抓住。
+    Mutation("discstop", "多词联网兜底中途断了也不停（继续搜下一个词）",
+             ENGINE,
+             "                if should_stop and should_stop():\n"
+             "                    logger.info(\"客户端已断开，联网兜底提前收手（还有 %d 个词没搜）\",\n"
+             "                                len(looks) - i_look)\n"
+             "                    break",
+             "                if False:\n"
+             "                    logger.info(\"客户端已断开，联网兜底提前收手（还有 %d 个词没搜）\",\n"
+             "                                len(looks) - i_look)\n"
+             "                    break",
+             FALLBACK_TEST),
 
     # ------- HTTP 客户端：切换 verify 不许关掉别人的 client -------
     # 线上实证（02:54 搜《斗破苍穹》）：两个不同的源在同一秒报

@@ -293,6 +293,77 @@ def _run() -> int:
         bad(f"有 {len(wrong)} 个阶段的收手没汇到 _stop()：{wrong}"
             f"（共 {len(phase_calls)} 个调用点）—— 那些阶段的收手不会被记进 stats")
 
+    # --------------------------------------------------------------
+    section("6. 联网兜底阶段也必须认「客户端已断开」")
+    # 为什么单独一条：扇出/探测/抽样三个阶段都认 should_stop，只有
+    # **联网兜底**这一段原先完全不认 —— 而它恰恰是最贵的一段
+    # （两个搜索引擎 + 十几个站核实，3~10 秒）。
+    # 后果有两个：
+    #   ① 用户走了之后还在往外搜，白烧配额；
+    #   ② 断开信号落在这里时 `aborted` 报 False —— 于是「断连止损」在
+    #      ship 里偶发假红（换一个掐断时机就红，单独重跑又绿）。
+    class WebDuringDisconnect(FakeWeb):
+        """第二次被调用前把自己标成"客户端已断开"。
+
+        用多词关键词（两个等长词）才会触发 `_discover` 里"逐个词搜"的循环，
+        于是第一轮搜完之后就有机会检查断开、不去搜第二个词。
+        """
+
+        def search(self, kw):
+            with self.lock:
+                self.calls += 1
+            stop_flag["v"] = True        # 模拟：联网搜索期间用户关掉了页面
+            return [BookResult(title=KW, author="桑沃", source=self.name,
+                               url="http://web/1")]
+
+    stop_flag = {"v": False}
+    web2 = WebDuringDisconnect()
+    st7: dict = {}
+    eng7 = E.Engine(sources=[EmptySrc(), web2])
+    eng7.search("余华 活着", probe=False, sample=False, discover=True,
+                stats=st7, should_stop=lambda: stop_flag["v"])
+    if web2.calls == 1:
+        ok("多词联网兜底搜完第一个词后，发现已断就不再搜下一个")
+    else:
+        bad(f"联网兜底搜了 {web2.calls} 次（应为 1）—— 断开后还在往外搜")
+    if st7.get("aborted") is True:
+        ok("断开落在联网兜底阶段，aborted 也如实为 True（不再漏报）")
+    else:
+        bad(f"断开落在联网兜底阶段，aborted={st7.get('aborted')!r} —— "
+            f"收手信号没记进 stats，断连测试会因此偶发假红")
+
+    # 反向：没断开时必须两个词都搜 —— 否则上面那条可能是"永远只搜一次"
+    stop_flag["v"] = False
+    web3 = WebDuringDisconnect()
+    web3.search = FakeWeb.search.__get__(web3, type(web3))   # 用不打标记的原版
+    st8: dict = {}
+    eng8 = E.Engine(sources=[EmptySrc(), web3])
+    eng8.search("余华 活着", probe=False, sample=False, discover=True, stats=st8)
+    if web3.calls >= 1:
+        ok("没断开时联网兜底照常搜（上面的判据不是恒真）")
+    else:
+        bad("没断开却没联网 —— 兜底被误杀")
+
+    # —— 断开发生在「扇出结束之后、联网开始之前」这一瞬 ——
+    # 窗口很窄，但只要它存在，联网兜底就该被拦下（一次 3~10 秒的对外请求）。
+    # 构造方式：让唯一那个本地源在返回空的同时把 stop 置位 ——
+    # 扇出到此已经"尽力且答完"（exhausted=True），随后的收手检查必须拦住联网。
+    class EmptyAndStop(EmptySrc):
+        def search(self, kw):
+            ev_stop.set()       # 答完的同一瞬间，客户端走了
+            return []
+
+    ev_stop = threading.Event()
+    web4 = FakeWeb()
+    st9: dict = {}
+    eng9 = E.Engine(sources=[EmptyAndStop(), web4])
+    eng9.search("单词书", probe=False, sample=False, discover=True,
+                stats=st9, should_stop=ev_stop.is_set)
+    if web4.calls == 0:
+        ok("断开落在「扇出之后、联网之前」，联网兜底被拦下（不白烧一次对外搜索）")
+    else:
+        bad(f"断开后仍然联网搜了 {web4.calls} 次 —— 这一段的收手检查没接上")
+
     print("\n" + "=" * 62)
     print(f"通过 {ok_n} · 失败 {bad_n}")
     if bad_n:
