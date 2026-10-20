@@ -387,7 +387,21 @@ def main() -> int:
         # 每次搜索都白打一遍，还把"综合 N 站"撑大。
         R.note_site("tpl-fresh.com", ok=True)
         R.note_search_tpl("tpl-fresh.com", "/?q={kw}")
-        check("当前版本学出来的模板不需要复核",
+        # ⚠ 这条判据原来是反的（「当前版本学出来的模板不需要复核」）——
+        #   那是把当时的实现当成了规格。实际代价我踩到了：学站阶段为了省请求
+        #   只做单轮控制实验，而单轮会翻转（zxs8 限流吐静态页被判"真"），
+        #   盖上当前版本的章之后一整个复核轮次都没查它。
+        #   现场复发：手动学一轮又学出 www.xxsy.net / www.whxss.com（以前判过假的）。
+        #   信任链应当是：**学过 = 候选，两轮复核判真才免检**。
+        check("★ 刚学到的模板**必须**进复核队列（学过 ≠ 核实过）",
+              "tpl-fresh.com" in R.reverify_candidates(),
+              str(R.reverify_candidates()))
+        check("★ 学到的模板不盖「已核实」章（search_ver 写 0）",
+              int(R.known_site("tpl-fresh.com").get("search_ver") or 0) == 0,
+              str(R.known_site("tpl-fresh.com").get("search_ver")))
+        # 复核判真之后才盖章，然后才不再复核
+        R.note_site("tpl-fresh.com", ok=True, search_ver=R.LEARN_VER)
+        check("复核判真（盖章）之后才免检",
               "tpl-fresh.com" not in R.reverify_candidates(),
               str(R.reverify_candidates()))
         saved_ver = R.LEARN_VER

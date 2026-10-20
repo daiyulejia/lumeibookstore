@@ -650,9 +650,20 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
         for k, v in notes.items():
             if v not in (None, ""):
                 cur[k] = v
-        # 盖上"用哪版学习器学出来的"。将来学习器再改进时，靠它能挑出
-        # 需要复核的旧模板（见 `reverify_candidates()`）。
-        cur["search_ver"] = LEARN_VER
+        # ⚠ **学到的模板不盖「已核实」的章**（2026-10-21 深夜改）。
+        #   写 0 而不是 LEARN_VER，是为了让它一定进一次完整复核
+        #   （`reverify_candidates()` 只挑 `search_ver < LEARN_VER` 的）。
+        #
+        #   为什么必须这样：「学过」和「核实过」是两件事。
+        #   学站阶段为了省请求只做**单轮**控制实验（`rounds=1`），
+        #   而单轮会翻转 —— 实测 `www.zxs8.net` 限流吐静态页那一轮就被判成"真"，
+        #   盖上当前版本的章之后**一整个复核轮次都没查它**，直到我手动实测
+        #   Jaccard=1.00 才发现它是铁假。
+        #   现场还能看到同样的复发：这一轮学站又学出 `www.xxsy.net` /
+        #   `www.whxss.com`（都是以前判过假的），它们带着"已核实"章直接上岗。
+        #   所以信任链收紧成：学过 = 候选，连夜复核（两轮）判真才免检。
+        #   盖章只发生在 `discovery.reverify_sites()` 的 `real` 分支。
+        cur["search_ver"] = 0
         cur["search_fail"] = 0          # 学会了，失败账清零
         cur["search_fail_ver"] = LEARN_VER
         cur["ok"] = int(cur.get("ok", 0)) + 1
@@ -726,7 +737,14 @@ SEARCH_LEARN_MAX_TRIES = 3
 #   不同 → 判"真"→ 盖章 → 从此不再复核。这一轮实测：真书名 9 条、
 #   搜不到的书名 9 条，Jaccard **1.00**（铁假）。v4 要两轮都判假才撤、
 #   两轮都判真才盖章，有分歧就算"没结论"（下次再查）。
-LEARN_VER = 4
+#
+# v5（2026-10-21 深夜）：**学到的模板不再盖「已核实」章**。
+#   v4 之前 `note_search_tpl()` 一学会就写 `search_ver=LEARN_VER`，等于
+#   "学过 = 已核实" —— 可学站阶段为了省请求只做单轮控制实验，会翻转。
+#   实测后果：手动学一轮又学出 `www.xxsy.net` / `www.whxss.com`（都是以前判过假的），
+#   它们带着 v4 章直接上岗、不进复核队列。v5 起学到的模板写 `search_ver=0`，
+#   必须过一夜的两轮复核才盖章免检；版本号升上来让带 v4 章的重新排队。
+LEARN_VER = 5
 
 
 def should_try_learn(host: str) -> bool:

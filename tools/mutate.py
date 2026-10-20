@@ -982,6 +982,13 @@ MUTATIONS: list[Mutation] = [
              "        if real:",
              "        if True:",
              TRUST_TEST),
+    Mutation("verdict", "学到的模板直接盖「已核实」章（学过=核实过，单轮翻转的假站直接上岗）",
+             REGISTRY,
+             '        cur["search_ver"] = 0\n'
+             '        cur["search_fail"] = 0          # 学会了，失败账清零',
+             '        cur["search_ver"] = LEARN_VER\n'
+             '        cur["search_fail"] = 0          # 学会了，失败账清零',
+             REGISTRY_TEST),
 ]
 
 
