@@ -116,9 +116,17 @@ def main() -> int:
         try:
             q = f"?limit={a.learn_limit}" if a.learn_limit else ""
             rep = _post(f"{base}/api/registry/learn{q}", tok)
+            # ⚠ `pending` 必须打出来：撞时间预算收手时，没跑完的站既不算
+            #   成功也不算失败。不显示的话，日志上看着像"这批都学完了，
+            #   只是没学会"，实际上还欠着一批 —— 下一轮也不会有人知道要补。
+            pending = int(rep.get("pending") or 0)
             print(f"[来源库体检] 学接口完成 —— 新学会 {rep.get('learned')} 个站"
-                  f"（失败 {rep.get('failed')} / 跳过 {rep.get('skipped')}），"
+                  f"（失败 {rep.get('failed')} / 跳过 {rep.get('skipped')}"
+                  + (f" / **没跑完 {pending}**" if pending else "") + "），"
                   f"现在共有 {rep.get('searchable')} 个可搜源", flush=True)
+            if pending:
+                print(f"[来源库体检] 还有 {pending} 个站没来得及学，"
+                      f"下一轮（或手动 POST /api/registry/learn）会继续", flush=True)
         except Exception as e:  # noqa: BLE001
             print(f"[来源库体检] 学接口失败：{e}", flush=True)
             failed += 1

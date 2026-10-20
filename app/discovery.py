@@ -212,7 +212,23 @@ def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
 # 并发预算：学一个站要发好几个请求（爆破搜索路径），不能占太多槽位，
 # 否则会和「用户正在等的那次搜索」抢带宽。
 _LEARN_WORKERS = 3
-_LEARN_BUDGET = 14.0
+# ⚠ 预算必须**跟着批量大小走**，不能是一个固定的小常数。
+#   实测事故（2026-10-18 线上）：固定 14 秒 + 一次 12 个目标 + 3 线程，
+#   接口只回了 `learned=0 / failed=5` —— 5 个站用光了 14 秒，
+#   另外 7 个一个都没轮到。而学一个站的成本是
+#   「抓首页（超时上限 20 秒）+ 最多 6 次搜索路径爆破」，
+#   正常也得 4~10 秒，14 秒顶多覆盖 3~4 个站。
+#   所以改成「每站 8 秒、上限 120 秒」：小批量跑得完，大批量也总有个头，
+#   超出的部分由下面的 `pending` 如实报出来，下一轮接着学。
+_LEARN_BUDGET_PER_SITE = 8.0
+_LEARN_BUDGET_MIN = 14.0
+_LEARN_BUDGET_MAX = 120.0
+
+
+def _learn_budget(n_targets: int) -> float:
+    """按这一批的规模算时间预算（秒）。"""
+    return max(_LEARN_BUDGET_MIN,
+               min(_LEARN_BUDGET_MAX, _LEARN_BUDGET_PER_SITE * max(n_targets, 1)))
 
 
 def learn_sites(
@@ -235,7 +251,7 @@ def learn_sites(
     """
     hosts = [h for h in dict.fromkeys(h or "" for h in hosts) if h]
     if not hosts:
-        return {"learned": 0, "failed": 0, "skipped": 0}
+        return {"learned": 0, "failed": 0, "skipped": 0, "pending": 0}
 
     def say(title: str, detail: str = "", ok: bool = True) -> None:
         if not log:
@@ -249,7 +265,7 @@ def learn_sites(
     todo = [h for h in hosts if registry.should_try_learn(h)]
     skipped = len(hosts) - len(todo)
     if not todo:
-        return {"learned": 0, "failed": 0, "skipped": skipped}
+        return {"learned": 0, "failed": 0, "skipped": skipped, "pending": 0}
 
     say("学习站点搜索", f"{len(todo)} 个站（下次搜别的书能直接用）")
 
@@ -306,25 +322,46 @@ def learn_sites(
 
     pool = ThreadPoolExecutor(max_workers=min(_LEARN_WORKERS, len(todo)))
     futs = {pool.submit(_learn_one, h): h for h in todo}
+    budget = _learn_budget(len(todo))
+    # ⚠ 撞预算收手时，**没跑完的目标必须自己说出来**（下面统计 pending）。
+    #   线上实测：12 个目标，接口只回 learned=0 / failed=5 ——
+    #   另外 7 个既不算成功也不算失败，凭空消失。
+    #   `as_completed(timeout=...)` 超时会**直接抛异常跳出 for**，
+    #   剩下没拿到结果的 future 一个都不会被计数。于是：
+    #     · 调用方以为"这批都学完了，只是没学会"（其实根本没跑完）
+    #     · 日志里看不到"还欠着"，下次也不会补
+    #   这和 `_merge_paged()` 撞上限必须标 `pending` 是同一类病：
+    #   收手可以，但**不许沉默地收手**。
+    finished = 0
+    timed_out = False
     try:
-        for fut in as_completed(futs, timeout=_LEARN_BUDGET):
+        for fut in as_completed(futs, timeout=budget):
             try:
                 ok = bool(fut.result())
             except Exception:  # noqa: BLE001
                 ok = False
             with lock:
+                finished += 1
                 if ok:
                     learned += 1
                 else:
                     failed += 1
     except Exception:  # noqa: BLE001
-        logger.info("站点学习超预算，先收手")
+        timed_out = True
+        logger.info("站点学习超预算，先收手（还剩 %d 个没学完）", len(todo) - finished)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
+    pending = len(todo) - finished
+    if timed_out and pending:
+        # 明确告诉调用方「还欠着」—— 这些站下次还会被 `learn_candidates()`
+        # 挑出来重试（它们的 search_fail 没加，所以不会因为一次超预算被放弃）。
+        say("站点学习未跑完", f"还剩 {pending} 个站没学，下次继续", False)
+
     if learned:
         say("自有来源扩大", f"新学会 {learned} 个站的搜索，下次直接用", True)
-    return {"learned": learned, "failed": failed, "skipped": skipped}
+    return {"learned": learned, "failed": failed, "skipped": skipped,
+            "pending": pending}
 
 
 def discover(
@@ -431,7 +468,9 @@ def _learn_later(hosts: list[str], *, keyword: str, log: Optional[LogFn],
     """学站内搜索模板 —— **默认放后台，绝不挡在结果前面**。
 
     ⚠ 为什么必须后台（2026-10-14 线上实测踩到，用户报「这本书找不到」）：
-      学站是 `learn_sites()` 干的，预算 `_LEARN_BUDGET = 14.0` 秒。
+      学站是 `learn_sites()` 干的，预算按批量算
+      （`_learn_budget()`：每站 8 秒、上限 120 秒；早先是个固定 14 秒，
+      12 个目标只能跑完 3~4 个，剩下的静默消失）。
       原先它**同步**写在 `discover()` 的结尾，于是实测时间线变成：
 
           0.3s  Bing 搜到结果        1.5s  百度搜到结果

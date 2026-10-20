@@ -627,6 +627,39 @@ def site_label(host: str) -> str:
     return name
 
 
+def learn_candidates() -> list[str]:
+    """**值得**花预算去学站内搜索的站（按"最可能学会"排前面）。
+
+    ⚠ 为什么不能直接用 `should_try_learn()` 的全集：它只问「有没有模板 /
+    有没有放弃过」，**不问这个站是不是还活着、是不是小说站**。线上实测
+    拿它当清单跑批量学习，12 个目标里混进了
+    `www.kugou.com`（音乐）、`wulin2.games.wanmei.com`（游戏）、
+    `mzh.moegirl.org.cn`（萌娘百科）、`www.chagushici.com`（诗词）——
+    每个都要花首页抓取 + 最多 6 次爆破，**真正的小说站反而排不上队**。
+    学完了也没用：非小说站学到的搜索接口永远不会出现在搜书结果里。
+
+    所以这里加两道筛：① `is_healthy()`（已经判死的不学）
+    ② `_is_offtopic_site` / `_is_video_site`（分类都不对的，活着也不学）。
+
+    排序理由：**已经成功抓到过目录的站优先**（`toc_tpl` 在）——
+    它证明过「这个站能给整本书」，学会了搜索就是直接变可用源；
+    只 ok 过几次的站次之。同档内按成功次数降序。
+    """
+    out: list[tuple[int, int, str]] = []
+    for host, site in sites().items():
+        if not isinstance(site, dict):
+            continue
+        if not should_try_learn(host):
+            continue
+        if not is_healthy(site):
+            continue
+        if _is_offtopic_site(host, site) or _is_video_site(host, site):
+            continue
+        has_toc = 1 if (site.get("toc_tpl") or "").strip() else 0
+        out.append((-has_toc, -int(site.get("ok") or 0), host))
+    return [h for _, _, h in sorted(out)]
+
+
 def is_healthy(site: dict) -> bool:
     """一个站点还算不算「能用」。
 

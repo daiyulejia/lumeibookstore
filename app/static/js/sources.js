@@ -133,6 +133,46 @@ function statRow() {
     </div>`;
 }
 
+/* --------------------------------------------------------------------------
+   站点列表：按「能力」分档 + 失效折叠
+   --------------------------------------------------------------------------
+   起因（用户原话：「网址多」）：线上实测库里 114 个网址，一屏接一屏刷不完 ——
+   但其中真能站内搜的只有 15 个，能读到目录的二十几个，剩下大半是
+   **历史上碰过、后来打不开**的。平铺成一长串，用户看到的是一堵网址墙，
+   看不出哪些有用、哪些只是留档。
+   所以：能搜 → 能读目录 → 只是可用 → 已失效，四档顺序排；
+   失效那档默认只露 6 个，其余折起来（留个明确的"共 N 个"）。
+   ⚠ 折叠**不许变成"看不见"**：数量必须写出来，随时能展开，
+     否则就成了"我们悄悄藏了一半数据"。
+   -------------------------------------------------------------------------- */
+const DEAD_PREVIEW = 6;
+let showDeadSites = false;
+
+function siteTier(s) {
+  if (s.searchable) return 0;              // 能拿关键词直接搜
+  if (s.healthy && s.toc_tpl) return 1;    // 能给整本书（目录模板在）
+  if (s.healthy) return 2;                 // 打通过，但能力不明
+  return 3;                                // 已失效
+}
+
+function sitesRows(list) {
+  const sorted = list.slice().sort((a, b) =>
+    siteTier(a) - siteTier(b) || (+b.ok || 0) - (+a.ok || 0));
+  const live = sorted.filter(s => siteTier(s) < 3);
+  const dead = sorted.filter(s => siteTier(s) === 3);
+  const rows = live.map(siteRow);
+  if (!dead.length) return rows;
+  const shown = showDeadSites ? dead : dead.slice(0, DEAD_PREVIEW);
+  rows.push(`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+      margin:14px 0 10px;padding-top:12px;border-top:1px dashed var(--s-line-2);
+      font-size:12px;color:var(--t-3)">
+    <span>已失效 ${dead.length} 个${showDeadSites ? "" : `（先露 ${shown.length} 个）`}</span>
+    <button class="btn ghost sm" id="regDeadToggle" type="button">
+      ${showDeadSites ? "收起来" : `全部展开（${dead.length}）`}</button>
+  </div>`);
+  return rows.concat(shown.map(siteRow));
+}
+
 function tabsHTML() {
   const st = (REG && REG.stats) || {};
   return `<div class="regtabs">
@@ -216,7 +256,9 @@ async function renderRegistry() {
   }
   const sites = REG.sites || [];
   const books = REG.books || [];
-  const rows = regTab === "sites" ? sites.map(siteRow) : books.map(bookRow);
+  // ⚠ 站点列表走 sitesRows()（分档 + 失效折叠），不再 map 平铺 ——
+  //   平铺就是用户说的"网址多"：一屏刷不完，还分不清哪个有用。
+  const rows = regTab === "sites" ? sitesRows(sites) : books.map(bookRow);
   const emptyText = regTab === "sites"
     ? `<div class="empty" style="padding:26px 0"><div class="e">🌐</div>
         <h3>还没有攒下站点</h3><p>本地来源搜不到某本书时，我会自己去搜索引擎找，
@@ -236,6 +278,8 @@ async function renderRegistry() {
     </div>`;
 
   $$("[data-rt]", body).forEach(b => b.onclick = () => { regTab = b.dataset.rt; renderRegistry(); });
+  const dt = $("#regDeadToggle", body);
+  if (dt) dt.onclick = () => { showDeadSites = !showDeadSites; renderRegistry(); };
   stagger(body, ".hcard");
   const ck = $("#regCheck", body);
   if (ck) ck.onclick = async () => {

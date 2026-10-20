@@ -1218,13 +1218,18 @@ async def registry_learn(host: str = "", limit: int = 0):
 
     host 为空时：自动挑「还没学过、健康、且没反复失败」的站来学。
     limit 限制一次学几个（默认不限制）。
+
+    ⚠ 挑站必须走 `registry.learn_candidates()`，不要在这里拿
+      `should_try_learn()` 自己拼清单 —— 那会把已判死的站和非小说站
+      （实测：酷狗 / 完美世界 / 萌娘百科 / 诗词站）也算进目标，
+      预算全耗在学不会也没用的站上，真正的小说站排不上队。
     """
     from . import discovery, registry
 
     if host:
         targets = [host]
     else:
-        targets = [h for h, s in registry.sites().items() if registry.should_try_learn(h)]
+        targets = registry.learn_candidates()
     if limit:
         targets = targets[:limit]
 

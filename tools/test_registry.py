@@ -267,6 +267,78 @@ def main() -> int:
               bool(re.search(r"b\.note \? \" ⚠ 可能不全\"", js)),
               "⚠ 文案不在，或判据不是 b.note")
 
+        # -----------------------------------------------------------------
+        print("\n—— 学站清单：只挑「值得学」的站 ——")
+        # 为什么这道筛子值得测：线上实测（2026-10-18）拿"所有没学过搜索模板
+        # 的站"当目标跑批量学习，12 个目标里混进了 `www.kugou.com`（音乐）、
+        # `wulin2.games.wanmei.com`（游戏）、`mzh.moegirl.org.cn`（萌娘百科）、
+        # `www.chagushici.com`（诗词）。每个站都要花「抓首页 + 最多 6 次爆破」，
+        # **真正的小说站反而排不上队**；而且非小说站学会了搜索也永远不会
+        # 出现在搜书结果里 —— 纯烧预算。
+        # `learn_candidates()` 就是那道筛子：健康 ∧ 不是非小说/影视站 ∧ 没学会
+        # ∧ 没放弃，且**能拿目录的排前面**（它证明过"这个站能给整本书"）。
+        for h in ("learn-toc.com", "learn-plain.com", "learn-dead.com",
+                  "learn-junk.com", "learn-giveup.com"):
+            R.note_site(h, ok=True)
+        R.note_site("learn-toc.com", ok=True, toc_tpl="/mulu/")
+        for _ in range(3):
+            R.note_site("learn-dead.com", ok=False)     # 判死
+        R.note_site("learn-junk.com", ok=True, name="菜鸟教程")  # 非小说站
+        for _ in range(3):
+            R.note_site("learn-giveup.com", ok=True, search_fail=3)  # 放弃过
+
+        cand = R.learn_candidates()
+        check("能拿目录的健康站入选", "learn-toc.com" in cand, str(cand))
+        check("普通健康站也入选", "learn-plain.com" in cand, str(cand))
+        check("判死的站不入选（活着才有意义）", "learn-dead.com" not in cand, str(cand))
+        check("非小说站不入选（学了也用不上）", "learn-junk.com" not in cand, str(cand))
+        check("放弃过的站不入选（不自作多情）", "learn-giveup.com" not in cand, str(cand))
+        check("能拿目录的排在普通站前面（先学最可能成的）",
+              ("learn-toc.com" in cand and "learn-plain.com" in cand
+               and cand.index("learn-toc.com") < cand.index("learn-plain.com")),
+              str(cand))
+        R.note_search_tpl("learn-plain.com", "/search?q={kw}")
+        check("已经会搜了的站不再入选", "learn-plain.com" not in R.learn_candidates(),
+              str(R.learn_candidates()))
+
+        # -----------------------------------------------------------------
+        print("\n—— 学站预算：撞上限必须报 pending ——")
+        # 线上实测事故：12 个目标 + 固定 14 秒预算 + 3 线程，
+        # 接口只回 `learned=0 / failed=5`，另外 7 个既不算成功也不算失败，
+        # **凭空消失**。调用方看着像"都学完了只是没学会"。
+        # `as_completed(timeout=)` 超时会直接抛异常跳出循环，剩下没拿到结果
+        # 的 future 一个都不会被计数 —— 所以必须自己算 `pending`。
+        from app import discovery as D
+        check("预算随批量大小增长（12 个站不能还是 14 秒）",
+              D._learn_budget(12) > 14.0, f"{D._learn_budget(12)}")
+        check("预算有上限（不能无限等）",
+              D._learn_budget(1000) <= D._LEARN_BUDGET_MAX,
+              f"{D._learn_budget(1000)}")
+        check("空批量也有下限（不会算出 0 秒）",
+              D._learn_budget(0) >= D._LEARN_BUDGET_MIN,
+              f"{D._learn_budget(0)}")
+        # 真跑一遍：把预算压到 0.01 秒、让每个站的探测都卡住不返回，
+        # 应当**一个都没跑完**，且 `pending` 如实等于目标数。
+        saved = (D._learn_budget, D.registry.should_try_learn, D.fetch_text,
+                 D.sitelearn.learn_site)
+        try:
+            hosts = ["stall1.com", "stall2.com", "stall3.com"]
+            D._learn_budget = lambda n: 0.01
+            D.registry.should_try_learn = lambda h: True
+            D.fetch_text = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("停在这"))
+            # 爆破那一步也必须卡住 —— 不然它会真的去连 stall1.com 这种不存在的域名
+            D.sitelearn.learn_site = lambda *a, **k: (time.sleep(0.6), {})[1]
+            rep = D.learn_sites(hosts)
+            check("撞预算时 pending 等于没跑完的站数",
+                  rep.get("pending") == len(hosts), str(rep))
+            check("learned + failed + pending 必须等于目标数（一个都不许凭空消失）",
+                  rep["learned"] + rep["failed"] + rep.get("pending", -1) == len(hosts),
+                  str(rep))
+        finally:
+            (D._learn_budget, D.registry.should_try_learn, D.fetch_text,
+             D.sitelearn.learn_site) = saved
+
+        # -----------------------------------------------------------------
         print("\n—— 护栏：全清要显式确认 ——")
         # 先落一次盘：缩水护栏是拿「盘上那份」当基准的，
         # 上面这些 note_* 都还压在内存里（落盘有 1 秒节流）

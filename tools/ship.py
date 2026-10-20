@@ -233,6 +233,11 @@ LIVE_SUITES = [
     # Vue（638KB 明文）—— 这条既钉"该压的压了"，也钉
     # "别图省事挂 GZipMiddleware"（那会把 SSE 攒块，搜书不再逐条出结果）。
     ("test_static_gzip.py", "静态压缩"),
+    # 来源库「站点」列表（用户原话「网址多」）。线上 114 个网址平铺成一堵墙，
+    # 而真能站内搜的只有 15 个 —— 改成按能力分档排序 + 失效区折叠。
+    # 这条钉三件「改错了不报错、用户立刻能感觉到」的事：排序真按能力走、
+    # 失效区真折了、**折叠不许变成藏**（总数必须写出来、能展开能收回）。
+    ("test_sources_ui.py", "来源库列表"),
     # 书架页（Vue 迁移后）。test_buttons 的 E 组只验"点了会怎样"，
     # 验不到渲染层：组件挂错容器（真踩过，一个 app 管多处 DOM，
     # 书架被渲进榜单区内部、页面静默空白）、插画消失、请求回声。
@@ -299,6 +304,7 @@ LIVE_ARGS = {
     "test_disconnect.py": "--url",
     "test_auth_race.py": "--url",
     "test_static_gzip.py": "--base",
+    "test_sources_ui.py": "--base",
     "test_shelf_ui.py": "--url",
     "test_files_ui.py": "--url",
     "test_discover_ui.py": "--url",
