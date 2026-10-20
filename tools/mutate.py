@@ -105,6 +105,11 @@ HTTP_TEST = ROOT / "tools" / "test_http_client.py"
 DISCOVERY = ROOT / "app" / "discovery.py"
 # 可搜源「是不是真的在按关键词搜」（tools/test_search_trust.py）
 TRUST_TEST = ROOT / "tools" / "test_search_trust.py"
+# 上线链条本身（tools/test_ship_chain.py）—— 破坏的是"上线动作"而不是产品。
+# ⚠ 这一组是"判据的判据"：清单漏项、突变脱节、推送丢失，三者都表现为
+#   "所有测试绿、该做的事没做"。改 ship.py 时顺手验一下它还有没有牙。
+SHIP_PY = ROOT / "tools" / "ship.py"
+CHAIN_TEST = ROOT / "tools" / "test_ship_chain.py"
 
 
 @dataclass
@@ -865,6 +870,36 @@ MUTATIONS: list[Mutation] = [
              "            if t.endswith(junk) and len(t) > len(junk) + 1:",
              "            if False and t.endswith(junk) and len(t) > len(junk) + 1:",
              REGISTRY_TEST),
+    # ---------------- 上线链条本身（tools/test_ship_chain.py）----------------
+    # ⚠ 这一组破坏的是 `tools/ship.py` —— 破坏"上线动作"本身。
+    #   失败方式统一是「所有测试都绿，但该做的事没做」，没有一条会报错：
+    #   不推送（GitHub 落后）、谎报推送成功、清单文件名写错（那套静默没跑）、
+    #   推送这一步的 print 只剩注释里那份（判据用全文匹配就恒真了）。
+    Mutation("chain", "链条里不调 push_github（线上是新代码、GitHub 还是旧的）",
+             SHIP_PY,
+             "            if not push_github():",
+             "            if False:",
+             CHAIN_TEST),
+    Mutation("chain", "找不到 git 也当成功（谎报推送完成，重建服务器时才知道）",
+             SHIP_PY,
+             '        print(f"  ✗ 找不到 git，没法推送：{e}")\n        return False',
+             '        print(f"  ✗ 找不到 git，没法推送：{e}")\n        return True',
+             CHAIN_TEST),
+    Mutation("chain", "清单里文件名写错（那套测试静默没跑，清单却照样显示全绿）",
+             SHIP_PY,
+             '    ("test_ship_chain.py", "上线链条完整"),',
+             '    ("test_ship_chainX.py", "上线链条完整"),',
+             CHAIN_TEST),
+    Mutation("chain", "清单项不写说明（清单是给人看的，空说明等于没写）",
+             SHIP_PY,
+             '    ("test_motion.py", "动效层规矩"),',
+             '    ("test_motion.py", "   "),',
+             CHAIN_TEST),
+    Mutation("chain", "推送步骤的 print 删掉（`[4/4]` 只剩注释里那份 → 全文匹配恒真）",
+             SHIP_PY,
+             '    print("\\n[4/4] 推送到 GitHub")',
+             '    print("\\n推送到 GitHub")',
+             CHAIN_TEST),
 ]
 
 

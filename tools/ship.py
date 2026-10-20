@@ -217,6 +217,15 @@ STATIC_SUITES = [
     #      且试搜要用**这本书的真名**而不是向导默认的《斗破苍穹》。
     # 见 tools/test_adapt_direct.py。
     ("test_adapt_direct.py", "适配向导兜底/样例/搜索能力"),
+    # **上线链条本身**是完整的：清单里每个文件真的存在、反证清单里每条突变的
+    # 片段真的能在源码里唯一命中、链条里有「推送 GitHub」这一步。
+    # 为什么值得单独一套：这三个坏法全都表现成「所有测试都绿，但该做的事没做」——
+    #   · 文件名写错 → 那套测试静默没跑，却显示全绿；
+    #   · 突变片段与源码脱节 → 要等反证跑到第 100 多条才报（一次 ship 17 分钟，
+    #     2026-10-21 连踩两次）；这条现在 1 秒内报红；
+    #   · 链条里没推送 → 线上是新代码、GitHub 还是旧的（实测本地攒了 4 个提交）。
+    # 见 tools/test_ship_chain.py 的注释。
+    ("test_ship_chain.py", "上线链条完整"),
     # ⚠ 反证（突变）**必须排在最后**：它会临时替换源码再还原。
     #   放中间的话，后面那些套件可能读到被破坏的产物 → 假红。
     #   它自己会先确认"改动前的基线是绿的"，再把每条断言逐个打破；
@@ -555,6 +564,37 @@ def build_frontend(dry_run: bool = False) -> bool:
     return False
 
 
+def push_github(timeout: float = 180.0) -> bool:
+    """把本地 main 推到 GitHub。成功/无事可推都返回 True。
+
+    ⚠ 为什么不"顺手加一句 git push 就算完"：这个项目的 git 操作一律走
+      bash 里的 `git`（Windows 上是 Git Bash），而 ship 是 Python 起的子进程，
+      PATH 不一定一样。所以先探一遍 `git --version`，探不到就**明确报出来**
+      （"没推成功"和"没 git 可用"是两回事，不能都当成成功）。
+    """
+    try:
+        v = subprocess.run(["git", "--version"], cwd=ROOT,
+                           capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"  ✗ 找不到 git，没法推送：{e}")
+        return False
+    if v.returncode != 0:
+        print(f"  ✗ git 不可用：{(v.stderr or '').strip()[:200]}")
+        return False
+    try:
+        r = subprocess.run(["git", "push", "origin", "main"], cwd=ROOT,
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.SubprocessError as e:
+        print(f"  ✗ push 超时/失败：{e}")
+        return False
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    if r.returncode != 0:
+        print(f"  ✗ push 返回 {r.returncode}：{out[:400]}")
+        return False
+    print(f"  ✓ 已推送：{out.splitlines()[-1][:160] if out else 'ok'}")
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only-test", action="store_true", help="只自检，不同步")
@@ -630,6 +670,33 @@ def main() -> int:
     if r.returncode != 0:
         print("\n✗ 同步失败")
         return r.returncode
+
+    # ------------------------------------------------------------------
+    # [4/4] 推送到 GitHub
+    # ------------------------------------------------------------------
+    # ⚠ 这一步**原先不在 ship 里**，而项目规矩写的是「一条命令：自检+上线+推送」。
+    #   后果很具体：线上已经是新代码，GitHub 上还是旧的；本地提交攒了 4 个
+    #   没人推（2026-10-21 实测就是这么发现的）。哪天服务器要重建，
+    #   拉下来的是半年前的代码 —— 而这个缺口不会有任何报错。
+    #   所以推送必须是链条的最后一环，且失败要红。
+    print("\n[4/4] 推送到 GitHub")
+    if a.dry_run:
+        print("  · dry-run，跳过推送")
+    else:
+        dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
+                               capture_output=True, text=True).stdout.strip()
+        if dirty:
+            n_files = len(dirty.splitlines())
+            print(f"  ⚠ 工作区有 {n_files} 个改动没提交 —— 这些**不会**被推到 GitHub。")
+        ahead = subprocess.run(["git", "rev-list", "--count", "origin/main..HEAD"],
+                               cwd=ROOT, capture_output=True, text=True).stdout.strip()
+        if ahead in ("", "0"):
+            print("  · 没有待推送的提交")
+        else:
+            print(f"  · 有 {ahead} 个提交待推送")
+            if not push_github():
+                print("  ✗ 推送失败 —— 线上是新的，GitHub 还是旧的。先修好再走。")
+                return 1
 
     print(f"\n{'=' * 62}")
     print(f"✓ 上线完成，用时 {time.time()-t0:.1f}s")
