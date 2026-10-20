@@ -439,51 +439,66 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
 
     todo = [h for h in dict.fromkeys(h or "" for h in hosts) if h]
     if not todo:
-        return {"checked": 0, "dropped": 0, "kept": 0, "no_probe": 0}
+        return {"checked": 0, "dropped": 0, "kept": 0, "canary_only": 0}
 
-    checked = dropped = kept = no_probe = 0
+    checked = dropped = kept = canary_only = 0
     for host in todo:
         s = registry.known_site(host)
         tpl = (s.get("search_tpl") or "").strip()
         if not tpl:
             continue
-        probe = registry.probe_title(host)
-        if not probe:
-            # 这站库里有模板、却没有一本书的书名可探 —— 复核不了，
-            # **不动它**（宁可留着，也不要凭"没法验证"去撤别人的模板）。
-            no_probe += 1
-            logger.info("复核跳过 %s：库里没有它的书名可当探测词", host)
-            continue
         checked += 1
+        # 探测词：先拿"这个站上确实有的一本书"，再补一个"几乎每站都有"的
+        # 通用书名。两个词给两次抓假的机会 ——
+        # ⚠ 只用站上那本书会**漏判**：这本书搜不到时没法判断模板真假，
+        #   于是假的也留着。实测第一轮只撤掉 5 个（该撤 9 个），
+        #   漏掉的 4 个正是"库里没有它的书名"或"书名搜不到"的站。
+        probes: list[str] = []
+        own = registry.probe_title(host)
+        if own:
+            probes.append(own)
+        else:
+            # 库里没这本书的书名 —— 只能用通用书名单向判假（判真不可靠，
+            # 但假站两个关键词都给同一批结果，照样抓得住）。
+            canary_only += 1
+        if sitelearn.CANARY_KW not in probes:
+            probes.append(sitelearn.CANARY_KW)
+
         scheme = (s.get("search_scheme") or "https").strip() or "https"
         enc = s.get("search_enc") or "utf-8"
         method = (s.get("search_method") or "get").lower()
         body = s.get("search_body")
-        try:
-            with fast_mode(retries=0, timeout=10.0):
-                n, urls = sitelearn._fetch_hits(tpl, host, probe, enc=enc,
-                                                scheme=scheme, method=method,
-                                                body=body)
-                fake = bool(n) and sitelearn.control_says_fake(
-                    tpl, host, enc=enc, scheme=scheme, method=method, body=body,
-                    urls=urls, hits=n)
-        except Exception as e:  # noqa: BLE001
-            logger.info("复核 %s 出错（先不动它）：%s", host, e)
-            continue
+        fake = False
+        for probe in probes:
+            try:
+                with fast_mode(retries=0, timeout=10.0):
+                    n, urls = sitelearn._fetch_hits(tpl, host, probe, enc=enc,
+                                                    scheme=scheme, method=method,
+                                                    body=body)
+                    if not n:
+                        continue
+                    if sitelearn.control_says_fake(
+                            tpl, host, enc=enc, scheme=scheme, method=method,
+                            body=body, urls=urls, hits=n):
+                        fake = True
+                        break
+            except Exception as e:  # noqa: BLE001
+                logger.info("复核 %s（探测词《%s》）出错，继续试下一个：%s",
+                            host, probe, e)
         if fake:
             if registry.clear_search_tpl(host, why="复核：模板不认关键词（假搜索）"):
                 dropped += 1
-                logger.info("撤掉假搜索模板：%s %s（用《%s》探过）", host, tpl, probe)
-        else:
-            # 真的就盖上新版本号，下次不再复核
-            registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)
-            kept += 1
+                logger.info("撤掉假搜索模板：%s %s", host, tpl)
+            continue
+        # 真的就盖上新版本号，下次不再复核
+        registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)
+        kept += 1
     if dropped:
         say("撤掉假的可搜源", f"{dropped} 个站其实没在按关键词搜，已撤掉", False)
-    logger.info("模板复核完成：查了 %d，撤掉 %d，留下 %d，没法探 %d",
-                checked, dropped, kept, no_probe)
+    logger.info("模板复核完成：查了 %d（其中 %d 个只能靠通用书名），撤掉 %d，留下 %d",
+                checked, canary_only, dropped, kept)
     return {"checked": checked, "dropped": dropped, "kept": kept,
-            "no_probe": no_probe}
+            "canary_only": canary_only}
 
 
 def discover(

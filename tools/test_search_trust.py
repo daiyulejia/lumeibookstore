@@ -23,13 +23,19 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from urllib.parse import parse_qs, urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from app import sitelearn, utils, webfetch          # noqa: E402
-from app.sitelearn import CONTROL_KW                # noqa: E402
+# ⚠ 复核要用来源库 —— 必须先把它指到临时目录，否则会动生产库
+#   （`cache/registry.json` 是用户攒了几个月的资产，见 test_registry.py 的注释）。
+os.environ["NOVEL_REGISTRY"] = os.path.join(
+    tempfile.mkdtemp(prefix="trust-test-"), "registry.json")
+
+from app import discovery, registry, sitelearn, utils, webfetch   # noqa: E402
+from app.sitelearn import CANARY_KW, CONTROL_KW                   # noqa: E402
 
 OK = 0
 FAIL = 0
@@ -199,6 +205,54 @@ def main() -> int:
                          budget=1, js_budget=0)
     check("只验一个候选时请求数 ≤ 4（utf-8 通了就不再试 gb18030）",
           len(CALLS) <= 4, f"发了 {len(CALLS)} 个：{CALLS}")
+
+    # ------------------------------------------------------------------
+    print("\n—— 复核：库里那批假模板必须撤得掉，真模板不许误撤 ——")
+    # 线上第一轮复核只撤掉 5 个（该撤 9 个）：另外 4 个是"库里没有它的书名"
+    # 或者"那本书在这站搜不到"，于是判不了真假，就留着了。
+    # 现在补一次**通用书名**探测（《斗破苍穹》几乎每个小说站都有），
+    # 假站两个关键词都给同一批结果，照样抓得住。
+    utils.fetch_text = _fake_fetch
+    webfetch.extract_toc = _fake_toc
+    registry.flush()
+
+    # ① 库里没有书名，但模板是假的（任何关键词都吐同一批分类导航）
+    registry.note_site("nobook-fake.com", ok=True)
+    registry.note_search_tpl("nobook-fake.com", "/?q={kw}")
+    PAGES["nobook-fake.com"] = {"*": ["https://nobook-fake.com/c/1.html",
+                                      "https://nobook-fake.com/c/2.html",
+                                      "https://nobook-fake.com/c/3.html"]}
+    # ② 有书名，但那个书名在这站搜不到；模板是真的（结果随关键词变）
+    registry.note_site("ownbook-real.com", ok=True)
+    registry.note_book("http://ownbook-real.com/1", title="药鼎仙途最新章节列表",
+                       host="ownbook-real.com", ok=True)
+    registry.note_search_tpl("ownbook-real.com", "/?q={kw}")
+    PAGES["ownbook-real.com"] = {
+        CANARY_KW: ["https://ownbook-real.com/b/1.html",
+                    "https://ownbook-real.com/b/2.html",
+                    "https://ownbook-real.com/b/3.html"],
+        CONTROL_KW: ["https://ownbook-real.com/other/9.html"],
+    }
+    # ③ 什么都不给（搜不到）—— 不能凭"搜不到"撤别人的模板
+    registry.note_site("quiet.com", ok=True)
+    registry.note_search_tpl("quiet.com", "/?q={kw}")
+    PAGES["quiet.com"] = {}
+
+    rep = discovery.reverify_sites(["nobook-fake.com", "ownbook-real.com",
+                                    "quiet.com"])
+    check("★ 库里没有书名的假站也撤得掉（靠通用书名兜底）",
+          rep["dropped"] == 1 and rep["kept"] == 2, str(rep))
+    check("★ 假站模板真的清空了",
+          not (registry.known_site("nobook-fake.com").get("search_tpl") or ""),
+          str(registry.known_site("nobook-fake.com")))
+    check("自己书名搜不到、但模板是真的站不许误撤",
+          bool(registry.known_site("ownbook-real.com").get("search_tpl")))
+    check("搜不到任何东西的站不许误撤（判不了真假就别动它）",
+          bool(registry.known_site("quiet.com").get("search_tpl")))
+    check("复核记录了「只能靠通用书名」的那一类",
+          rep.get("canary_only") == 2, str(rep))
+    check("撤掉的站会重新回到待学队列（还能再学一次真的）",
+          "nobook-fake.com" in registry.learn_candidates())
 
     print("\n" + "=" * 60)
     print(f"通过 {OK} · 失败 {FAIL}")

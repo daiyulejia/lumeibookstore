@@ -805,6 +805,15 @@ MUTATIONS: list[Mutation] = [
              '    for path in ("/?s=", "/?q=", "/?search="):',
              '    for path in ("/?q=", "/?search="):',
              TRUST_TEST),
+    # 线上实测：第一轮复核只撤掉 5 个（该撤 9 个），漏掉的都是"库里没有
+    # 这本书的书名"或"这本书在这站搜不到"的站 —— 通用书名兜底就是补这个洞。
+    Mutation("trust", "复核只用库里的书名探测（没书名的假站永远漏过去）",
+             DISCOVERY,
+             "        if sitelearn.CANARY_KW not in probes:\n"
+             "            probes.append(sitelearn.CANARY_KW)",
+             "        if False:\n"
+             "            probes.append(sitelearn.CANARY_KW)",
+             TRUST_TEST),
 
     # ------------------------------------------------------------------
     # 学站失败账必须带学习器版本号（tools/test_registry.py）
