@@ -28,6 +28,7 @@ from .models import Book, BookResult, Chapter
 from .relevance import CHAPTER_TITLE_RE
 from .relevance import rank, score as score_result
 from .sources import BUILTIN_SOURCES, DISCOVER_SOURCE
+from .sourcehealth import HEALTH, classify
 from .sources.base import Source, note_for_exception, tidy_content
 from .utils import fast_mode, fetch_text, host_of
 
@@ -289,6 +290,18 @@ class Engine:
             want = {s.strip() for s in only if s.strip()}
             targets = [s for s in self._sources if s.name in want]
 
+        # ---- 熔断：打不通的源别再占着日历 ----
+        # 线上实测（2026-10-21）：同一个书名两次搜索，一次 0 条卡满 20s、
+        # 一次 1 条 —— 差别只在"哪几个源先回来"。而维基文库（SSL 握手超时）、
+        # xbqg5200（403）这类源**每次都在名单里**，每次都要陪它们等满 20 秒。
+        # 熔断之后它们连请求都不发，剩下的源更快答完，收手判定也更准。
+        # ⚠ 只跳过"连续挂过"的源；空结果不算挂（见 app/sourcehealth.py）。
+        skipped = [s.name for s in targets if not HEALTH.allows(s.name)]
+        if skipped:
+            targets = [s for s in targets if s.name not in skipped]
+            logger.info("跳过 %d 个熔断中的源（%s），剩 %d 个照常扇出",
+                        len(skipped), ", ".join(skipped), len(targets))
+
         raw: list[BookResult] = []
         lock = threading.Lock()
         # 「已推给前端的条数」。**不能拿 len(raw) 当「有结果」的判据** ——
@@ -329,6 +342,11 @@ class Engine:
                         items.append(it)
                 for it in items:
                     it.source_display = src.display
+                # 「答话了」——**哪怕返回空列表**也要记成功。
+                # 空结果只是"这个源没有这本书"，是正常业务结果；
+                # 把它算失败的话，搜几本冷门书就会把所有源全拉黑，
+                # 之后搜什么都 0 条，而且完全静默。
+                HEALTH.note_ok(src.name)
                 return items
             except Exception as e:  # noqa: BLE001
                 # 单个来源挂掉是常态（站点会抽风、会改版、会拦爬虫），
@@ -336,6 +354,13 @@ class Engine:
                 #   grep 'source.fail' logs/app.log  就能看出哪个源最近老出问题
                 log_event(logger, "source.fail", 源=src.name,
                           原因=f"{type(e).__name__}: {e}")
+                # 记进熔断器：连续挂到阈值就把这个源暂时摘出扇出名单，
+                # 别让「永远打不通的源」每次都吃掉 20 秒墙钟。
+                if HEALTH.note_fail(src.name, e):
+                    logger.warning("源 %s 连续失败，熔断 %d 分钟（%s）",
+                                   src.name,
+                                   int(HEALTH.cooldown.get(classify(e), 300) // 60),
+                                   f"{type(e).__name__}: {e}"[:120])
                 return []
             finally:
                 src.set_log(None)
