@@ -46,8 +46,8 @@ check("_cert_error", utils._cert_error(ValueError("HTTP 404")), False, "HTTP 错
 # 4) 默认 client 必须开启校验
 c = utils.get_client(use_proxy=False)
 check("get_client", c.__dict__.get("_nb_verify"), True, "默认 client 校验开启")
-check("get_client", utils._client_no_proxy.__dict__.get("_nb_verify"), True,
-      "无代理 client 校验开启")
+check("get_client", utils.get_client(use_proxy=False) is c, True,
+      "同一个 (代理,校验) 组合复用同一个 client")
 
 # 5) 请求降级 → 拿到的是另一个 client（不校验），且原 client 不被污染
 r = utils.get_client(use_proxy=False, verify=False)

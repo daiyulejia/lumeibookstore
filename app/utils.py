@@ -55,9 +55,24 @@ def _lock_for(host: str) -> threading.Lock:
             lk = _host_locks[host] = threading.Lock()
         return lk
 
-# 复用同一个 client，减少握手开销
-_client: Optional[httpx.Client] = None
-_client_no_proxy: Optional[httpx.Client] = None
+# 复用客户端：按 (是否走代理, 是否校验证书) **各留一个固定槽位**。
+#
+# ⚠ 为什么是"分槽"而不是"切换时关掉旧的"——踩了个线上事故级的坑：
+#   旧写法在 verify 翻转时把旧 client `close()` 掉。单线程下没错，但搜索是
+#   **并发的**（扇出 7 个源、探测 6 个候选），任何一个自签证书的小站触发
+#   TLS 降级，就会把**同一瞬间别的线程正在用的那个 client 关掉**。
+#   被关掉的那些请求报的是：
+#       RuntimeError: Cannot send a request, as the client has been closed.
+#   实测（2026-10-21 02:54，搜《斗破苍穹》）两个不同的源在同一秒报这个错：
+#       verify.fail 源=www_xbiquge_info 原因="… (Cannot send a request"
+#       verify.fail 源=web              原因="… (Cannot send a request"
+#   用户侧看到的就是"这本书目录打不开/0 章"—— 而且**随机**，取决于当时
+#   有没有别的线程恰好撞上降级。这类"偶发、跨请求互相搞死"的故障极难复现。
+#
+#   槽位是固定的 2×2=4 个，所以也不会回到更早那个"每次 new 一个、旧连接池
+#   丢给 GC → socket 累积跑一阵全超时"的老问题。
+_clients: dict[tuple[bool, bool], httpx.Client] = {}
+_clients_lock = threading.Lock()
 
 
 def _throttle(url: str) -> None:
@@ -226,34 +241,42 @@ def _make_client(*, verify: bool, use_proxy: bool) -> httpx.Client:
 def get_client(use_proxy: bool | None = None, *, verify: bool = True) -> httpx.Client:
     """拿一个（复用的）HTTP 客户端。
 
-    ⚠ 切换 `verify` 时**必须先 close 旧的**。
-    踩过的坑：自签证书的小站会让 `fetch_text` 用 `verify=False` 重试，
-    而原来的写法是「verify 不一样就 new 一个、把旧的直接丢掉」——
-    旧 client 的**连接池没关**（底层 socket 没释放），只能等 GC。
-    在「多站轮询 + 频繁触发 TLS 降级」的场景下（自签小站正是本项目的
-    主要目标），会累积大量半开/TIME_WAIT 连接，最终表现成
-    「跑一段时间后所有请求都超时」——这种症状极难反推到"曾经丢过一个 client"。
-    （实测：这个项目里 verify 翻转确实会发生，见 fetch_text 的 relaxed 重试。）
+    「复用」的粒度是 **（是否走代理 × 是否校验证书）四种组合各一个**，
+    彼此独立、互不关闭。理由见上面 `_clients` 的注释 —— 简单说：
+
+        曾经在切换 verify 时 close 旧 client，结果是
+        **一个自签证书小站的 TLS 降级，会把别的线程正在用的 client 关掉**，
+        那些请求报 `Cannot send a request, as the client has been closed.`，
+        表现为随机的"目录打不开 / 0 章"，且完全取决于并发时机。
+
+    所以这里**永不关闭**任何一个 client（除非它自己已经 closed，那就重建）。
+    也不用担心泄漏：组合只有 4 种，槽位固定，不会随调用次数增长。
     """
-    global _client, _client_no_proxy
     if use_proxy is None:
         use_proxy = USE_PROXY
-    cur = _client if use_proxy else _client_no_proxy
-    if cur is not None and cur.__dict__.get("_nb_verify") is not verify:
-        # 换 verify 等于换一整套连接池 —— 旧的得**主动关掉**，不能等 GC
-        try:
-            cur.close()
-        except Exception:  # noqa: BLE001
-            pass
-        cur = None
-    if cur is None:
+    key = (bool(use_proxy), bool(verify))
+    with _clients_lock:
+        cur = _clients.get(key)
+        if cur is not None and not cur.is_closed:
+            return cur
         cur = _make_client(verify=verify, use_proxy=use_proxy)
         cur.__dict__["_nb_verify"] = verify
-        if use_proxy:
-            _client = cur
-        else:
-            _client_no_proxy = cur
-    return cur
+        _clients[key] = cur
+        return cur
+
+
+def close_clients() -> None:
+    """关掉所有复用的 client（进程退出 / 测试收尾用）。
+
+    正常运行**不需要**调它：四个槽位是长期存活的连接池，SIGTERM 时由 OS 回收。
+    """
+    with _clients_lock:
+        for c in list(_clients.values()):
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+        _clients.clear()
 
 
 

@@ -98,6 +98,9 @@ FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
 BUDGET_TEST = ROOT / "tools" / "test_engine_budget.py"
 REL_TEST = ROOT / "tools" / "test_relevance.py"
 RELEVANCE = ROOT / "app" / "relevance.py"
+# HTTP 客户端复用（tools/test_http_client.py）
+UTILS = ROOT / "app" / "utils.py"
+HTTP_TEST = ROOT / "tools" / "test_http_client.py"
 
 
 @dataclass
@@ -613,6 +616,26 @@ MUTATIONS: list[Mutation] = [
              '                     + [t for t, _ in (rpt.get("dropped_loose") or [])[:3]])',
              '                例子=[])',
              BUDGET_TEST),
+
+    # ------- HTTP 客户端：切换 verify 不许关掉别人的 client -------
+    # 线上实证（02:54 搜《斗破苍穹》）：两个不同的源在同一秒报
+    # `Cannot send a request, as the client has been closed.` ——
+    # 一个自签站触发 TLS 降级，把并发线程正在用的 client 关了。
+    Mutation("httpclient", "切 verify 时把别的槽位一起关掉（老实现，跨线程关死）",
+             UTILS,
+             "        cur = _make_client(verify=verify, use_proxy=use_proxy)\n",
+             "        for _c in list(_clients.values()):\n"
+             "            _c.close()\n"
+             "        _clients.clear()\n"
+             "        cur = _make_client(verify=verify, use_proxy=use_proxy)\n",
+             HTTP_TEST),
+    Mutation("httpclient", "拿到已关闭的 client 也不重建（请求必然报 client closed）",
+             UTILS,
+             "        if cur is not None and not cur.is_closed:\n"
+             "            return cur",
+             "        if cur is not None:\n"
+             "            return cur",
+             HTTP_TEST),
 
     # ------- 「推荐」独立 tab 的接线（tools/test_ranks.py P 段）-------
     Mutation("rankstab", "底栏没有「推荐」入口（手机上永远进不去推荐页）",
