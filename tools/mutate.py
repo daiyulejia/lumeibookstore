@@ -645,7 +645,7 @@ MUTATIONS: list[Mutation] = [
              REGISTRY_TEST),
     Mutation("learn", "每站预算比最坏单站成本还小（「还剩 N 个」变成假数）",
              DISCOVERY,
-             "_LEARN_BUDGET_PER_SITE = 12.0",
+             "_LEARN_BUDGET_PER_SITE = 16.0",
              "_LEARN_BUDGET_PER_SITE = 8.0",
              REGISTRY_TEST),
 
