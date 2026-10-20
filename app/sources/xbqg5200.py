@@ -137,6 +137,9 @@ class Xbqg5200Source(Source):
         try:
             html = fetch_text(url)
         except Exception as e:  # noqa: BLE001
+            # 同上：吞异常可以，但要留口条给熔断器。线上实测这个源
+            # 一天 55 次 403，而熔断日志 0 条 —— 引擎以为它只是"没这本书"。
+            self.note_error(e)
             logger.info("搜索失败: %s", e)
             return []
 

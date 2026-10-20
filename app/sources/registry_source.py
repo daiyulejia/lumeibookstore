@@ -51,12 +51,23 @@ from .base import Source, tidy_content
 
 logger = logging.getLogger("novel.registry_source")
 
-# 单次搜索最多同时问几个站
-SEARCH_WORKERS = 6
+# 单次搜索最多同时问几个站。
+#
+# ⚠ 这个数字原来写 6，和「总预算 7 秒」是**结构性矛盾**（2026-10-21 线上实测）：
+#   14 个可搜站 / 6 并发 = 要跑 3 轮；而单站超时给的是 8 秒 ——
+#   单站超时比总预算还长，等于「只要有一个站慢到 8 秒，整批必然超预算」。
+#   线上日志 15 次 `自有来源搜索超预算，先用已有结果`，全部是这句，
+#   而那 15 次一条结果都没拿到（命中日志只在有结果时才打）。
+#   后果直接对应「热门书也搜不到」：真能搜的站被排在慢站后面，永远轮不到。
+#   所以并发要能**一次性覆盖全部可搜站**（上限 24，防将来库变很大时打爆）。
+SEARCH_WORKERS = 24
 # 单次搜索的总预算（秒）。超了就先把已经拿到的给你 ——
 # 它排位在预置源之后，用户很可能在第 1 秒就看到别的站的结果了，
 # 这里不该让人干等。
 SEARCH_BUDGET = 7.0
+# 单站超时（秒）。**必须明显小于总预算** —— 否则一个慢站就能把整批拖到超预算，
+# 前面那些已经答完的站的结果也会跟着"看起来没拿到"。3.5s 对一个搜索页 GET 足够。
+SEARCH_SITE_TIMEOUT = 3.5
 # 一个站最多回多少条候选（防止「搜一个常见词，某个站把整站都吐回来」）
 PER_SITE = 6
 # 总候选上限
@@ -122,11 +133,18 @@ class RegistrySource(Source):
         pool = ThreadPoolExecutor(max_workers=min(SEARCH_WORKERS, len(ordered)))
         futs = {pool.submit(self._search_one, host, meta, keyword): host
                 for host, meta in ordered}
+        done = 0        # 已经"答完"的站数（不是命中条数）——
+        # ⚠ 超预算那条日志原先只写"先用已有结果"，完全看不出卡在哪：
+        #   是 3 个站答完就超了（预算太小），还是 13 个答完只剩 1 个慢（正常）。
+        #   线上 15 次这条日志就是这么白写的，排障时一句信息都没有。
+        fails = 0       # 抓取就失败了的站数（网络层），用来判"整批是不是全挂了"
         try:
             for fut in as_completed(futs, timeout=SEARCH_BUDGET):
+                done += 1
                 try:
                     got = fut.result()
                 except Exception as e:  # noqa: BLE001
+                    fails += 1
                     logger.debug("自有来源单站搜索异常: %s", e)
                     got = []
                 for r in got or []:
@@ -141,7 +159,8 @@ class RegistrySource(Source):
                 if len(results) >= TOTAL_LIMIT:
                     break
         except Exception:  # noqa: BLE001
-            logger.info("自有来源搜索超预算，先用已有结果")
+            logger.info("自有来源搜索超预算（%d/%d 个站已答完、%.1fs），先用已有结果 %d 条",
+                        done, len(ordered), time.time() - t0, len(results))
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
@@ -150,6 +169,11 @@ class RegistrySource(Source):
                 self.log("自有来源命中", f"{len(results)} 条（{time.time() - t0:.1f}s）", True)
             except Exception:  # noqa: BLE001
                 pass
+        # 「整批全挂」才上抛给熔断器：一个站抓不到只是它自己的事，
+        # 但 8 个站一个都没连上，就是这条链路（DNS/出口/被封）出了问题 ——
+        # 得让引擎知道，否则它会以为"自有来源只是没这本书"，永远不熔断。
+        if not results and fails >= len(ordered):
+            self.note_error(f"自有来源 {fails} 个站全部抓取失败")
         return results
 
     # ------------------------------------------------------------------
@@ -165,7 +189,7 @@ class RegistrySource(Source):
 
         t_start = time.time()
         try:
-            with fast_mode(retries=0, timeout=8.0):
+            with fast_mode(retries=0, timeout=SEARCH_SITE_TIMEOUT):
                 if method == "post":
                     # POST 搜索：URL 不带关键词，关键词在请求体里
                     url = sitelearn.build_url(tpl, host, "", enc=enc, scheme=scheme)
@@ -178,7 +202,10 @@ class RegistrySource(Source):
         except Exception as e:  # noqa: BLE001
             logger.debug("自有来源抓取失败 %s: %s", host, e)
             registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
-            return []
+            # 留口条给熔断器 + 让 search() 数得出"有几个站失败"。
+            # 只在**整批**都失败时才上抛成"这个源挂了"（见 search() 末尾）。
+            self.note_error(e)
+            raise
         finally:
             self._note_speed((time.time() - t_start) * 1000)
 

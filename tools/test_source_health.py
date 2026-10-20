@@ -191,6 +191,90 @@ def main() -> int:
           _OK.calls >= 3, f"calls={_OK.calls}（3 次搜索应各调一次）")
     HEALTH.reset()
 
+    # ----------------------------------------------------------------
+    # 「源自己把异常吞了」也必须熔断
+    # ----------------------------------------------------------------
+    # 2026-10-21 线上实测的真相：熔断器写了半天**一次都没触发**。
+    # 原因是好几个源的 search() 为了"一种抓法失败换下一种"而自己 catch 掉、
+    # 然后 return []（wikisource / xbqg5200 / kunnu8 都是这样）。
+    # 在引擎看来这就是"答话了、只是没这本书" → note_ok 清零。
+    # 于是：wikisource 一天 110 次 SSL 握手超时、xbqg5200 55 次 403，
+    # 熔断日志 **0 条**，每次搜索都还在名单里陪它们等满 20 秒。
+    class _Swallow(Source):
+        name = "swallow_src"
+        display = "自己吞异常的源"
+        priority = 1
+        enabled = True
+        calls = 0
+
+        def search(self, keyword):
+            type(self).calls += 1
+            try:
+                raise TimeoutError("SSL handshake timed out")
+            except Exception as e:          # noqa: BLE001
+                self.note_error(e)          # ← 关键：留口条给熔断器
+                return []
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    class _SwallowOK(Source):
+        """也吞了异常，但**拿到了结果** —— 一个站能出书就不该被拉黑。"""
+        name = "swallow_ok"
+        display = "吞了异常但有结果"
+        priority = 2
+        enabled = True
+        calls = 0
+
+        def search(self, keyword):
+            type(self).calls += 1
+            self.note_error(TimeoutError("某条通路超时"))   # 残留的错误
+            from app.models import BookResult
+            return [BookResult(title="随便一本书", source=self.name,
+                               url="https://example.com/b/1")]
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    HEALTH.reset()
+    eng2 = Engine(sources=[_Swallow, _SwallowOK])
+    for _ in range(3):
+        eng2.search("随便一本书", discover=False)
+    check("★ 源自己吞掉异常时，引擎照样记熔断（否则熔断器永远收不到失败）",
+          "swallow_src" in HEALTH.open_sources(), str(HEALTH.open_sources()))
+    check("★ 熔断接上了扇出：不再每次搜索都撞同一堵墙",
+          _Swallow.calls <= 2, f"calls={_Swallow.calls}")
+    # 反向：有结果就说明能与不能的问题解决了 —— 不能因为"内部某条通路失败"拉黑。
+    check("★ 有结果时即使内部报错也不熔断（否则搜到书的源会被误杀）",
+          "swallow_ok" not in HEALTH.open_sources(), str(HEALTH.open_sources()))
+    check("有结果的源每次都在被调用", _SwallowOK.calls >= 3, f"calls={_SwallowOK.calls}")
+
+    # 上一轮的残留错误不能算到这一轮头上（线程局部跨搜索保留）
+    class _Flaky(Source):
+        name = "flaky_err"
+        display = "第一次吞了错、后来好了"
+        priority = 1
+        enabled = True
+        calls = 0
+
+        def search(self, keyword):
+            type(self).calls += 1
+            if type(self).calls == 1:
+                self.note_error(TimeoutError("第一次超时"))
+                return []
+            return []          # 后面每次都正常答话（空结果）
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    HEALTH.reset()
+    eng3 = Engine(sources=[_Flaky])
+    for _ in range(4):
+        eng3.search("随便一本书", discover=False)
+    check("★ 上一次吞的异常不会算到下一次（否则一次抖动永久拉黑）",
+          "flaky_err" not in HEALTH.open_sources(), str(HEALTH.open_sources()))
+    HEALTH.reset()
+
     print("\n" + "=" * 62)
     if fail_n == 0:
         print(f"通过 {ok_n} · 失败 0\n✓ 全部通过")

@@ -196,6 +196,65 @@ def main() -> int:
           "bad.com" not in hosts_asked, str(hosts_asked))
     check("真的搜到了书", len(out) >= 1, f"{len(out)} 条")
 
+    print("\n── 6. 扇出预算：14 个站要能在 7 秒内全问到 ──")
+    # 2026-10-21 线上实测：14 个可搜站 / 6 并发 = 要跑 3 轮；
+    # 而单站超时给的是 8 秒 —— **单站超时比总预算还长**，
+    # 等于「只要有一个站慢到 8 秒，整批必然超预算」。
+    # 线上 15 次 `自有来源搜索超预算，先用已有结果`，全部是这句，
+    # 而那 15 次一条结果都没拿到。后果直接对应「热门书也搜不到」。
+    check("★ 单站超时明显小于总预算（否则一个慢站就能拖垮整批）",
+          RS.SEARCH_SITE_TIMEOUT < RS.SEARCH_BUDGET,
+          f"单站 {RS.SEARCH_SITE_TIMEOUT}s vs 总预算 {RS.SEARCH_BUDGET}s")
+    check("★ 并发数能一次覆盖常见数量的可搜站（不用排队跑多轮）",
+          RS.SEARCH_WORKERS >= 12, str(RS.SEARCH_WORKERS))
+    # 判据不能只说"数字够大"—— 得验**实际行为**：14 个站时只发一轮。
+    check("★ 14 个站时并发上限就是 14（不是 6 排队跑三轮）",
+          min(RS.SEARCH_WORKERS, 14) == 14)
+
+    # 超预算日志要能看出"卡在哪"（旧版只有一句"先用已有结果"，一句信息都没有）
+    import inspect
+    src = inspect.getsource(RS.RegistrySource.search)
+    check("★ 超预算日志带进度（答完几个 / 共几个 / 耗时 / 已有几条）",
+          "个站已答完" in src and "len(ordered)" in src, src[src.find("超预算"):][:80])
+
+    print("\n── 7. 整批全挂要让熔断器知道（部分挂不算） ──")
+    # `_search_one` 原来 catch 掉异常直接 return []，引擎会把"挂"当成
+    # "没这本书" → note_ok 清零 → 熔断器永远收不到失败。
+    # 现在它把错误记在实例上（note_error），search() 判「整批全挂」才上抛。
+    R.note_site("dead1.com", ok=True, search_tpl="/?s={kw}")
+    R.note_site("dead2.com", ok=True, search_tpl="/?s={kw}")
+    R.flush()
+
+    boom_asked: list[str] = []
+
+    def boom_fetch(url, *a, **k):
+        boom_asked.append(url)
+        raise OSError("DNS 挂了")
+
+    RS.fetch_text = boom_fetch
+    src_obj = RS.RegistrySource()
+    try:
+        out2 = src_obj.search("喵")
+        err2 = src_obj.take_error()
+    finally:
+        RS.fetch_text = real_fetch
+    check("整批全挂时返回空结果（不抛给引擎）", out2 == [], str(out2))
+    check("★ 整批全挂时把错误留给熔断器（否则永远不熔断）", bool(err2), repr(err2))
+    check("错误里说清是「全部站都失败」", "全部" in (err2 or ""), repr(err2))
+
+    # 反向：只要有结果，就不该报"挂" —— 否则搜到书也会被拉黑。
+    R.note_site("alive.com", ok=True, search_tpl="/?s={kw}")
+    R.flush()
+    RS.fetch_text = fake_fetch
+    src3 = RS.RegistrySource()
+    try:
+        out3 = src3.search("喵")
+        err3 = src3.take_error()
+    finally:
+        RS.fetch_text = real_fetch
+    check("有结果时不报「挂」（空结果≠挂，这是熔断器的红线）",
+          bool(out3) and not err3, f"out={len(out3)} err={err3!r}")
+
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")
     print("=" * 62)

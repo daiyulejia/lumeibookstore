@@ -93,6 +93,10 @@ MOTION_TEST = ROOT / "tools" / "test_motion.py"
 RANKS_TEST = ROOT / "tools" / "test_ranks.py"
 REGISTRY_TEST = ROOT / "tools" / "test_registry.py"
 REGSRC_TEST = ROOT / "tools" / "test_registry_source.py"
+# 源熔断（含「源自己吞了异常也要熔断」，见 app/sources/base.py::note_error）
+HEALTH_TEST = ROOT / "tools" / "test_source_health.py"
+# 自有来源（学到的模板 → 真的能搜出书）
+REGISTRY_SOURCE = ROOT / "app" / "sources" / "registry_source.py"
 FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
 # 搜索总预算 + 搜索账目（tools/test_engine_budget.py）
 BUDGET_TEST = ROOT / "tools" / "test_engine_budget.py"
@@ -456,8 +460,8 @@ MUTATIONS: list[Mutation] = [
              REGISTRY_TEST),
     Mutation("registry", "『可搜源』的判据漏掉健康度（坏站又被算成资产）",
              REGISTRY,
-             "    return has_search_tpl(site) and is_healthy(site)",
-             "    return has_search_tpl(site)",
+             "    return has_search_tpl(site) and _tpl_can_search(site) and is_healthy(site)",
+             "    return has_search_tpl(site) and _tpl_can_search(site)",
              REGISTRY_TEST),
     Mutation("registry", "总览的『可搜源』不走统一判据（数模板不管健康，与列表对不上）",
              REGISTRY,
@@ -900,6 +904,66 @@ MUTATIONS: list[Mutation] = [
              '    print("\\n[4/4] 推送到 GitHub")',
              '    print("\\n推送到 GitHub")',
              CHAIN_TEST),
+    # ---------------- 搜索模板必须真能带关键词（tools/test_registry.py）----------------
+    # ⚠ 背景：线上 14 个「可搜源」里 6 个的模板是 `/search.html` 这种裸路径，
+    #   关键词根本没发给站点，打开的是搜索页/首页（本来就有一堆书）——
+    #   所以"链接数够多"判真、控制实验也判不了假，全静默。
+    #   这一组破坏的就是那道防线：判据、写入口、自愈、扇出结构性矛盾。
+    Mutation("kwless", "`tpl_carries_kw` 恒真（裸路径也算能搜 → 假站全放进来）",
+             SITELEARN,
+             '    if "{kw}" in (tpl or ""):\n        return True',
+             "    if True:\n        return True",
+             REGISTRY_TEST),
+    Mutation("kwless", "`is_searchable` 不再校验模板能不能带关键词（库里假模板变回可搜）",
+             REGISTRY,
+             "    return has_search_tpl(site) and _tpl_can_search(site) and is_healthy(site)",
+             "    return has_search_tpl(site) and is_healthy(site)",
+             REGISTRY_TEST),
+    Mutation("kwless", "`note_search_tpl` 来者不拒（裸路径模板照样进库）",
+             REGISTRY,
+             '    if not tpl_carries_kw(tpl, method=method, body=body):\n'
+             '        logger.info("拒收带不了关键词的搜索模板 %s：%s", host, tpl)\n'
+             '        return False',
+             "    if False:\n        return False",
+             REGISTRY_TEST),
+    Mutation("kwless", "自愈不清带不了关键词的模板（库里 6 个假站永远留着）",
+             REGISTRY,
+             '        if tpl_carries_kw(tpl, method=(site.get("search_method") or "get"),\n'
+             '                          body=site.get("search_body")):\n'
+             "            continue",
+             "        if True:\n            continue",
+             REGISTRY_TEST),
+    # ⚠ 这里**故意没有**「清理不同步 updated」这条突变：
+    #   实测它单独破坏不会红 —— `_read_disk()` 落盘前也会跑一遍自愈，
+    #   盘上那份已经被清过了，于是 merge 两边一致。两处互为兜底，
+    #   破坏任一处都不坏事，反证测不出来。硬塞一条只会变成"存活"的噪声。
+    #   对应的行为判据在 tools/test_registry.py「清理结果真落了盘」。
+    # ---------------- 自有来源扇出的结构性矛盾（tools/test_registry_source.py）----------------
+    Mutation("kwless", "并发退回 6（14 个站要跑 3 轮，结构上必然超预算）",
+             REGISTRY_SOURCE,
+             "SEARCH_WORKERS = 24",
+             "SEARCH_WORKERS = 6",
+             REGSRC_TEST),
+    Mutation("kwless", "单站超时退回 8s（比总预算 7s 还长 —— 一个慢站拖垮整批）",
+             REGISTRY_SOURCE,
+             "SEARCH_SITE_TIMEOUT = 3.5",
+             "SEARCH_SITE_TIMEOUT = 8.0",
+             REGSRC_TEST),
+    Mutation("kwless", "超预算日志只说「先用已有结果」（看不出卡在几个站）",
+             REGISTRY_SOURCE,
+             '            logger.info("自有来源搜索超预算（%d/%d 个站已答完、%.1fs），先用已有结果 %d 条",\n'
+             "                        done, len(ordered), time.time() - t0, len(results))",
+             '            logger.info("自有来源搜索超预算，先用已有结果")',
+             REGSRC_TEST),
+    # ---------------- 源吞异常也要熔断（tools/test_source_health.py）----------------
+    # ⚠ 线上实测：熔断器一天**一次都没触发**，因为源自己 catch 掉异常后 return []，
+    #   引擎当成"答话了、只是没这本书"→ note_ok 清零。
+    #   结果 wikisource 110 次 SSL 超时 + xbqg5200 55 次 403，全部白等。
+    Mutation("kwless", "引擎忽略源吞掉的异常（熔断器永远收不到失败）",
+             ENGINE,
+             "                if items or not err:",
+             "                if True:",
+             HEALTH_TEST),
 ]
 
 

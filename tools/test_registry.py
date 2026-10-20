@@ -109,6 +109,61 @@ def main() -> int:
             R.note_site("dead.com", ok=False)
         check("连续失败 3 次的站算失效", not R.is_healthy(R.known_site("dead.com")))
         check("失效站被 healthy_sites 排除", "dead.com" not in R.healthy_sites())
+
+        print("\n—— 搜索模板必须真能带关键词 ——")
+        # 2026-10-21 线上实测：14 个「可搜源」里 6 个的模板是 `/search.html`
+        # 这种**不带 `{kw}` 占位**的裸路径。`build_url()` 只做占位替换，
+        # 没有占位 = 关键词根本没发给站点，打开的是搜索页/首页（本来就有一堆书），
+        # 于是"链接数够多"判真、控制实验也判不了假 —— 全静默。
+        R.note_site("good.com", ok=True)
+        check("带 {kw} 的模板照常收下",
+              R.note_search_tpl("good.com", "/?s={kw}") is True)
+        R.note_site("bare.com", ok=True)
+        check("★ 裸路径模板被拒收（写不进去）",
+              R.note_search_tpl("bare.com", "/search.html") is False)
+        check("★ 拒收之后库里没有模板",
+              not (R.known_site("bare.com").get("search_tpl") or ""))
+        R.note_site("post.com", ok=True)
+        check("POST + body 里带 {kw} 照常收下",
+              R.note_search_tpl("post.com", "/search.php", method="post",
+                                body={"s": "{kw}"}) is True)
+
+        check("★ is_searchable 否掉无占位的模板",
+              not R.is_searchable({"search_tpl": "/search.html", "ok": 50}))
+        check("is_searchable 认可带 {kw} 的模板",
+              R.is_searchable({"search_tpl": "/?s={kw}", "ok": 50}))
+        check("★ 库里的假模板进不了可搜清单",
+              "bare.com" not in R.searchable_sites())
+
+        # 自愈：库里的旧假模板要被清掉，且**站不许丢**（回到重学队列）
+        R.note_site("legacy.com", ok=True)
+        R.flush()
+        d = disk()
+        d["sites"]["legacy.com"].update({"search_tpl": "/search.html",
+                                         "search_enc": "utf-8",
+                                         "search_ver": 9,
+                                         "search_fail": 3,
+                                         "search_fail_ver": R.LEARN_VER,
+                                         # 故意比"现在"更新：模拟另一个进程刚写过。
+                                         # 清理若只写 `_now()`，合并时会被这份赢回去。
+                                         "updated": int(time.time()) + 60})
+        R._DB.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        R._cache = None                       # 让下一次读库重跑自愈
+        s = R.known_site("legacy.com")
+        check("★ 自愈把带不了关键词的模板清掉了",
+              not (s.get("search_tpl") or ""), repr(s.get("search_tpl")))
+        check("★ 站没被丢掉（只是回到重学队列）", bool(s))
+        check("★ 失败账清零（否则旧账挡住重学）",
+              int(s.get("search_fail") or 0) == 0
+              and int(s.get("search_fail_ver") or 0) == 0,
+              f"fail={s.get('search_fail')} ver={s.get('search_fail_ver')}")
+        R.flush()
+        d2 = disk()
+        check("★ 清理结果真落了盘（updated 要盖过盘上那份）",
+              (d2["sites"]["legacy.com"].get("search_tpl") or "") == "",
+              repr(d2["sites"]["legacy.com"].get("search_tpl")))
+        R.forget_site("legacy.com")
+
         r = R.prune(only_dead=True)
         check("清失效只清失效的", r["sites_removed"] == 1 and "flaky.com" in R.sites(),
               str(r))

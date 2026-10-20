@@ -157,6 +157,37 @@ def test_external_link_ignored() -> None:
        "外站搜索入口不当成自己的")
 
 
+def test_kwless_template_rejected() -> None:
+    """「带不了关键词」的模板一律不算搜索接口。
+
+    线上实测（2026-10-21）：14 个"可搜源"里有 6 个的模板是 `/search.php`
+    `/search` `/search.html` —— **一个 `{kw}` 占位都没有**。
+    `build_url()` 只做 `{kw}` 替换，没占位就等于关键词根本没发出去：
+    请求打开的是站点搜索页/首页（那儿本来就有一堆书），
+    于是 `verify_tpl` 数到十几条链接就判真、控制实验也判不了假。
+    """
+    print("\n[带不了关键词的模板不算搜索接口]")
+    ok(sitelearn.tpl_carries_kw("/search.php?q={kw}"), "GET 带 {kw} → 能带")
+    ok(not sitelearn.tpl_carries_kw("/search.html"), "GET 裸路径 → 带不了")
+    ok(not sitelearn.tpl_carries_kw("/search"), "GET 连扩展名都没有 → 带不了")
+    ok(sitelearn.tpl_carries_kw("/search.php", method="post",
+                                body={"s": "{kw}"}),
+       "POST + body 里带 {kw} → 能带（实测 384g 就是这种）")
+    ok(not sitelearn.tpl_carries_kw("/search.php", method="post",
+                                    body={"s": "x"}),
+       "POST 但 body 里也没占位 → 带不了")
+    ok(not sitelearn.tpl_carries_kw(""), "空模板 → 带不了")
+
+    # 学的时候就不许学进来：`<a href="/search.html">搜索</a>` 这种链接
+    # 里没有可替换的示例值，抠完还是裸路径 —— 学它等于给自己埋一个假站。
+    html = ('<a href="/search.html">搜索</a>'
+            '<a href="/search.php?q=%E9%83%BD%E5%B8%82">站内搜索</a>')
+    got = sitelearn.learn_from_html(html, "https://h.com/", "h.com")
+    tpls = [c["tpl"] for c in got]
+    eq(tpls, ["/search.php?q={kw}"],
+       "裸链接 /search.html 被丢掉，只剩真的能带关键词的那条")
+
+
 # ---------------------------------------------------------------------------
 # 4) 爆破候选
 # ---------------------------------------------------------------------------
@@ -281,6 +312,7 @@ def main() -> int:
     test_script_without_search_is_ignored()
     test_search_link()
     test_external_link_ignored()
+    test_kwless_template_rejected()
     test_guess_templates()
     test_build_url()
     test_make_tpl()

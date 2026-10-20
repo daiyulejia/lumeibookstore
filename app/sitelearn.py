@@ -207,6 +207,40 @@ def make_tpl(host: str, path_qs: str) -> str:
     return p
 
 
+def tpl_carries_kw(tpl: str, *, method: str = "get",
+                   body: Optional[dict] = None) -> bool:
+    """这个「搜索模板」到底能不能把关键词发出去。
+
+    ⚠ 为什么这条必须有（2026-10-21 线上实测，14 个"可搜源"里 6 个是假的）：
+      `www.384g.com` `/search.php`、`www.tadu.com` `/search`、
+      `www.zxs8.net` `/search.html`、`www.itiandixs.com` `/search.html`、
+      `www.xizids.com` `/search.html`、`wap.xbqg87.com` `/search.php` ——
+      **一个 `{kw}` 占位都没有**。而 `build_url()` 只做
+      `tpl.replace("{kw}", kw)`，模板里没有占位就等于**关键词根本没被带上**：
+      请求出去打开的是站点的搜索页/首页，那一页本来就有一堆书。
+
+      于是旧 `verify_tpl` 数到十几条链接，判「能搜」，盖了"已核实"章。
+      控制实验也判不了它假 —— 换成"绝对搜不到的书名"，打开的
+      还是同一个搜索页，只是那一页的**动态链接略有不同**，
+      Jaccard 落在阈值下面。所以它既骗过了验证，也骗过了复核。
+
+      后果全静默：「综合 14 站」掺了 6 个假站，而且它们每次搜索
+      都白占预算（14 站 / 6 并发 / 单站 8s 超时 / 总预算 7s，
+      结构上必然超时），把真能搜的站挤到收手之后。
+
+      这类模板**物理上不可能按关键词搜**，所以判据要前置到学站这一步，
+      而不是等做完请求再猜。
+
+    POST 不算违反：关键词在请求体里（实测 384g 就是
+    `POST /search.php` + `s={kw}`）。
+    """
+    if "{kw}" in (tpl or ""):
+        return True
+    if (method or "get").strip().lower() == "post":
+        return any("{kw}" in str(v) for v in (body or {}).values())
+    return False
+
+
 def build_url(tpl: str, host: str, keyword: str, *, enc: str = "utf-8",
               scheme: str = "https") -> str:
     """把模板 + 关键词拼成一个能直接请求的 URL。"""
@@ -312,11 +346,19 @@ def learn_from_html(html: str, page_url: str, host: str) -> list[dict]:
             # 跳到别的域名（比如站群）——先不学，免得把外站当自己的搜索
             continue
         tpl = make_tpl(host, u.path + (("?" + u.query) if u.query else ""))
-        if not tpl or "{kw}" in tpl.replace("{kw}", ""):
+        if not tpl:
             continue
+        # ⚠ 这里原来是 `if not tpl or "{kw}" in tpl.replace("{kw}", ""):`
+        #   第二半**恒假**（`{kw}` 全被替换成空串了，还怎么找得到）——
+        #   等于没有守卫。于是「搜索」链接 `/search.html`（不带任何参数）
+        #   被当成搜索模板存下来，线上 6 个假模板正是从这里进去的。
         # 链接里已经带了示例关键词（/s?q=都市）→ 把值抠出来换成 {kw}
         tpl = _replace_value_with_kw(tpl)
         if not tpl or tpl in seen:
+            continue
+        if not tpl_carries_kw(tpl):
+            # 抠完还是带不了关键词 = 这个"搜索入口"不可能按词搜（详见
+            # `tpl_carries_kw` 的注释）。学它等于给自己埋一个假站。
             continue
         seen.add(tpl)
         out.append({"tpl": tpl, "enc": "utf-8", "via": "link", "method": "get"})

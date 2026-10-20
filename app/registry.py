@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import re
 import shutil
@@ -58,6 +59,8 @@ import time
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+
+logger = logging.getLogger("novel.registry")
 
 _ROOT = Path(__file__).resolve().parent.parent
 # 库文件的落点。`NOVEL_REGISTRY` 可以让测试 / 命令行工具用另一份，
@@ -238,6 +241,65 @@ def _scrub(db: dict) -> int:
     return n
 
 
+def _scrub_kwless(db: dict) -> int:
+    """清掉「带不了关键词」的搜索模板（自愈）。返回清理条数。
+
+    为什么必须清（2026-10-21 线上实测）：
+      14 个「可搜源」里有 6 个的模板是 `/search.php` `/search` `/search.html`
+      这类**不带 `{kw}` 占位**的裸路径。`build_url()` 只做 `{kw}` 替换，
+      没有占位就等于关键词没发出去 —— 打开的是站点的搜索页/首页，
+      那一页本来就有一堆书，于是验证时"链接数够多"判真、控制实验也判不了假
+      （换任何词打开的都是同一页，只是动态链接略有不同）。
+
+      它们每次搜索都白占预算（14 站 / 6 并发 / 单站 8s 超时 / 总预算 7s，
+      结构上必然超时），把真能搜的站挤到收手之后 —— 这是「热门书也搜不到」
+      的一大半原因。
+
+    清掉之后**站不会丢**：它只是回到「还没学会搜索」的状态，
+    下一轮学站会重新爆破（线上 384g 的正确模板是 `POST /search.php`，
+    旧的那份是 GET 裸路径）。所以顺便把失败账也清零，别让旧账挡住重学。
+
+    ⚠ 必须写 `""` 而不是 `pop`：落盘走 `_merge()` 逐键覆盖，
+      内存里没有的键会从盘上**复活**（这个坑踩过一次，见 clear_search_tpl）。
+    """
+    from .sitelearn import tpl_carries_kw
+
+    n = 0
+    for host, site in list((db.get("sites") or {}).items()):
+        if not isinstance(site, dict):
+            continue
+        tpl = (site.get("search_tpl") or "").strip()
+        if not tpl:
+            continue
+        if tpl_carries_kw(tpl, method=(site.get("search_method") or "get"),
+                          body=site.get("search_body")):
+            continue
+        site["search_tpl"] = ""
+        site["search_enc"] = ""
+        site["search_body"] = {}
+        site["search_method"] = ""
+        site["search_ver"] = 0
+        site["search_fail"] = 0        # 旧模板的失败不该挡住重学
+        site["search_fail_ver"] = 0
+        # ⚠ 必须把 `updated` 推到**比原来更新**：`_merge()` 合并同名条目时
+        #   按 updated 比新旧，不同步这个时间戳，盘上那份（模板还在）会赢，
+        #   于是这次清理在落盘时被静默丢弃 —— 下次启动模板又回来了。
+        #   也不能只写 `_now()`：盘上那份可能刚被别的进程（命令行工具）更新过，
+        #   时间戳比"现在"还新，同秒比较也会让它赢。所以取两者较大值 +1。
+        # ⚠ `updated` 推到比原来更新是**防御性**写法：`_merge()` 合并同名条目
+        #   时按 updated 比新旧，不推就可能让盘上那份（模板还在）赢。
+        #   诚实说明：实测这条**单独破坏不会出事** —— 因为 `_read_disk()` 里
+        #   同样跑 `_scrub_and_log()`，落盘前盘上那份已经被清过一遍了。
+        #   两处互为兜底，所以这里也不配一条单独的突变（它测不出来），
+        #   行为判据在 tools/test_registry.py「清理结果真落了盘」。
+        #   取两者较大值 +1 而不是只写 `_now()`：盘上那份可能刚被别的进程
+        #   （命令行工具）更新过，时间戳比"现在"还新。
+        site["updated"] = max(_now(), int(site.get("updated") or 0) + 1)
+        logger.info("清掉带不了关键词的搜索模板（站回到重学队列）：%s %s", host, tpl)
+        n += 1
+    return n
+
+
 def _scrub_and_log(db: dict) -> None:
     """跑自愈并**留一条日志**（原先是静默的）。
 
@@ -250,6 +312,7 @@ def _scrub_and_log(db: dict) -> None:
     异常仍然吞掉（不能因为自愈失败就整个读库失败），但降级为 warning 留痕。
     """
     try:
+        n_kw = _scrub_kwless(db)
         n = _scrub(db)
     except Exception as e:  # noqa: BLE001
         try:
@@ -258,7 +321,24 @@ def _scrub_and_log(db: dict) -> None:
         except Exception:  # noqa: BLE001
             pass
         return
+    if n or n_kw:
+        # 清模板是**写操作**（`_scrub` 原来只改内存、靠后续写入顺带落盘，
+        # 但清模板不会伴随任何写入，不主动置脏就等于重启后又回来）。
+        #
+        # ⚠ 这里**不能**直接 `_maybe_save()`：本函数是在 `_load()` 里被调的，
+        #   那时 `_cache` 还没赋值，`_save()` 的 `_merge(disk, _cache or _empty())`
+        #   会拿空库去合并 —— 写回去等于什么都没改（清模板白清）。
+        #   置脏就够了：下一次真实写入或进程退出时的 `flush()` 会带上。
+        global _dirty
+        _dirty = True
     if not n:
+        if n_kw:
+            try:
+                from .logging_setup import get_logger, log_event
+                log_event(get_logger("novel.registry"), "registry.scrub",
+                          新判死=0, 影视站=0, 非小说站=0, 空模板=n_kw)
+            except Exception:  # noqa: BLE001
+                pass
         return
     try:
         from .logging_setup import get_logger, log_event
@@ -266,7 +346,7 @@ def _scrub_and_log(db: dict) -> None:
         video = sum(1 for s in blocked if isinstance(s, dict) and s.get("video_blocked"))
         off = sum(1 for s in blocked if isinstance(s, dict) and s.get("offtopic_blocked"))
         log_event(get_logger("novel.registry"), "registry.scrub",
-                  新判死=n, 影视站=video, 非小说站=off)
+                  新判死=n, 影视站=video, 非小说站=off, 空模板=n_kw)
     except Exception:  # noqa: BLE001
         pass
 
@@ -532,6 +612,14 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
     host = (host or "").strip().lower()
     tpl = (tpl or "").strip()
     if not host or not tpl:
+        return False
+    # ⚠ 带不了关键词的模板**拒收**（2026-10-21 补）。
+    #   以前只判"空不空"，于是 `/search.html` 这种裸路径被当成搜索接口存下来：
+    #   请求出去关键词根本没发，打开的是搜索页/首页，验证时"链接数够多"就判真。
+    #   拦在写入口比事后复核便宜得多 —— 复核一次要打两次真站点。
+    from .sitelearn import tpl_carries_kw
+    if not tpl_carries_kw(tpl, method=method, body=body):
+        logger.info("拒收带不了关键词的搜索模板 %s：%s", host, tpl)
         return False
     notes = {"search_tpl": tpl, "search_enc": (enc or "utf-8")}
     if via:
@@ -912,8 +1000,28 @@ def is_searchable(site: dict) -> bool:
       于是同一句「有 N 个可搜源」，看总览是 3、按站点列表数是 6，
       用户没法知道该信哪个 —— 更糟的是**坏站被算进了资产**。
       两处各写一遍判据就一定会再漂，所以只留这一个函数。
+
+    2026-10-21 又补了一条：模板**必须真的能把关键词带出去**。
+    14 个"可搜源"里有 6 个的模板是 `/search.php` `/search` `/search.html`
+    这类**不带 `{kw}` 占位**的路径 —— `build_url()` 只做 `{kw}` 替换，
+    没有占位就等于关键词没发给站点，打开的是搜索页/首页（那儿本来就有一堆书），
+    所以验证时"数到十几条链接"也判真。详见 `sitelearn.tpl_carries_kw`。
+    ⚠ 判据仍然只在这一处 —— 界面、总览、扇出、复核全都调它。
     """
-    return has_search_tpl(site) and is_healthy(site)
+    return has_search_tpl(site) and _tpl_can_search(site) and is_healthy(site)
+
+
+def _tpl_can_search(site: dict) -> bool:
+    """库里的模板是不是一个"真能带关键词出去"的搜索接口。
+
+    单独拿出来是为了让 `is_searchable` 的注释说清一件事：
+    「学过模板」和「模板能搜」是两件事，中间差的就是这个函数。
+    """
+    from .sitelearn import tpl_carries_kw   # 函数内 import：registry 不反向依赖上层
+
+    return tpl_carries_kw((site.get("search_tpl") or "").strip(),
+                          method=(site.get("search_method") or "get"),
+                          body=site.get("search_body"))
 
 
 def has_search_tpl(site: dict) -> bool:

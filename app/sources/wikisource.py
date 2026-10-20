@@ -81,6 +81,10 @@ class WikisourceSource(Source):
         try:
             data = self._api(params)
         except Exception as e:  # noqa: BLE001
+            # 吞掉异常是合理的（对调用方来说"这次没搜到"），但**必须告诉引擎**
+            # 这是"挂"而不是"没这本书" —— 否则熔断器永远收不到失败，
+            # 实测结果就是每天 110 次 SSL 握手超时、熔断 0 次，每次搜索都白等。
+            self.note_error(e)
             logger.info("搜索失败: %s", e)
             return []
         return data.get("query", {}).get("search", [])

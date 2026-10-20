@@ -188,6 +188,9 @@ class Kunnu8Source(Source):
                 root = f"{SITE}/{seg}/"
                 books[root] = BookResult(title=title, source=self.name, url=root)
         except Exception as e:  # noqa: BLE001
+            # 两条通路各自失败都要留痕给熔断器（参见 base.note_error 的注释）。
+            # 只要另一条通路拿到了结果，引擎会按"有结果"记成功 —— 不会误拉黑。
+            self.note_error(e)
             logger.info("站内搜索页失败: %s", e)
 
         # —— 通路 2：WP REST API，补章节命中的书 ——
@@ -197,6 +200,7 @@ class Kunnu8Source(Source):
             )
             items = r.json()
         except Exception as e:  # noqa: BLE001
+            self.note_error(e)
             logger.info("WP 搜索失败: %s", e)
             items = []
 

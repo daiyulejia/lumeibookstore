@@ -82,6 +82,31 @@ class Source(ABC):
         cur = getattr(self, "_probe_ms_avg", 0.0)
         self._probe_ms_avg = float(ms) if cur <= 0 else cur * 0.6 + ms * 0.4
 
+    # -- 「我吞了异常，但得让引擎知道」---------------------------------
+    # ⚠ 为什么需要这两个方法（2026-10-21 线上实测，代价是每天 165 次白等）：
+    #   引擎的熔断器（`app/sourcehealth.py`）只看得见**抛出来的**异常。
+    #   但好几个源的 search() 为了"一种抓法失败换下一种"而**自己 catch 掉**，
+    #   然后 return []（wikisource / xbqg5200 / kunnu8 都是）。
+    #   在引擎看来这就是"答话了、只是没这本书" → `HEALTH.note_ok()` 清零。
+    #
+    #   线上后果：`novel.wikisource` 一天 110 次 `SSL 握手超时`、
+    #   `xbqg5200` 55 次 `403`，而**熔断日志 0 条、跳过日志 0 条**。
+    #   每次搜索都还在名单里陪它们等满 20 秒 —— 熔断器写了半天没生效。
+    #
+    #   所以：吞异常可以（那是合理设计），但必须**留个口条**给引擎。
+    #   用线程局部（和 `log` 同理）：一个来源实例可能同时被多个搜索用。
+    def note_error(self, exc: BaseException | str) -> None:
+        """把一次**被吞掉的**异常记下。引擎每个来源每轮取一次。"""
+        text = (f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, BaseException) else str(exc))
+        self._tls.err = text[:200]
+
+    def take_error(self) -> str:
+        """取走并清空「上次吞掉的异常」。"""
+        e = getattr(self._tls, "err", "") or ""
+        self._tls.err = ""
+        return e
+
     def probe_limit(self) -> int:
         """这次搜索里最多探几个。
 

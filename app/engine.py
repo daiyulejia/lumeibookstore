@@ -382,6 +382,10 @@ class Engine:
         def _run(src: Source):
             try:
                 src.set_log(on_progress)
+                # 清掉上一次可能残留的"吞掉的异常"（线程局部跨搜索保留）。
+                # 不清的话，上一轮失败的源这一轮答得好好的，也会被算成挂。
+                if hasattr(src, "take_error"):
+                    src.take_error()
                 # 搜索结果用 search_kws（多词时取最长词，并列最长时全搜，见上）；
                 # 后面排序/去噪仍然用完整的 keyword。
                 items = []
@@ -399,7 +403,23 @@ class Engine:
                 # 空结果只是"这个源没有这本书"，是正常业务结果；
                 # 把它算失败的话，搜几本冷门书就会把所有源全拉黑，
                 # 之后搜什么都 0 条，而且完全静默。
-                HEALTH.note_ok(src.name)
+                #
+                # ⚠ 但「空结果」有两种，必须分开（2026-10-21 线上实测）：
+                #   ① 真的答话了、就是没这本书  → note_ok（绝不能拉黑）
+                #   ② 源**内部**把异常吞了、于是返回 []  → 这是"挂"，要记熔断
+                #   ②以前被当成了①：`novel.wikisource` 一天 110 次 SSL 握手超时、
+                #   `xbqg5200` 55 次 403，而熔断日志 0 条 —— 熔断器根本没收到过失败，
+                #   于是每次搜索都还在名单里陪它们等满 20 秒。
+                err = src.take_error() if hasattr(src, "take_error") else ""
+                if items or not err:
+                    HEALTH.note_ok(src.name)
+                else:
+                    log_event(logger, "source.fail", 源=src.name, 原因=err[:160])
+                    if HEALTH.note_fail(src.name, err):
+                        logger.warning("源 %s 连续失败，熔断 %d 分钟（%s）",
+                                       src.name,
+                                       int(HEALTH.cooldown.get(classify(err), 300) // 60),
+                                       err[:120])
                 return items
             except Exception as e:  # noqa: BLE001
                 # 单个来源挂掉是常态（站点会抽风、会改版、会拦爬虫），
