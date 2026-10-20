@@ -219,6 +219,9 @@ def main() -> int:
     # ① 库里没有书名，但模板是假的（任何关键词都吐同一批分类导航）
     registry.note_site("nobook-fake.com", ok=True)
     registry.note_search_tpl("nobook-fake.com", "/?q={kw}")
+    # 把版本号调回"旧版学的" —— 复核只处理这一批（新学出来的自带当前版本）
+    registry.note_site("nobook-fake.com", ok=True,
+                       search_ver=registry.LEARN_VER - 1)
     PAGES["nobook-fake.com"] = {"*": ["https://nobook-fake.com/c/1.html",
                                       "https://nobook-fake.com/c/2.html",
                                       "https://nobook-fake.com/c/3.html"]}
@@ -227,6 +230,8 @@ def main() -> int:
     registry.note_book("http://ownbook-real.com/1", title="药鼎仙途最新章节列表",
                        host="ownbook-real.com", ok=True)
     registry.note_search_tpl("ownbook-real.com", "/?q={kw}")
+    registry.note_site("ownbook-real.com", ok=True,
+                       search_ver=registry.LEARN_VER - 1)
     PAGES["ownbook-real.com"] = {
         CANARY_KW: ["https://ownbook-real.com/b/1.html",
                     "https://ownbook-real.com/b/2.html",
@@ -236,12 +241,15 @@ def main() -> int:
     # ③ 什么都不给（搜不到）—— 不能凭"搜不到"撤别人的模板
     registry.note_site("quiet.com", ok=True)
     registry.note_search_tpl("quiet.com", "/?q={kw}")
+    registry.note_site("quiet.com", ok=True,
+                       search_ver=registry.LEARN_VER - 1)
     PAGES["quiet.com"] = {}
 
     rep = discovery.reverify_sites(["nobook-fake.com", "ownbook-real.com",
                                     "quiet.com"])
     check("★ 库里没有书名的假站也撤得掉（靠通用书名兜底）",
-          rep["dropped"] == 1 and rep["kept"] == 2, str(rep))
+          rep["dropped"] == 1 and rep["kept"] == 1 and rep["unjudged"] == 1,
+          str(rep))
     check("★ 假站模板真的清空了",
           not (registry.known_site("nobook-fake.com").get("search_tpl") or ""),
           str(registry.known_site("nobook-fake.com")))
@@ -253,6 +261,22 @@ def main() -> int:
           rep.get("canary_only") == 2, str(rep))
     check("撤掉的站会重新回到待学队列（还能再学一次真的）",
           "nobook-fake.com" in registry.learn_candidates())
+
+    # ⚠ 这一条是线上踩出来的：`www.xxsy.net` 上一轮"没判出结论"（站上那本书
+    #   搜不到）却被盖上了「已核实」的章，于是它带着"永远返回同一批书"的
+    #   假模板活到了下一轮，再也不会被检查。
+    check("★ 拿到结论且不是假的 → 盖章，下次不再复核",
+          int(registry.known_site("ownbook-real.com").get("search_ver") or 0)
+          == registry.LEARN_VER,
+          str(registry.known_site("ownbook-real.com").get("search_ver")))
+    check("★ 没结论的站**不许**盖当前版本的章（否则永远不再被查）",
+          int(registry.known_site("quiet.com").get("search_ver") or 0)
+          != registry.LEARN_VER,
+          str(registry.known_site("quiet.com").get("search_ver")))
+    check("没结论的站会留在复核队列里（下一晚会再查一次）",
+          "quiet.com" in registry.reverify_candidates(),
+          str(registry.reverify_candidates()))
+    check("复核如实报出「没结论」的条数", rep.get("unjudged") == 1, str(rep))
 
     print("\n" + "=" * 60)
     print(f"通过 {OK} · 失败 {FAIL}")

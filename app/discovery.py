@@ -439,9 +439,10 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
 
     todo = [h for h in dict.fromkeys(h or "" for h in hosts) if h]
     if not todo:
-        return {"checked": 0, "dropped": 0, "kept": 0, "canary_only": 0}
+        return {"checked": 0, "dropped": 0, "kept": 0, "canary_only": 0,
+                "unjudged": 0}
 
-    checked = dropped = kept = canary_only = 0
+    checked = dropped = kept = canary_only = unjudged = 0
     for host in todo:
         s = registry.known_site(host)
         tpl = (s.get("search_tpl") or "").strip()
@@ -468,7 +469,7 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
         enc = s.get("search_enc") or "utf-8"
         method = (s.get("search_method") or "get").lower()
         body = s.get("search_body")
-        fake = False
+        fake = judged = False
         for probe in probes:
             try:
                 with fast_mode(retries=0, timeout=10.0):
@@ -477,6 +478,7 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
                                                     body=body)
                     if not n:
                         continue
+                    judged = True      # 这个探测词真拿到了结果，有结论了
                     if sitelearn.control_says_fake(
                             tpl, host, enc=enc, scheme=scheme, method=method,
                             body=body, urls=urls, hits=n):
@@ -490,15 +492,25 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
                 dropped += 1
                 logger.info("撤掉假搜索模板：%s %s", host, tpl)
             continue
-        # 真的就盖上新版本号，下次不再复核
-        registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)
-        kept += 1
+        if judged:
+            # 有结论、且不是假的 → 盖上新版本号，下次不再复核
+            registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)
+            kept += 1
+            continue
+        # ⚠ **没有结论时不许盖"已核实"的章**。两个探测词都搜不到东西，
+        #   说明这次没法判断真假 —— 盖上章它就永远不再被查了。
+        #   实测代价：`www.xxsy.net` 上一轮就是这么被盖了章（当时只有站上
+        #   那本书可探、而它搜不到），于是它带着"永远返回同一批书"的假模板
+        #   活到了下一轮，再也不会被检查。不盖章的代价只是每晚多查两次。
+        unjudged += 1
+        logger.info("复核 %s 没拿到结论（%d 个探测词都搜不到），下次再查",
+                    host, len(probes))
     if dropped:
         say("撤掉假的可搜源", f"{dropped} 个站其实没在按关键词搜，已撤掉", False)
-    logger.info("模板复核完成：查了 %d（其中 %d 个只能靠通用书名），撤掉 %d，留下 %d",
-                checked, canary_only, dropped, kept)
+    logger.info("模板复核完成：查了 %d（其中 %d 个只能靠通用书名），撤掉 %d，"
+                "留下 %d，没结论 %d", checked, canary_only, dropped, kept, unjudged)
     return {"checked": checked, "dropped": dropped, "kept": kept,
-            "canary_only": canary_only}
+            "canary_only": canary_only, "unjudged": unjudged}
 
 
 def discover(

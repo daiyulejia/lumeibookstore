@@ -814,6 +814,17 @@ MUTATIONS: list[Mutation] = [
              "        if False:\n"
              "            probes.append(sitelearn.CANARY_KW)",
              TRUST_TEST),
+    # 线上实测：www.xxsy.net 上一轮"没判出结论"（站上那本书搜不到）却被盖了
+    # 已核实的章，于是它带着假模板活到下一轮，再也不会被检查。
+    Mutation("trust", "复核没结论也盖章（假站从此永远不再被检查）",
+             DISCOVERY,
+             "        if judged:\n"
+             "            # 有结论、且不是假的 → 盖上新版本号，下次不再复核\n"
+             "            registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)",
+             "        if True:\n"
+             "            # 有结论、且不是假的 → 盖上新版本号，下次不再复核\n"
+             "            registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)",
+             TRUST_TEST),
 
     # ------------------------------------------------------------------
     # 学站失败账必须带学习器版本号（tools/test_registry.py）
