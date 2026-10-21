@@ -209,6 +209,15 @@ class RegistrySource(Source):
             slow = classify_fetch_error(e) == "slow"
             registry.note_site(host, ok=False,
                                why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
+            # ⚠ 「抓取就打不开」和「打开发现存的不是搜索页」是同一件事的两种表现，
+            #   要汇到同一条生命线上。线上实测 `m.kudushu.org` 每次都 403：
+            #   它走的是异常分支（不算 search_shape），而 0 命中又让夜间复核
+            #   直接跳过（`reverify_sites` 的 `if not n: continue`）——
+            #   于是它既不会被判假、也不会被作废，**永久赖在可搜源里**，
+            #   每次搜索白占一个并发名额、还把"综合 N 站"这个数字撑大。
+            #   超时（slow）不算：那是我们等得不够，不是站打不开。
+            if not slow:
+                registry.note_search_result(host, hits=0, raw=0)
             # 留口条给熔断器 + 让 search() 数得出"有几个站失败"。
             # 只在**整批**都失败时才上抛成"这个源挂了"（见 search() 末尾）。
             self.note_error(e)

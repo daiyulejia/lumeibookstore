@@ -333,9 +333,16 @@ def main() -> int:
     check("读超时 → 记 fail_slow", int(slow.get("fail_slow") or 0) == 1, str(slow))
     check("★ 读超时**不许**记 fail_down（这是「我们等得不够」，不是站的错）",
           int(slow.get("fail_down") or 0) == 0, str(slow))
+    check("★ 读超时也不算「打不开结果页」（换个宽松点的超时就好了，别作废模板）",
+          int(slow.get("search_shape") or 0) == 0, str(slow))
     check("连接失败 → 记 fail_down（这才像站挂了）",
           int(conn.get("fail_down") or 0) == 1, str(conn))
     check("连接失败不记 fail_slow", int(conn.get("fail_slow") or 0) == 0, str(conn))
+    # ⚠ 线上实测 `m.kudushu.org` 每次都 403：走异常分支 → 不记 search_shape，
+    #   而 0 命中又让夜间复核直接跳过 → 既不被判假也不被作废，永久赖在可搜源里。
+    #   所以「抓取就打不开」必须和「打开不是搜索页」汇到同一条生命线。
+    check("★ 连不上/被 403 也算「打不开结果页」（否则它永远退出不了可搜源）",
+          int(conn.get("search_shape") or 0) == 1, str(conn))
 
     print("\n── 10. 每站只回 6 条时，正主不能排在第 7 位被截掉 ──")
     # 线上实测：www.384g.com 搜「斗破苍穹」返回 **100 条**，含关键词的第一条
