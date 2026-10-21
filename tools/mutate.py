@@ -619,6 +619,16 @@ MUTATIONS: list[Mutation] = [
              '    log_event(logger, "source.learn",\n',
              '    log_event(logger, "source.learn.nope",\n',
              TRUST_TEST),
+    Mutation("reverifybudget", "复核拿不到结果就收工（假站多活 24 小时）",
+             DISCOVERY,
+             "_REVERIFY_ATTEMPTS = 2",
+             "_REVERIFY_ATTEMPTS = 1",
+             TRUST_TEST),
+    Mutation("reverifybudget", "复核重试时不等（同域限速还没解除，等于白问）",
+             DISCOVERY,
+             "_REVERIFY_RETRY_WAIT = 1.0",
+             "_REVERIFY_RETRY_WAIT = 0.0",
+             TRUST_TEST),
 
     # ------- 「目录可能不全」备注（tools/test_registry.py）-------
     Mutation("registry", "「这次不评价目录」和「这次查过、目录是全的」混成一个语义"

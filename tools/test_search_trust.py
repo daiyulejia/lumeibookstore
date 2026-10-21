@@ -354,6 +354,105 @@ def main() -> int:
     check("复核如实报出「没结论」的条数", rep.get("unjudged") == 1, str(rep))
 
     # ------------------------------------------------------------------
+    print("\n—— 复核一次没拿到结果，必须当场再问一遍（别把假站留到明天）——")
+    # ⚠ 线上实测（2026-10-22）：`www.whxss.com` / `www.xxsy.net` 是**铁假**
+    #   （真实书名与"绝对搜不到的书名"结果集重合 1.00，在服务器上手动跑判据
+    #   两个探测词都判 fake），却带着假模板活了一整天，每次搜索都白打一遍。
+    #   原因不是判据不对，而是复核**一晚只有一次机会**：学站 07:20:17 刚保存、
+    #   复核 07:21 就来问，站点还在限速，拿回 0 条 → `if not n: continue`
+    #   → 记成"没结论"→ 明天再说。一次瞬时失败 = 假站多活 24 小时。
+    #
+    # ⚠⚠ 下面用**可控时钟**造"预算用光"和"退开一秒"，不用 `sleep`：
+    #   sleep 的判据在慢机器上会飘（本项目反复踩的"判据随环境漂"）。
+    #   时钟只在 discovery 这一个模块里换掉，别的模块照旧用真时间。
+    import time as _t   # noqa: PLC0415
+    real_mono = _t.monotonic
+
+    class _Clock:
+        """假时钟：第 `pass_real` 次（含）之前给真时间，之后直接跳到 1 万秒后。
+
+        `deadline = monotonic() + budget` 用掉第 1 次，循环里每次判一次。
+        `sleep()` 只记账不真睡 —— 这样"两次尝试之间确实退开了一下"本身
+        也能被断言（否则把等待改成 0 秒，测试照样全绿）。
+        """
+
+        def __init__(self, pass_real: int) -> None:
+            self.pass_real = pass_real
+            self.n = 0
+            self.sleeps: list[float] = []
+
+        def monotonic(self) -> float:
+            self.n += 1
+            return real_mono() + (0 if self.n <= self.pass_real else 10_000)
+
+        def sleep(self, secs: float) -> None:
+            self.sleeps.append(secs)
+
+        def __getattr__(self, k):
+            return getattr(_t, k)
+
+    def _make_flaky(empty_upto: int):
+        """前 `empty_upto` 次请求返回空页（模拟限速），之后正常。"""
+        st = {"n": 0}
+        base = _fake_fetch
+
+        def f(url, *a, **k):
+            host = (urlparse(url).hostname or "").lower()
+            if host.startswith("flaky"):
+                st["n"] += 1
+                if st["n"] <= empty_upto:
+                    return "<html><body>请求过于频繁</body></html>", url
+            return base(url, *a, **k)
+        return f, st
+
+    # ① 第一遍空、第二遍有 → 当场判假并撤掉（不重试的话它会变成"没结论"）
+    registry.note_site("flaky-fake.com", ok=True)
+    registry.note_search_tpl("flaky-fake.com", "/?q={kw}")
+    registry.note_site("flaky-fake.com", ok=True, search_ver=0)
+    PAGES["flaky-fake.com"] = {"*": ["https://flaky-fake.com/1.html",
+                                     "https://flaky-fake.com/2.html",
+                                     "https://flaky-fake.com/3.html"]}
+    f1, st1 = _make_flaky(1)
+    utils.fetch_text = f1
+    try:
+        rep4 = discovery.reverify_sites(["flaky-fake.com"], budget=0)
+    finally:
+        utils.fetch_text = _fake_fetch
+    check(f"第一遍拿空 → 再问一遍 → 判假并撤掉（请求了 {st1['n']} 次）",
+          rep4.get("dropped") == 1
+          and not (registry.known_site("flaky-fake.com").get("search_tpl") or ""))
+    check("而且不许把它算成「没结论」（否则下次还得再查一遍）",
+          rep4.get("unjudged") == 0)
+
+    # ② 反证方向：两遍都拿空 → 依然是"没结论"，**不许**因此判假撤掉
+    #    （"问不到"和"问到了是假"是两件事，混起来会误杀真好站）
+    registry.note_site("flaky-always.com", ok=True)
+    registry.note_search_tpl("flaky-always.com", "/?q={kw}")
+    registry.note_site("flaky-always.com", ok=True, search_ver=0)
+    PAGES["flaky-always.com"] = {"*": ["https://flaky-always.com/1.html"]}
+    f2, st2 = _make_flaky(99)
+    utils.fetch_text = f2
+    clk = _Clock(pass_real=10 ** 9)
+    discovery.time = clk
+    try:
+        rep5 = discovery.reverify_sites(["flaky-always.com"], budget=0)
+    finally:
+        discovery.time = _t
+        utils.fetch_text = _fake_fetch
+    check(f"两遍都拿空 → 没结论、模板保留（问了 {st2['n']} 次）",
+          rep5.get("unjudged") == 1 and rep5.get("dropped") == 0
+          and bool(registry.known_site("flaky-always.com").get("search_tpl")))
+    check(f"确实问了不止一遍（探测请求 {st2['n']} 次 ≥ 遍数 "
+          f"{discovery._REVERIFY_ATTEMPTS}）",
+          st2["n"] >= discovery._REVERIFY_ATTEMPTS)
+    # ⚠ 断言里**不许拿常量自己当基准**（`sleeps == [_REVERIFY_RETRY_WAIT]`
+    #   把常量改成 0 也照样成立 —— 恒真，反证当场抓出来的）。写死一个下限。
+    check(f"两遍之间真的退开了一下（sleep {clk.sleeps}）",
+          clk.sleeps == [1.0] and discovery._REVERIFY_RETRY_WAIT >= 0.5)
+    check(f"重试次数有上限（{discovery._REVERIFY_ATTEMPTS} 遍，不是死循环）",
+          1 < discovery._REVERIFY_ATTEMPTS <= 3)
+
+    # ------------------------------------------------------------------
     print("\n—— 复核也要有时间上限（原来这一趟一秒上限都没有）——")
     # ⚠ 线上实测（2026-10-22）：`POST /api/registry/learn` 是
     #   「学站 ≤120s + 复核 **无上限**」拼起来的，串行跑：
@@ -370,29 +469,7 @@ def main() -> int:
     # 预算已经用光 → 一个都不许查，而且要报出「还欠几个」。
     # ⚠ 两条分开断言：只判 pending 会被"pending 永远等于 len(todo)"蒙过去；
     #   只判 checked 则抓不到"悄悄收手不报账"。
-    # ⚠⚠ 用**可控时钟**造"预算用光"，不用 `sleep`：sleep 的判据在慢机器上
-    #   会飘（这正是本项目反复踩的"判据随环境漂"）。时钟只在 discovery
-    #   这一个模块里换掉，别的模块照旧用真时间。
-    import time as _t   # noqa: PLC0415
-    real_mono = _t.monotonic
-
-    class _Clock:
-        """第 `pass_real` 次（含）之前给真时间，之后直接跳到 10000 秒后。
-
-        `deadline = monotonic() + budget` 用掉第 1 次，循环里每次判一次。
-        """
-
-        def __init__(self, pass_real: int) -> None:
-            self.pass_real = pass_real
-            self.n = 0
-
-        def monotonic(self) -> float:
-            self.n += 1
-            return real_mono() + (0 if self.n <= self.pass_real else 10_000)
-
-        def __getattr__(self, k):
-            return getattr(_t, k)
-
+    # ⚠⚠ 时钟在上一段就换好了（`_Clock`），这里直接用。
     hosts3 = ["nobook-fake.com", "ownbook-real.com", "quiet.com"]
     discovery.time = _Clock(pass_real=1)      # 连第一个都不开始
     try:

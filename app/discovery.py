@@ -275,6 +275,13 @@ _REVERIFY_BUDGET_PER_SITE = 12.0
 _REVERIFY_BUDGET_MIN = 12.0
 _REVERIFY_BUDGET_MAX = 60.0
 
+# 一个站最多问几遍（没结论才问下一遍），两遍之间退开多久。
+# 为什么值得多问一遍：复核**一晚只有一次机会**，碰上限速就"明天再说"，
+# 而假站会在这 24 小时里的每一次搜索里被白打一遍（见下面那段长注释的实测）。
+# 退 1 秒是给同域限速让路（`utils` 里本来就按 0.3s 排队，这里是"换个节奏再问"）。
+_REVERIFY_ATTEMPTS = 2
+_REVERIFY_RETRY_WAIT = 1.0
+
 
 def _reverify_budget(n_targets: int) -> float:
     """按这一批的规模算复核预算（秒）。"""
@@ -516,28 +523,46 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None,
         #   所以只有当**每一轮**都判假才撤，每一轮都判真才盖章，
         #   有分歧就是"没结论"——留在队列下次再查。
         #   `rounds=2`：一个站 2 个请求，只在夜里复核跑，换"不误撤、不漏撤"。
+        #
+        # ⚠⚠ **没结论时必须再试一遍**（2026-10-22 线上实测逼出来的）：
+        #   实测那两个假可搜源（`www.whxss.com` / `www.xxsy.net`）——
+        #   真实书名与"绝对搜不到的书名"结果集重合 **1.00**，铁假；
+        #   在服务器上手动跑一遍判据，两个探测词都是 `fake`。
+        #   可它们带着假模板活了一整天，每次搜索都要白打一遍。
+        #   原因不是判据不对，而是**复核只在夜里跑一次**：那一次如果碰上
+        #   站点限速/刚学完连打三下（学站 07:20:17 刚保存，复核 07:21 就来问）
+        #   拿回 0 条，`if not n: continue` 就把这一轮当"没结论"——
+        #   于是"明天再说"，而明天大概率又是同样的一次机会。
+        #   一次瞬时失败 = 假站多活 24 小时、每次搜索都陪它等。
+        #   所以：整轮没结论就退开一秒再问一遍，问到了就当场定案。
         fake = real = False
-        for probe in probes:
-            try:
-                with fast_mode(retries=0, timeout=10.0):
-                    n, urls = sitelearn._fetch_hits(tpl, host, probe, enc=enc,
-                                                    scheme=scheme, method=method,
-                                                    body=body)
-                    if not n:
-                        continue
-                    verdict = sitelearn.judge_by_control(
-                        tpl, host, enc=enc, scheme=scheme, method=method,
-                        body=body, urls=urls, hits=n, rounds=2)
-            except Exception as e:  # noqa: BLE001
-                logger.info("复核 %s（探测词《%s》）出错，继续试下一个：%s",
-                            host, probe, e)
-                continue
-            if verdict == "fake":
-                fake = True
+        for attempt in range(_REVERIFY_ATTEMPTS):
+            for probe in probes:
+                try:
+                    with fast_mode(retries=0, timeout=10.0):
+                        n, urls = sitelearn._fetch_hits(tpl, host, probe, enc=enc,
+                                                        scheme=scheme, method=method,
+                                                        body=body)
+                        if not n:
+                            continue
+                        verdict = sitelearn.judge_by_control(
+                            tpl, host, enc=enc, scheme=scheme, method=method,
+                            body=body, urls=urls, hits=n, rounds=2)
+                except Exception as e:  # noqa: BLE001
+                    logger.info("复核 %s（探测词《%s》）出错，继续试下一个：%s",
+                                host, probe, e)
+                    continue
+                if verdict == "fake":
+                    fake = True
+                    break
+                if verdict == "real":
+                    real = True
+                    break
+            if fake or real:
                 break
-            if verdict == "real":
-                real = True
-                break
+            # 还有下一轮机会才等：最后一轮等完也没用。
+            if attempt + 1 < _REVERIFY_ATTEMPTS:
+                time.sleep(_REVERIFY_RETRY_WAIT)
         if fake:
             if registry.clear_search_tpl(host, why="复核：模板不认关键词（假搜索）"):
                 dropped += 1
