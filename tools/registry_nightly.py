@@ -127,6 +127,21 @@ def main() -> int:
             if pending:
                 print(f"[来源库体检] 还有 {pending} 个站没来得及学，"
                       f"下一轮（或手动 POST /api/registry/learn）会继续", flush=True)
+            # ⚠ 复核那一段原来**一个字都不打**。它是"撤掉假可搜源"的唯一入口
+            #   （旧版学习器学出来的模板不认关键词，照常吐首页），撤掉几家、
+            #   几家没结论、有没有跑完 —— 全在返回值的 `reverify` 里，
+            #   而这里从来没读过它。等于每晚做了一趟没人知道结果的工作。
+            rev = rep.get("reverify") or {}
+            if rev:
+                rpend = int(rev.get("pending") or 0)
+                print(f"[来源库体检] 复核模板完成 —— 查了 {rev.get('checked')}"
+                      f"（只能靠通用书名的 {rev.get('canary_only')}）"
+                      f" / 撤掉 {rev.get('dropped')} 个假可搜源"
+                      f" / 留下 {rev.get('kept')} / 没结论 {rev.get('unjudged')}"
+                      + (f" / **没跑完 {rpend}**" if rpend else ""), flush=True)
+                if rpend:
+                    print(f"[来源库体检] 还有 {rpend} 个站的模板没复核，"
+                          f"下一轮会继续", flush=True)
         except Exception as e:  # noqa: BLE001
             print(f"[来源库体检] 学接口失败：{e}", flush=True)
             failed += 1

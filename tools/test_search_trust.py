@@ -353,6 +353,91 @@ def main() -> int:
           str(registry.reverify_candidates()))
     check("复核如实报出「没结论」的条数", rep.get("unjudged") == 1, str(rep))
 
+    # ------------------------------------------------------------------
+    print("\n—— 复核也要有时间上限（原来这一趟一秒上限都没有）——")
+    # ⚠ 线上实测（2026-10-22）：`POST /api/registry/learn` 是
+    #   「学站 ≤120s + 复核 **无上限**」拼起来的，串行跑：
+    #     05:08  13 个站 → 168.7s；05:51  15 个站 → **211.7s**（复核独占 91.7s）。
+    #   复核跑不完不致命（没结论的站留在队列里下轮再查），但总时长必须有个头，
+    #   而且**撞了预算要如实报 pending**（跟学站那段同一条纪律）。
+    # ⚠ 判据必须用"站特别多"的输入：拿 12 个站去比，线性增长和封顶算出来的
+    #   值一样（都被 MIN 夹住），断言就恒真了 —— 第一版正是这么写的，
+    #   反证当场抓出「没有牙」。
+    check(f"复核预算封顶（12 个站给 {discovery._reverify_budget(12)}s、"
+          f"1000 个站也只给 {discovery._reverify_budget(1000)}s）",
+          discovery._reverify_budget(12) < 120
+          and discovery._reverify_budget(1000) == discovery._REVERIFY_BUDGET_MAX)
+    # 预算已经用光 → 一个都不许查，而且要报出「还欠几个」。
+    # ⚠ 两条分开断言：只判 pending 会被"pending 永远等于 len(todo)"蒙过去；
+    #   只判 checked 则抓不到"悄悄收手不报账"。
+    # ⚠⚠ 用**可控时钟**造"预算用光"，不用 `sleep`：sleep 的判据在慢机器上
+    #   会飘（这正是本项目反复踩的"判据随环境漂"）。时钟只在 discovery
+    #   这一个模块里换掉，别的模块照旧用真时间。
+    import time as _t   # noqa: PLC0415
+    real_mono = _t.monotonic
+
+    class _Clock:
+        """第 `pass_real` 次（含）之前给真时间，之后直接跳到 10000 秒后。
+
+        `deadline = monotonic() + budget` 用掉第 1 次，循环里每次判一次。
+        """
+
+        def __init__(self, pass_real: int) -> None:
+            self.pass_real = pass_real
+            self.n = 0
+
+        def monotonic(self) -> float:
+            self.n += 1
+            return real_mono() + (0 if self.n <= self.pass_real else 10_000)
+
+        def __getattr__(self, k):
+            return getattr(_t, k)
+
+    hosts3 = ["nobook-fake.com", "ownbook-real.com", "quiet.com"]
+    discovery.time = _Clock(pass_real=1)      # 连第一个都不开始
+    try:
+        rep2 = discovery.reverify_sites(hosts3)
+    finally:
+        discovery.time = _t
+    check(f"预算用光时一个站都不查（checked={rep2.get('checked')}）",
+          rep2.get("checked") == 0)
+    check(f"预算用光时如实报「还欠几个」（pending={rep2.get('pending')}）",
+          rep2.get("pending") == 3)
+    check("没来得及复核的站原样不动（假模板也先留着，等下一轮）",
+          bool(registry.known_site("quiet.com").get("search_tpl")))
+    # 跑到一半撞预算：**已经查完的那个结论要保住**，剩下的报 pending。
+    # 只判"全跑"或"全不跑"的写法抓不到这种半途收手。
+    discovery.time = _Clock(pass_real=2)      # 允许开始第 1 个站
+    try:
+        rep3 = discovery.reverify_sites(["ownbook-real.com", "quiet.com"])
+    finally:
+        discovery.time = _t
+    check(f"半途撞预算：已查完的结论保住（checked={rep3.get('checked')}），"
+          f"剩下的报出来（pending={rep3.get('pending')}）",
+          rep3.get("checked") == 1 and rep3.get("pending") == 1)
+    check("显式 budget=0 = 不限（只给测试造确定性场景用，默认一定有限）",
+          discovery.reverify_sites(["quiet.com"], budget=0).get("pending") == 0)
+
+    # 学站接口那条埋点：整条链路（学站 + 复核）的全貌只有这一行日志。
+    # 原来 `source.learn` 登记在埋点表的「计划中」段 —— 功能早做了、一行没埋。
+    import ast   # noqa: PLC0415
+    main_src = open(os.path.join(ROOT, "app", "main.py"), encoding="utf-8").read()
+    tree = ast.parse(main_src)
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and n.name == "registry_learn"), None)
+    kw: set[str] = set()
+    if fn is not None:
+        for node in ast.walk(fn):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "log_event"):
+                if "source.learn" in [a.value for a in node.args
+                                      if isinstance(a, ast.Constant)]:
+                    kw = {k.arg for k in node.keywords if k.arg}
+    need = {"目标", "学会", "失败", "跳过", "没跑完",
+            "复核查", "撤掉", "复核没结论", "复核没跑完", "可搜源", "耗时"}
+    check(f"source.learn 埋点字段齐全（缺：{sorted(need - kw)}）", need <= kw)
+
     print("\n" + "=" * 60)
     print(f"通过 {OK} · 失败 {FAIL}")
     return 0 if FAIL == 0 else 1

@@ -260,6 +260,29 @@ def _learn_budget(n_targets: int) -> float:
                min(_LEARN_BUDGET_MAX, _LEARN_BUDGET_PER_SITE * max(n_targets, 1)))
 
 
+# 复核（reverify）的时间预算。
+#
+# ⚠ 原来这一趟**根本没有预算**：串行 for 循环，一个站最多 2 个探测词 ×
+#   （1 次真实探测 + `rounds=2` 的控制实验）= 最多 9 个请求，每个
+#   `fast_mode(timeout=10)`。而接口是「学站 120 秒（有上限）+ 复核（无上限）」
+#   拼起来的 —— 线上实测 2026-10-22：
+#     · 05:08  13 个站 → 整条请求 **168676ms**（学站 120s + 复核 48.7s）
+#     · 05:51  15 个站 → **211711ms**（91.7s 全在复核）
+#   复核跑不完本身不致命（没结论的站会留在 `reverify_candidates()` 里，
+#   下一轮接着查），但**总时长必须有个头**，而且撞了预算要如实报 `pending`
+#   —— 跟学站那段同一条纪律：收手可以，不许沉默地收手。
+_REVERIFY_BUDGET_PER_SITE = 12.0
+_REVERIFY_BUDGET_MIN = 12.0
+_REVERIFY_BUDGET_MAX = 60.0
+
+
+def _reverify_budget(n_targets: int) -> float:
+    """按这一批的规模算复核预算（秒）。"""
+    return max(_REVERIFY_BUDGET_MIN,
+               min(_REVERIFY_BUDGET_MAX,
+                   _REVERIFY_BUDGET_PER_SITE * max(n_targets, 1)))
+
+
 def learn_sites(
     hosts: list[str],
     *,
@@ -419,7 +442,8 @@ def learn_sites(
             "pending": pending}
 
 
-def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
+def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None,
+                   budget: Optional[float] = None) -> dict:
     """复核旧版学习器学出来的搜索模板，**撤掉假的**。
 
     为什么需要这一趟：旧判据只问"这一页像不像结果页"，不问"结果是不是
@@ -443,10 +467,23 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
     todo = [h for h in dict.fromkeys(h or "" for h in hosts) if h]
     if not todo:
         return {"checked": 0, "dropped": 0, "kept": 0, "canary_only": 0,
-                "unjudged": 0}
+                "unjudged": 0, "pending": 0}
+
+    # 这一趟的总时限（见 `_REVERIFY_BUDGET_*` 的注释：原来一秒钟上限都没有）。
+    # `budget` 显式传 0/负数 = 不限（测试里造"一定跑不完"的场景时用得上，
+    # 但**默认必须有限**）。
+    budget = _reverify_budget(len(todo)) if budget is None else float(budget)
+    deadline = time.monotonic() + budget if budget > 0 else None
 
     checked = dropped = kept = canary_only = unjudged = 0
-    for host in todo:
+    pending = 0
+    for idx, host in enumerate(todo):
+        # ⚠ 判据是「还有没有时间开始下一个站」，不是"这个站跑完了没"——
+        #   已经在路上的站不强杀（强杀会留下半截状态），但绝不能再开新的。
+        if deadline is not None and time.monotonic() >= deadline:
+            pending = len(todo) - idx
+            logger.info("模板复核超预算，先收手（还剩 %d 个没复核）", pending)
+            break
         s = registry.known_site(host)
         tpl = (s.get("search_tpl") or "").strip()
         if not tpl:
@@ -521,10 +558,15 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None) -> dict:
                     host, len(probes))
     if dropped:
         say("撤掉假的可搜源", f"{dropped} 个站其实没在按关键词搜，已撤掉", False)
+    if pending:
+        # ⚠ 跟学站那段一样：撞预算收手时**必须说出来**，否则调用方以为
+        #   "这批都复核完了，只是没结论" —— 实际还欠着一批。
+        say("模板复核未跑完", f"还剩 {pending} 个站没复核，下次继续", False)
     logger.info("模板复核完成：查了 %d（其中 %d 个只能靠通用书名），撤掉 %d，"
-                "留下 %d，没结论 %d", checked, canary_only, dropped, kept, unjudged)
+                "留下 %d，没结论 %d%s", checked, canary_only, dropped, kept, unjudged,
+                f"，没跑完 {pending}" if pending else "")
     return {"checked": checked, "dropped": dropped, "kept": kept,
-            "canary_only": canary_only, "unjudged": unjudged}
+            "canary_only": canary_only, "unjudged": unjudged, "pending": pending}
 
 
 def discover(

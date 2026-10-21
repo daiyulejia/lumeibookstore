@@ -1259,6 +1259,7 @@ async def registry_learn(host: str = "", limit: int = 0, reverify: bool = True):
         targets = targets[:limit]
 
     loop = asyncio.get_running_loop()
+    t0 = time.monotonic()
     rep = await loop.run_in_executor(
         None, lambda: discovery.learn_sites(targets))
     rev = {}
@@ -1266,6 +1267,20 @@ async def registry_learn(host: str = "", limit: int = 0, reverify: bool = True):
         todo = registry.reverify_candidates()
         rev = await loop.run_in_executor(
             None, lambda: discovery.reverify_sites(todo))
+    # ⚠ 这一步的全貌只能靠埋点：整条链路是「学站（≤120s）+ 复核（原来无上限）」
+    #   串起来的，而调用方是 systemd 定时任务 —— curl 的输出没人看。
+    #   线上实测（2026-10-22）：
+    #     05:08 那条请求 168676ms、05:51 那条 **211711ms**（复核独占 91.7s），
+    #     但日志里只有一行 `ms="211711 慢"`，查不出"学了几家、复核撤了几家、
+    #     有没有跑完"。所以两个阶段的结果合成一条 `source.learn` 写下来。
+    log_event(logger, "source.learn",
+              目标=len(targets),
+              学会=rep.get("learned"), 失败=rep.get("failed"),
+              跳过=rep.get("skipped"), 没跑完=rep.get("pending"),
+              复核查=rev.get("checked"), 撤掉=rev.get("dropped"),
+              复核没结论=rev.get("unjudged"), 复核没跑完=rev.get("pending"),
+              可搜源=len(registry.searchable_sites()),
+              耗时=round(time.monotonic() - t0, 1))
     return {"ok": True, "targets": targets, **rep, "reverify": rev,
             "searchable": len(registry.searchable_sites())}
 

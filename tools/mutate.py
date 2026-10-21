@@ -582,6 +582,41 @@ MUTATIONS: list[Mutation] = [
              '              跳过=rep.get("skipped"), 没跑完=rep.get("pending"),\n',
              '              跳过=rep.get("skipped"),\n',
              RANKS_TEST),
+    Mutation("ranksource", "把被 JS 挑战墙拦住的站加回来源表（页脚多数一个站、每轮白撞）",
+             RANKS,
+             "    # ⚠ 2026-10-22 摘掉 xbqg5200：整站被 JS 挑战墙拦住"
+             "（`/top.html` 与 `/` 都",
+             '    {"key": "xbqg5200", "display": "xbqg5200.com",'
+             ' "url": "https://www.xbqg5200.com/top.html",'
+             ' "parser": parse_xbqg5200, "kinds": {"allvisit"}},\n'
+             "    # ⚠ 2026-10-22 摘掉 xbqg5200：整站被 JS 挑战墙拦住"
+             "（`/top.html` 与 `/` 都",
+             RANKS_TEST),
+
+    # ------- 模板复核（reverify）的时间上限（tools/test_search_trust.py）-------
+    # ⚠ 这一组的失败方式是"接口越跑越久"：线上实测 211.7 秒一条请求，
+    #   而日志里只有 `ms="211711 慢"`，看不出时间花在哪一段。
+    Mutation("reverifybudget", "复核不再检查时限（又变成一秒上限都没有）",
+             DISCOVERY,
+             "        if deadline is not None and time.monotonic() >= deadline:",
+             "        if False:",
+             TRUST_TEST),
+    Mutation("reverifybudget", "撞预算收手时不报「还欠几个」（悄悄收手）",
+             DISCOVERY,
+             "            pending = len(todo) - idx",
+             "            pending = 0",
+             TRUST_TEST),
+    Mutation("reverifybudget", "复核预算没有封顶（站一多就线性变慢）",
+             DISCOVERY,
+             "               min(_REVERIFY_BUDGET_MAX,\n"
+             "                   _REVERIFY_BUDGET_PER_SITE * max(n_targets, 1)))",
+             "               _REVERIFY_BUDGET_PER_SITE * max(n_targets, 1))",
+             TRUST_TEST),
+    Mutation("reverifybudget", "学站接口不埋点（只剩一行 ms=211711 慢）",
+             MAIN,
+             '    log_event(logger, "source.learn",\n',
+             '    log_event(logger, "source.learn.nope",\n',
+             TRUST_TEST),
 
     # ------- 「目录可能不全」备注（tools/test_registry.py）-------
     Mutation("registry", "「这次不评价目录」和「这次查过、目录是全的」混成一个语义"
