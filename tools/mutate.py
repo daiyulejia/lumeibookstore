@@ -521,6 +521,37 @@ MUTATIONS: list[Mutation] = [
              "",
              RANKS_TEST),
 
+    # ------------- 来源表本身（tools/test_ranks.py L/S 段）--------------
+    # ⚠ 这一组改的都是**配置**，改错不报错、只表现为"某类榜单少一家/抓错页"。
+    #   2026-10-22 线上实测就是靠逐类数 source 集合才发现的。
+    Mutation("ranksource", "落霞 5 个类目共用一个地址（抓错页：/top.html 是热门混排）",
+             RANKS,
+             '        "url": "https://www.luoxiaks.net/rank/{kind}/",',
+             '        "url": "https://www.luoxiaks.net/top.html",',
+             RANKS_TEST),
+    Mutation("ranksource", "落霞少声明一类（allvote 退回单源，页脚却照写 N 家）",
+             RANKS,
+             '        "kinds": {"allvisit", "allvote", "weekvisit", "monthvisit", "goodnum"},',
+             '        "kinds": {"allvisit", "weekvisit", "monthvisit", "goodnum"},',
+             RANKS_TEST),
+    Mutation("ranksource", "hodei 的月点击映射成总点击（月榜 = 总榜的复制品）",
+             RANKS,
+             '    "monthvisit": "月点击",',
+             '    "monthvisit": "总点击",',
+             RANKS_TEST),
+    Mutation("ranksource", "把空壳页也声明成来源（384g 的月榜是 4471 字节 0 条）",
+             RANKS,
+             '        "kinds": {"allvisit", "allvote", "goodnum", "postdate", "lastupdate"},',
+             '        "kinds": {"allvisit", "allvote", "goodnum", "monthvisit",'
+             ' "postdate", "lastupdate"},',
+             RANKS_TEST),
+    Mutation("ranksource", "把数据造假的「总字数榜」加回目录（唯一来源的字数列自相矛盾）",
+             RANKS,
+             '    {"kind": "monthvisit", "label": "本月热读", "desc": "这一个月被点开最多的"},',
+             '    {"kind": "monthvisit", "label": "本月热读", "desc": "这一个月被点开最多的"},\n'
+             '    {"kind": "size", "label": "总字数榜", "desc": "篇幅最长的"},',
+             RANKS_TEST),
+
     # ------- 「目录可能不全」备注（tools/test_registry.py）-------
     Mutation("registry", "「这次不评价目录」和「这次查过、目录是全的」混成一个语义"
                          "（顺手记一笔的调用会擦掉体检刚写下的警告）",

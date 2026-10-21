@@ -11,9 +11,12 @@
 
   ✅ **384g.com** —— 榜单数据最全：`<table id="rankinglist">` 是干净的结构化
      表格，字段有 书名 / 最新章节 / 作者 / 字数 / 更新时间 / 连载状态，
-     而且 10 类榜单（总点击 / 月点击 / 总推荐 / 总收藏 / 总字数…）
+     而且 10 个榜页（总点击 / 月点击 / 总推荐 / 总收藏 / 总字数…）
      **排名各不相同** —— 是真榜单，不是同一张列表换个标题。
      唯一要注意的是编码是 **GBK**。
+     ⚠ 但"有 10 个榜页"不等于"10 个都能用"：月点击 / 周点击是**空壳页**
+       （HTTP 200、4471 字节、0 条），总字数榜是按一列**自相矛盾的字数**
+       排的（见下面 SUPPORTED 那段）。真要加类目，先抓一页数条数。
 
   ✅ **xbqg5200.com** —— `/top.html`，`li.list-group-item` 列表：
      书名（`a[title]`，书名前带 `[玄幻]` 分类）+ 作者。54 条（6 个分类各 9 条）。
@@ -27,7 +30,6 @@
 
   ❌ 29zw / tadu / qidian —— 没有稳定的榜单页，或首页是 JS 渲染（HTML 抓不到东西）
   ❌ wyshu / kunnu8 —— 主页上"榜"字只出现在书名里，没有榜单页
-  ❌ 月点击榜（monthvisit）—— 三家都没有，别硬凑
 
 ⚠ **单一来源 = 只有一家站的书。** 这正是最初版本的毛病：所有标签看着
   不一样，点开全是 384g 那一份 —— 用户翻到底也只看过一家站。所以现在
@@ -41,13 +43,22 @@
   · xbqg5200 首页 502（服务器自己坏了）、luoxiaks 只有一张综合榜、
   · xbiquge 只有总榜/周榜，没有"字数/推荐/最近更新"。
   这一轮补的是**真能抓到内容**的两个站：
-  · **hodei.net/paihang.html** —— 一个页面 10 个榜单块，实测有真数据的 4 类
-    （总点击 / 周点击 / 收藏数 / 入库时间），解析要注意的坑见 `parse_hodei`。
+  · **hodei.net/paihang.html** —— 一个页面 10 个榜单块，实测有真数据的 5 类
+    （总点击 / 月点击 / 周点击 / 收藏数 / 入库时间），解析要注意的坑见 `parse_hodei`。
   · **xbiquge.info 的 `/lastupdate/` 与 `/lastpost/`** —— 不是榜单页，是列表页，
     但 HTML 结构与 `/top/` 完全一致，直接复用 `parse_xbiquge`。
-  补完：`allvisit` 5 家、`weekvisit` 2 家、`goodnum` 2 家、`postdate` 3 家、
-  `lastupdate` 2 家；`allvote` 和 `size` 仍是单源 —— 这两类是真没人做，
-  有测试盯着"新增榜单类别必须至少两个来源"，例外要在测试里明写。
+
+⚠ **再一轮（2026-10-22 晚）线上实测：还漏了两件事。**
+  ① 落霞读书只用了 `/top.html`，而站点导航里「总排行榜」其实是
+     `/rank/allvisit/` —— 前者是热门混排（首条《情欲超市全集》，夹成人向书名），
+     抓错了页等于挂了个名不副实的榜单。`rank/` 下还有 allvote / monthvisit /
+     weekvisit / goodnum 四页，实测内容各不相同 → 四类榜单各多一家来源。
+  ② 「总字数榜」的唯一来源 384g 字数列自相矛盾（同一本 4551 章的书两个条目
+     差 5 倍），而它的 size 榜正是按这个字段排的 → 顺序和数字都是假的。
+     这个类别已下线，换成有真数据的 **本月热读（monthvisit）**。
+  现状：`allvisit` 5 家、`weekvisit` 3 家、`allvote` 2 家、`goodnum` 3 家、
+  `monthvisit` 2 家、`postdate` 3 家、`lastupdate` 2 家 —— **没有单源类别**了。
+  测试里"每类至少两个来源"不再有例外（`SINGLE_OK` 已清空）。
 
 ⚠ **为什么必须交错、不能"主源在前、辅源接在后面"**（这是真踩过的坑）：
   旧写法是 `items.extend(384g)` 然后 `items.extend(luoxiaks)`，最后
@@ -99,12 +110,26 @@ _DB = Path(os.environ.get("NOVEL_RANKS") or (_ROOT / "cache" / "ranks.json"))
 #
 # ⚠ weekvisit 后来加回来了：384g 没有，但 **xbiquge.info 的周榜是有内容的**。
 #   「哪一类榜单」和「哪个站有这一类」是两件事，别混。见下面 _SOURCES。
+#
+# ⚠⚠ **「总字数榜」（size）已下线，换成本月热读（monthvisit）。**
+#   2026-10-22 线上实测：`/api/ranks?kind=size` 返回的 24 条里，前三名是
+#   同一本书的三个马甲条目，字数是 **910063888 / 682460826 / 456249205**，
+#   而它们分别只有 432 / 270 / 1404 章 —— 折合每章 1~200 万字，物理上不可能。
+#   继续查下去发现 384g 的「字数」整列都不可信，同一本书在两个条目里差 5 倍：
+#       · 医婿（4551 章）→ 67436106 字
+#       · 医婿叶凡唐若雪（4551 章）→ 13516110 字
+#   而 `/paihang/size_1.html` 恰恰**按这个字段排序** —— 也就是说这个标签的
+#   **顺序和数字都是假的**，用户点开它看到的是编出来的榜单。
+#   按本项目的老规矩（"不完整靠说出来，不靠少给"；宁可少一个标签，也不编数据），
+#   直接把这个类别摘掉，换成有真数据的一类：**月点击（monthvisit）**。
+#   hodei 的「月点击」块与总点击/周点击/日点击/收藏数互不相同（实测重合 4~9/15），
+#   落霞读书也有 `/rank/monthvisit/` —— 换上来是实打实的两个来源。
 SUPPORTED: list[dict[str, str]] = [
     {"kind": "allvisit",   "label": "总点击榜", "desc": "各个站点里被点开最多的"},
     {"kind": "weekvisit",  "label": "本周热读", "desc": "这周读者点开最多的"},
     {"kind": "allvote",    "label": "总推荐榜", "desc": "读者主动推荐最多的"},
     {"kind": "goodnum",    "label": "总收藏榜", "desc": "被收藏最多的"},
-    {"kind": "size",       "label": "总字数榜", "desc": "篇幅最长的（适合想追长篇的）"},
+    {"kind": "monthvisit", "label": "本月热读", "desc": "这一个月被点开最多的"},
     {"kind": "postdate",   "label": "最新入库", "desc": "站点新收录的"},
     {"kind": "lastupdate", "label": "最近更新", "desc": "更新最勤的"},
 ]
@@ -466,6 +491,10 @@ def parse_xbiquge(html: str, kind: str = "allvisit") -> list[dict[str, Any]]:
 _HODEI_TABS: dict[str, str] = {
     "allvisit": "总点击",
     "weekvisit": "周点击",
+    # ⚠ 「月点击」和「日点击」是两块**不同的真数据**（与总点击/周点击/收藏数
+    #   的首条各不相同，两两重合度只有 4~9/15）。这里只认「月点击」，
+    #   因为我们的类目叫 monthvisit；别为了凑数把「日点击」也映射过来。
+    "monthvisit": "月点击",
     "goodnum": "收藏数",
     "postdate": "入库时间",
 }
@@ -546,7 +575,7 @@ def _hodei_blocks(html: str) -> list[tuple[str, list[dict[str, Any]]]]:
 def parse_hodei(html: str, kind: str) -> list[dict[str, Any]]:
     """解析 hodei.net 的 `/paihang.html`：按**块标题文字**选块。
 
-    `kind` 不在 `_HODEI_TABS` 里（比如 allvote / size / lastupdate）→ 空列表：
+    `kind` 不在 `_HODEI_TABS` 里（比如 allvote / lastupdate）→ 空列表：
     这个站确实没有那几类榜，别硬凑（更别拿默认序冒充，见文件里坑三）。
     """
     tab = _HODEI_TABS.get(kind)
@@ -587,19 +616,34 @@ def parse_hodei(html: str, kind: str) -> list[dict[str, Any]]:
 #   前者的约束是"这个页面上到底排的是什么"，站点写什么就是什么；
 #   后者写着写着就会变成"我这类榜单缺数据，把它的总榜塞进去吧" —— 那是**编数据**。
 #
-# `url` 里的 `{kind}` 只有 384g 用得上（它是 `/paihang/{kind}_1.html`）。
+# `url` 里的 `{kind}` 目前 384g（`/paihang/{kind}_1.html`）和落霞
+# （`/rank/{kind}/`）在用 —— 一个站把各类榜放在同一套路径规则下时，
+# 一条记录声明 5 个 kind 就够了，不必写 5 条。
 _SOURCES: list[dict[str, Any]] = [
     {
         "key": "384g", "display": "384g.com",
         "url": "https://www.384g.com/paihang/{kind}_1.html",
         "parser": parse_384g,
-        "kinds": {"allvisit", "allvote", "goodnum", "size", "postdate", "lastupdate"},
+        # ⚠ 不声明 monthvisit / weekvisit：那两页实测是**空壳**
+        #   （HTTP 200、4471 字节、0 条数据，标题还是站点名）——
+        #   声明了就是"声明 3 家、实际 2 家"，页脚会撒谎。
+        # ⚠ 也不声明 size：它的字数列自相矛盾，见文件头 SUPPORTED 上面那段。
+        "kinds": {"allvisit", "allvote", "goodnum", "postdate", "lastupdate"},
     },
     {
+        # 落霞读书原来只挂 `allvisit` 用的 `/top.html`。实测那页是**热门混排**
+        # （首条《情欲超市全集》，还夹着成人向书名），而站点导航里
+        # 「总排行榜」指的是 `/rank/allvisit/`（首条《深夜书屋》）。
+        # 抓错页 = 名不副实的榜单，顺手改对。
+        #
+        # 更关键的是：它 `rank/` 下还有 allvote / monthvisit / weekvisit / goodnum
+        # 四页，实测**各自内容互不相同**（30 条/页，同一套 `<li class="hot-book2">`
+        # 模板，`parse_luoxiaks` 直接能吃）—— 于是四类榜单各多一家来源，
+        # 全站「单源榜单」从 4 类降到 0 类。
         "key": "luoxiaks", "display": "落霞读书",
-        "url": "https://www.luoxiaks.net/top.html",
+        "url": "https://www.luoxiaks.net/rank/{kind}/",
         "parser": parse_luoxiaks,
-        "kinds": {"allvisit"},
+        "kinds": {"allvisit", "allvote", "weekvisit", "monthvisit", "goodnum"},
     },
     {
         "key": "xbqg5200", "display": "xbqg5200.com",
@@ -639,14 +683,15 @@ _SOURCES: list[dict[str, Any]] = [
         "kinds": {"postdate"},
     },
     {
-        # 一个页面挂 10 个榜单块 —— 只声明**实测有真数据**的那 4 类。
-        # 推荐数 / 下载数 / 评论数 / 评分 四块是默认序冒充，不给 allvote 用。
+        # 一个页面挂 10 个榜单块 —— 只声明**实测有真数据**的那 5 类。
+        # 推荐数 / 下载数 / 评论数 / 评分 四块是默认序冒充（四块名单一字不差：
+        # 首条都是《太后娇贵[重生]》），不给 allvote 用。
         # `once`：页面不随 kind 变，一轮刷新里只抓一次（见 _fetch_source）。
         "key": "hodei", "display": "hodei.net",
         "url": "https://www.hodei.net/paihang.html",
         "parser": parse_hodei,
         "once": True,
-        "kinds": {"allvisit", "weekvisit", "goodnum", "postdate"},
+        "kinds": {"allvisit", "weekvisit", "monthvisit", "goodnum", "postdate"},
     },
 ]
 

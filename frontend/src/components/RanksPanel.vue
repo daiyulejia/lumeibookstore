@@ -164,8 +164,9 @@ const RefreshIcon = {
 /* 每条榜单一个色相，纯视觉区分，不承载语义（沿用旧值）。
    ⚠ 和 app/static/js/ranks.js 里那份**必须一致** —— 那边是 Vue 挂载失败时的
    降级实现，两份色相不同的话，"同一类榜单换个环境变个颜色"会显得像个 bug。
-   （weekvisit 是 2026-10-15 新增的，两份都补了。） */
-const HUE = { allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268, size: 200, postdate: 145, lastupdate: 40 };
+   （weekvisit 是 2026-10-15 新增的，两份都补了。
+     monthvisit 是 2026-10-22 顶掉「总字数榜」（那个类目的数据是假的）加上的。） */
+const HUE = { allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268, monthvisit: 235, postdate: 145, lastupdate: 40 };
 
 const kinds = ref([]);
 /* 上次看的榜单类别跨刷新保留：常看「本周热读」的人不该每次回来都被

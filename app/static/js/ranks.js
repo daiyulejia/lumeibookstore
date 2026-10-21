@@ -28,7 +28,7 @@ const RK = {
    看起来就像"页面坏了"。加 kind 时两份一起加。 */
 const HUE = {
   allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268,
-  size: 200, postdate: 145, lastupdate: 40,
+  monthvisit: 235, postdate: 145, lastupdate: 40,
 };
 
 /** 归一化书名做比对：去掉空格和常见装饰，避免「《三体》」对不上「三体」。 */

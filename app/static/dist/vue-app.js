@@ -17347,7 +17347,7 @@ ${style}
     stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
     <path d="M16 10a6 6 0 1 1-1.8-4.3"/><path d="M16 3v3h-3"/></svg>`
         };
-        const HUE = { allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268, size: 200, postdate: 145, lastupdate: 40 };
+        const HUE = { allvisit: 22, weekvisit: 315, allvote: 350, goodnum: 268, monthvisit: 235, postdate: 145, lastupdate: 40 };
         const kinds = /* @__PURE__ */ ref([]);
         const cur = /* @__PURE__ */ ref(PRE.get("ranksKind", "allvisit"));
         const kindsError = /* @__PURE__ */ ref("");
@@ -17679,7 +17679,7 @@ ${style}
         };
       }
     };
-    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-8a2ba581"]]);
+    const RanksPanel = /* @__PURE__ */ _export_sfc(_sfc_main$8, [["__scopeId", "data-v-7e1734ff"]]);
     const _hoisted_1$6 = ["src"];
     const _hoisted_2$6 = { class: "t" };
     const _hoisted_3$6 = { class: "a" };

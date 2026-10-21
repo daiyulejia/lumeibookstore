@@ -144,7 +144,13 @@ def main() -> int:
     check("每类有 kind/label/desc", all({"kind", "label", "desc"} <= set(k) for k in ks))
     check("kind 唯一", len({k["kind"] for k in ks}) == len(ks))
     # 实测为空表的不能出现在目录里
-    check("不含实测空表的 monthvisit", "monthvisit" not in {k["kind"] for k in ks})
+    # ⚠ 2026-10-22 晚：这条原来断言「monthvisit 不在目录里（真没人做月榜）」。
+    #   实测推翻了它 —— hodei 的「月点击」块是**真数据**（与总点击/周点击/
+    #   日点击/收藏数首条各不相同），落霞读书也有 `/rank/monthvisit/`。
+    #   所以月榜现在是**有来源**的类别，进目录；而「总字数榜」反倒因为
+    #   唯一来源的字数列自相矛盾而下线 —— 判据要跟着事实走，别跟着旧结论。
+    check("月榜有来源 → 进目录",
+          "monthvisit" in {k["kind"] for k in ks} and len(ranks.sources_for("monthvisit")) >= 2)
     # ⚠ weekvisit 的态度在 2026-10-15 变了，这条断言跟着改了 —— 值得写清楚：
     #   384g 的周榜**仍然是空表**，所以"有没有内容"这个判据不再是"这个 kind
     #   能不能进目录"，而是"**有没有一个来源真做这类榜**"。
@@ -153,11 +159,9 @@ def main() -> int:
     check("384g 不声明支持 weekvisit（它的周榜确实是空表）",
           "384g" not in {s["key"] for s in ranks._SOURCES
                          if "weekvisit" in s["kinds"]})
-    check("weekvisit 有别的来源兜着（xbiquge 周榜）",
+    check("weekvisit 有别的来源兜着（xbiquge 周榜 + 落霞 + hodei）",
           "weekvisit" in {k["kind"] for k in ks}
-          and bool(ranks.sources_for("weekvisit")))
-    check("不含实测空表且无来源的 monthvisit（真没人做月榜）",
-          not ranks.sources_for("monthvisit"))
+          and len(ranks.sources_for("weekvisit")) >= 2)
 
     # -----------------------------------------------------------------
     print()
@@ -168,29 +172,29 @@ def main() -> int:
 
     # -----------------------------------------------------------------
     print()
-    print("== G. size 榜：源站把作者粘进书名的脏数据（原样透出）==")
-    # 背景：size 榜头几行，站方自己的标题链接文字里就带着作者名
-    # （`乡下千金她又掉马甲了茶鸢`，而作者格写的是「孙宝珠」）。
-    # 这不是解析 bug —— title 取的就是那个 <a> 的文字，是**源站书名本身写歪了**。
-    # 下面几条把「原样透出」这个决定钉住：将来谁想加清洗，会先在这里变红。
+    print("== G. 「总字数榜」为什么下线（线上实测的字数列不可信）==")
+    # 2026-10-22 线上 `/api/ranks?kind=size` 的前三条是同一本书的三个马甲，
+    # 字数 910063888 / 682460826 / 456249205，而章节数只有 432 / 270 / 1404 章
+    # —— 折合每章 100~325 万字，物理上不可能（正常 2~4 千字/章）。
+    # 更硬的证据：站内同一本书两个条目、章节数一样、字数差 5 倍
+    #   · 医婿（4551 章）67436106 字    · 医婿叶凡唐若雪（4551 章）13516110 字
+    # 而 `/paihang/size_1.html` **就是按这个字段排序的** —— 顺序和数字都是假的。
+    # 所以摘掉这个类别，换成有真数据的「本月热读」。下面钉住这个决定：
     size_items = ranks.parse_384g(read("384g_size.html"), "size")
-    check(f"size 样本能解出条目（{len(size_items)} 条）", len(size_items) >= 10)
-
-    zig = [i for i in size_items if "乡下千金" in i["title"]]
-    check("脏书名那条还在（没有被偷偷过滤掉）", len(zig) >= 1)
-    if zig:
-        check("作者格取的是旁边的真作者「孙宝珠」，不是书名里粘的那个",
-              zig[0]["author"] == "孙宝珠")
-        check("书名原样保留（故意不剪「茶鸢」）",
-              zig[0]["title"] == "乡下千金她又掉马甲了茶鸢")
-        check("字数格解析正常", zig[0]["words"].endswith("字"))
-        check("状态格解析正常", zig[0]["status"] in ("连载中", "已完结"))
-
-    # 干净的行不能被上面的规则影响
-    clean = [i for i in size_items if i["title"] == "永生诀"]
-    check("干净书名「永生诀」没被误伤", bool(clean))
-    if clean:
-        check("「永生诀」作者 = 姜蘑菇", clean[0]["author"] == "姜蘑菇")
+    check(f"样本仍能解析（{len(size_items)} 条）—— 解析器没问题，坏的是数据",
+          len(size_items) >= 10)
+    # 「不可能的字数」直接量出来，别只在注释里说
+    top_words = max(int("".join(c for c in i["words"] if c.isdigit()) or 0)
+                    for i in size_items)
+    check(f"榜首要命的字数量级（{top_words} 字 > 1 亿）—— 现实中最长的网文也只到"
+          f" 3~4 千万字", top_words > 100_000_000)
+    check("SUPPORTED 里不再有总字数榜",
+          "size" not in {k["kind"] for k in ranks.kinds()})
+    check("384g 也不再声明 size（它只有这一列能算，而这一列不可信）",
+          "size" not in next(s["kinds"] for s in ranks._SOURCES if s["key"] == "384g"))
+    ranks.clear_cache()
+    check("点 size 标签返回空列表（不抛异常，界面走「暂无数据」）",
+          ranks.get_rank("size") == [])
 
     # -----------------------------------------------------------------
     print()
@@ -339,14 +343,26 @@ def main() -> int:
     asked: list[str] = []
     unknown: list[str] = []
 
+    def lx_page(titles: list[str]) -> str:
+        """造一份落霞读书 `/rank/<kind>/` 的样本（`<li class="hot-book2">` 结构）。"""
+        lis = "".join(
+            f'<li class="hot-book2"><a href="https://www.luoxiaks.net/book_{700 + i}/">'
+            f'<h2 class="pop-tit">{t}</h2>'
+            f'<span class="pop-intro">作者{i}</span></a></li>'
+            for i, t in enumerate(titles, 1))
+        return f'<html><body><ul class="hot-books">{lis}</ul></body></html>'
+
     def fake_fetch(url: str, **kw):
         asked.append(url)
         if "384g.com/paihang/allvisit" in url:
             return read("384g_allvisit.html")
-        if "384g.com/paihang/size" in url:
-            return read("384g_size.html")
-        if "luoxiaks.net" in url:
-            return read("luoxiaks_top.html")
+        if "luoxiaks.net/rank/" in url:
+            # ⚠ 必须**按类目返回不同内容**：落霞的 5 个类目是 5 个不同页面
+            #   （/rank/allvisit/、/rank/allvote/…）。如果这里统一返回一份
+            #   样本，"四个来源其实是同一份数据"这种错误就抓不出来 ——
+            #   而 hodei 那边正是这么翻过车的（一页十榜，四个 tab 同名次）。
+            kind = url.rstrip("/").rsplit("/", 1)[-1]
+            return lx_page([f"{kind}专用书{i}" for i in range(1, 4)])
         if "xbqg5200.com" in url:
             return read("xbqg5200_top.html")
         if "xbiquge.info/top/week" in url:
@@ -412,26 +428,40 @@ def main() -> int:
     check("没有重复书名（跨来源去重生效）", len(keys) == len(set(keys)))
     check("每条都带 source_display", all(i.get("source_display") for i in got))
 
-    # 单来源 / 少来源的榜单：不能因为"多来源"改造而抓不到东西
+    # 少来源的榜单：不能因为"多来源"改造而抓不到东西
     ranks.fetch_text = fake_fetch
     try:
         ranks.clear_cache()
         wk2 = ranks._fetch_one("weekvisit")
-        sz = ranks._fetch_one("size")
+        mv2 = ranks._fetch_one("monthvisit")
+        av2 = ranks._fetch_one("allvote")
     finally:
         ranks.fetch_text = real_fetch
     check(f"weekvisit 抓得到（{len(wk2)} 条）", len(wk2) >= 10)
-    # ⚠ 2026-10-22：weekvisit 从"只有 xbiquge 周榜"变成两家。原断言
-    #   `== {"xbiquge"}` 是**单来源时代**的事实，这里跟着改成两家，
-    #   并且继续钉"名次按声明顺序"（xbiquge 声明在前 → 首条必须是它）。
-    check(f"weekvisit 的两个来源都出结果了（{sorted({i.get('source') for i in wk2})}）",
-          {i.get("source") for i in wk2} == {"xbiquge", "hodei"})
-    check("weekvisit 首条来自声明更靠前的 xbiquge",
-          bool(wk2) and wk2[0].get("source") == "xbiquge")
-    check(f"size 仍是 384g 单源（{len(sz)} 条）", len(sz) >= 10)
-    check("size 的来源就是 384g", {i.get("source") for i in sz} == {"384g"})
+    # ⚠ 2026-10-22 晚：weekvisit 从两家变三家（落霞 /rank/weekvisit/ 也上了）。
+    #   原断言 `== {"xbiquge"}` 是单来源时代的事实，现在跟着改，
+    #   并继续钉"名次按声明顺序"（落霞在 _SOURCES 里更靠前 → 首条必须是它）。
+    check(f"weekvisit 的三个来源都出结果了（{sorted({i.get('source') for i in wk2})}）",
+          {i.get("source") for i in wk2} == {"luoxiaks", "xbiquge", "hodei"})
+    check("weekvisit 首条来自声明更靠前的落霞",
+          bool(wk2) and wk2[0].get("source") == "luoxiaks")
+    check(f"monthvisit 抓得到（{len(mv2)} 条）", len(mv2) >= 6)
+    check(f"monthvisit 两个来源都出结果（{sorted({i.get('source') for i in mv2})}）",
+          {i.get("source") for i in mv2} == {"luoxiaks", "hodei"})
+    check(f"allvote 两个来源都出结果（{sorted({i.get('source') for i in av2})}）",
+          {i.get("source") for i in av2} == {"384g", "luoxiaks"})
+    # ⚠ 「同一份数据当两家来源」的照妖镜：落霞 5 个类目是 5 个不同页面，
+    #   假网络按 URL 末尾的类目名返回不同内容 —— 抓到 allvote 就必须是
+    #   allvote 那页的书名。若谁把 URL 改回固定的 /top.html（5 类共用一个
+    #   地址），这里立刻变成 allvisit 的内容，红。
+    #   ⚠ 判据只看**落霞那几条**：allvote 的首条是 384g 的（声明更靠前，
+    #     交错第一条给主源），拿 overall 首条去比会误判。
+    lx_av = [i for i in av2 if i.get("source") == "luoxiaks"]
+    check("allvote 抓的是 /rank/allvote/ 那一页，不是 /top.html "
+          f"（落霞首条：{lx_av[0]['title'] if lx_av else '空'}）",
+          bool(lx_av) and all(i["title"].startswith("allvote") for i in lx_av))
     check("没有来源的 kind → 空列表（不抛异常）",
-          ranks._fetch_one("monthvisit") == [])
+          ranks._fetch_one("dayvisit") == [])
 
     # 一源失败不拖垮整体
     def broken_384g(url: str, **kw):
@@ -508,6 +538,10 @@ def main() -> int:
     # （`HUE[k] ?? 22` 会让它看起来"跟总点击榜一个色"）。
     miss = sorted({k["kind"] for k in ks} - set(hue_vue))
     check(f"目录里的每个 kind 都有配色（缺：{miss}）", not miss)
+    # 反向：配色表里不许留已经下线的 kind（`size` 下线后那份 200 就该删掉，
+    # 否则后人照着色相表以为这一类还在）
+    dead_hue = sorted(set(hue_vue) - {k["kind"] for k in ks})
+    check(f"配色表里没有已下线类目的残留色（{dead_hue}）", not dead_hue)
 
     # -----------------------------------------------------------------
     print()
@@ -723,9 +757,15 @@ def main() -> int:
           f"—— 证明它是书籍属性，不是名次值",
           bool(a) and bool(b) and a["updated"] == b["updated"] and bool(a["updated"]))
     # 站点确实没有的榜 → 空，别硬凑，更别拿默认序冒充
-    for miss_kind in ("allvote", "size", "lastupdate"):
+    for miss_kind in ("allvote", "lastupdate"):
         check(f"hodei 没有 {miss_kind}（返回空，不硬凑）",
               ranks.parse_hodei(hd, miss_kind) == [])
+    # 「月点击」是另一块**真数据**（不是总点击的别名）：首条必须不同
+    hm = ranks.parse_hodei(hd, "monthvisit")
+    check(f"hodei 月点击能解出来（{len(hm)} 条）", len(hm) >= 10)
+    check("月点击 ≠ 总点击（同一页里两块不同的榜）",
+          bool(hm) and bool(hv) and hm[0]["title"] != hv[0]["title"])
+    check("月点击的 kind 标记正确", all(i["kind"] == "monthvisit" for i in hm))
 
     # ⚠⚠ 「空表冒充榜单」：实测 推荐数/下载数/评论数/评分 四个 tab 抽出来的
     #    书名**一字不差**（都是 /book/1/、/book/2/… 的默认入库序）。
@@ -764,22 +804,44 @@ def main() -> int:
     # ⚠ 动机：2026-10-22 线上实测 7 类里 6 类只有 384g 一家。
     #   这条判据的作用不是"现在够不够多"，而是**以后加榜单类别时不许
     #   不加来源就上路** —— 加一类只有一家的榜，用户点开还是"一家站"。
-    SINGLE_OK = {"allvote", "size"}
+    #
+    # ⚠ 2026-10-22 晚：例外清空了。原来 allvote / size 单源是登记过的，
+    #   这一轮 allvote 补上落霞 `/rank/allvote/`，size 因为数据是假的整类下线 ——
+    #   于是「每类 ≥2 来源」不再有例外。以后真要再开口子，必须在这里写
+    #   清楚开放的是哪一类、为什么，而不是把判据改宽。
+    SINGLE_OK: set[str] = set()
     single = [k["kind"] for k in ks if len(ranks.sources_for(k["kind"])) < 2]
     print(f"     声明来源数：{ {k['kind']: len(ranks.sources_for(k['kind'])) for k in ks} }")
-    check(f"除登记的两个例外外，每类榜单至少有 2 个来源（单源的：{single}）",
-          set(single) <= SINGLE_OK)
-    check(f"登记的例外仍在目录里（{SINGLE_OK}）",
-          SINGLE_OK <= {k["kind"] for k in ks})
+    check(f"每一类榜单都至少有 2 个来源（单源的：{single}）",
+          not single and set(single) <= SINGLE_OK)
     # 同一个 URL 声明两次 = 同一份内容抓两遍，交错出来两条一样的书
     urls = [s["url"] for s in ranks._SOURCES]
     check(f"来源表里没有重复 URL（{len(urls)} 项 / {len(set(urls))} 个地址）",
           len(urls) == len(set(urls)))
-    check("hodei 声明了实测有真数据的那 4 类",
+    # ⚠ 同一"来源"在**同一类**里不能出现两次（不同 key 但同一 display 也算重复：
+    #   页脚"综合 N 个站点"会数成两家，实际是一家）
+    dup_disp = [(k["kind"], s["display"]) for k in ks for s in ranks._SOURCES
+                if k["kind"] in s["kinds"]
+                and [x["display"] for x in ranks._SOURCES
+                     if k["kind"] in x["kinds"]].count(s["display"]) > 1]
+    check(f"同一类里没有重复的展示名（{dup_disp}）", not dup_disp)
+    check("hodei 声明了实测有真数据的那 5 类",
           next(s["kinds"] for s in ranks._SOURCES if s["key"] == "hodei")
-          == {"allvisit", "weekvisit", "goodnum", "postdate"})
+          == {"allvisit", "weekvisit", "monthvisit", "goodnum", "postdate"})
     check("hodei 没把「推荐数」那类空表塞给 allvote",
           "allvote" not in next(s["kinds"] for s in ranks._SOURCES if s["key"] == "hodei"))
+    # 块名映射表的键必须都是**真的榜单类别** —— 否则映射白写、静默返回空
+    check("hodei 的块名映射键都在榜单目录里",
+          set(ranks._HODEI_TABS) <= {k["kind"] for k in ks})
+    # 落霞 5 个类目共用一个 URL 模板，展开后必须 5 个不同地址
+    lx = next(s for s in ranks._SOURCES if s["key"] == "luoxiaks")
+    lx_urls = [lx["url"].format(kind=k) for k in sorted(lx["kinds"])]
+    check(f"落霞 5 个类目展开成 5 个不同地址（{lx_urls}）",
+          len(lx_urls) == len(lx["kinds"]) == len(set(lx_urls)))
+    # 384g 的月/周榜是空壳页（HTTP 200、4471 字节、0 行），声明了就是撒谎
+    g384 = next(s for s in ranks._SOURCES if s["key"] == "384g")
+    check(f"384g 不声明 monthvisit/weekvisit（那两页是空壳，声明了页脚会撒谎）",
+          not ({"monthvisit", "weekvisit"} & g384["kinds"]))
 
     # -----------------------------------------------------------------
     # 「一页多榜」的来源：一轮里只该抓一次。
