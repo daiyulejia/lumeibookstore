@@ -1238,9 +1238,9 @@ MUTATIONS: list[Mutation] = [
              "        if True:\n"
              "            return",
              HEALTH_TEST),
-    Mutation("backoff", "读回落盘时不校验过期（一份两天前的旧文件把源永久拉黑）",
+    Mutation("backoff", "读回落盘时不校验到期（旧文件里的过期条目被塞进内存账本）",
              HEALTH_PY,
-             "                if until <= now or until < now - STALE_AFTER:",
+             "                if until <= now:",
              "                if until <= 0:",
              HEALTH_TEST),
 

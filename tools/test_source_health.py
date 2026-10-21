@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.sourcehealth import (COOLDOWN, HEALTH, KIND_NET, KIND_OTHER,  # noqa: E402
-                              STALE_AFTER, SourceHealth, classify)
+                              SourceHealth, classify)
 
 ok_n = 0
 fail_n = 0
@@ -442,7 +442,7 @@ def main() -> int:
     check(f"只写还在冷却中的条目（写了 {sorted(raw)}）",
           "dead_src" in raw and "alive_src" not in raw)
     # 过期的旧账必须丢：一份两天前的文件不该让某个源永久回不来
-    raw["dead_src"]["until"] = time.time() - (STALE_AFTER + 60)
+    raw["dead_src"]["until"] = time.time() - 60
     hp.write_text(_json.dumps(raw), encoding="utf-8")
     h3 = SourceHealth(path=hp)
     check("★ 过期（>24 小时）的落盘条目被丢掉，不会永久拉黑",

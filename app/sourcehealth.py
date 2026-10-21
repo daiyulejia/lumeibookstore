@@ -41,8 +41,9 @@
 ② **状态要落盘**。原来是纯内存，每次 sync/重启都会**忘掉**谁打不通 ——
    重启后的第一次搜索又要陪那几个坏源等满一整轮。现在熔断状态写进
    `cache/sourcehealth.json`（`NOVEL_HEALTH` 可改路径），启动时读回来。
-   ⚠ 落盘只写**仍在冷却中**的条目；过期的（`until` 已过 24 小时以上）直接丢，
-   否则一份旧文件会让某个源永久回不来。
+   ⚠ 落盘只写**仍在冷却中**的条目；读回时也只收仍在冷却中的（`until <= now`
+   的直接丢），否则一份旧文件会让某个源永久回不来、诊断面板上还会多出
+   一条"刚挂过"的幽灵记录。
 """
 from __future__ import annotations
 
@@ -71,9 +72,6 @@ MAX_COOLDOWN = 8 * 3600.0         # 8 小时
 # 落盘的文件（熔断状态要跨重启）。`NOVEL_HEALTH` 让测试/多实例分开。
 _DEFAULT_PATH = (Path(__file__).resolve().parent.parent
                  / "cache" / "sourcehealth.json")
-
-# 落盘条目最多留多久：超过这个时间的旧账直接丢，免得某个源永久回不来。
-STALE_AFTER = 24 * 3600.0
 
 # 判定成"网络层问题"的特征（异常类型名 / 消息关键字）。
 # ⚠ 这些是**字符串匹配**，所以要放进消息里比对；改源时请保持异常消息可读。
@@ -132,8 +130,13 @@ class SourceHealth:
                 if not isinstance(blk, dict):
                     continue
                 until = float(blk.get("until") or 0)
-                # 只收「仍在冷却中」且不太旧的；过期的旧账丢掉
-                if until <= now or until < now - STALE_AFTER:
+                # 只收「仍在冷却中」的；已经到期的直接丢。
+                # ⚠ 别写成"顺带判一下够不够旧"：`until <= now` 已经覆盖了
+                #   "旧"这件事，再加一个 `until < now - 24h` 就是**死条件** ——
+                #   第一版就是这么写的（还配了一条"过期丢掉了"的断言），
+                #   看着严谨，实际什么都没多做。判据要能分辨"丢掉了"和
+                #   "留着一条早过期的记录"，所以下面还钉了 `snapshot()` 里不许有它。
+                if until <= now:
                     continue
                 self._st[str(name)] = {
                     "fails": int(blk.get("fails") or 0),
