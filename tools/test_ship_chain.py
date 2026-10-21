@@ -142,6 +142,22 @@ def main() -> int:
           and any(isinstance(n, ast.Return)
                   and isinstance(n.value, ast.Constant) and n.value.value == 1
                   for n in ast.walk(tree)))
+    # ⚠⚠ 「工作区是脏的」也必须红，不能只打印一句警告。
+    #   真事（2026-10-21）：ship 打印「✓ 上线完成」、线上确实换了新代码，
+    #   而 **GitHub 上什么都没有** —— 14 个改动没提交，`git push` 看到
+    #   "没有待推送的提交"就返回成功。真正该做的事（提交）谁也没做，
+    #   而链条报的是全绿。判据要求：`if dirty:` 这个分支里必须有 `return 1`。
+    dirty_gate = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if "dirty" not in ast.dump(node.test):
+            continue
+        if any(isinstance(n, ast.Return) and isinstance(n.value, ast.Constant)
+               and n.value.value == 1 for n in ast.walk(node)):
+            dirty_gate = True
+    check("★ 工作区有未提交改动 → ship 必须红（否则线上新、GitHub 空，却报成功）",
+          dirty_gate)
 
     # git 不可用时必须返回 False —— "没推成功"和"没 git"不能都算成功
     saved = ship.subprocess.run

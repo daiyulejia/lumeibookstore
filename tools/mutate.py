@@ -972,6 +972,13 @@ MUTATIONS: list[Mutation] = [
              '        print(f"  ✗ 找不到 git，没法推送：{e}")\n        return False',
              '        print(f"  ✗ 找不到 git，没法推送：{e}")\n        return True',
              CHAIN_TEST),
+    Mutation("chain", "工作区有改动没提交也当成功（线上新、GitHub 空，链条却报全绿）",
+             SHIP_PY,
+             '                  "再 `git push` 补一次即可，**不用重跑 ship**。")\n'
+             '            return 1',
+             '                  "再 `git push` 补一次即可，**不用重跑 ship**。")\n'
+             '            return 0',
+             CHAIN_TEST),
     Mutation("chain", "清单里文件名写错（那套测试静默没跑，清单却照样显示全绿）",
              SHIP_PY,
              '    ("test_ship_chain.py", "上线链条完整"),',

@@ -693,8 +693,22 @@ def main() -> int:
         dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
                                capture_output=True, text=True).stdout.strip()
         if dirty:
-            n_files = len(dirty.splitlines())
-            print(f"  ⚠ 工作区有 {n_files} 个改动没提交 —— 这些**不会**被推到 GitHub。")
+            # ⚠⚠ 这里原来是"打印一句警告然后照样返回成功"。后果真发生了
+            #   （2026-10-21）：ship 打印「✓ 上线完成」，线上确实换了新代码，
+            #   而 GitHub 上什么都没有 —— 工作区 14 个改动没提交，
+            #   而 `push` 看到"没有待推送的提交"就返回成功。
+            #   这正是这个项目反复踩的那类洞：**该做的事没做，但不报错**。
+            #   所以只要工作区是脏的，就必须红 —— 哪怕线上已经同步过了。
+            files = dirty.splitlines()
+            print(f"  ✗ 工作区有 {len(files)} 个改动没提交 —— 这些**不会**被推到 "
+                  f"GitHub：")
+            for ln in files[:8]:
+                print(f"      {ln}")
+            if len(files) > 8:
+                print(f"      …… 还有 {len(files) - 8} 个")
+            print("  · 线上已经更新（[3/4] 跑完了）。先 `git commit` 写清为什么，"
+                  "再 `git push` 补一次即可，**不用重跑 ship**。")
+            return 1
         ahead = subprocess.run(["git", "rev-list", "--count", "origin/main..HEAD"],
                                cwd=ROOT, capture_output=True, text=True).stdout.strip()
         if ahead in ("", "0"):
