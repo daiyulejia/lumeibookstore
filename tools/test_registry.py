@@ -554,6 +554,131 @@ def main() -> int:
               f"「还剩 N 个」这个数会失真")
 
         # -----------------------------------------------------------------
+        print("\n—— 搜不出东西的站：不许算「可搜源」——")
+        # 线上实测（2026-10-22）：`searchable_sites()` 报 15 个，逐个拿同一个
+        # 关键词去搜，**7 个一条书链接都抽不出来**，而且是确定性的 ——
+        # xizids/itiandixs 的 POST 落回「搜索_首页」、fanqienovel 是前端渲染、
+        # biquhui 把 `?s=` 吞掉回首页。界面照报 15 个，资产是虚的。
+        # 判据分两层：抽出 0 条 = 不是搜索页（search_shape）；
+        # 抽出 N 条全被过滤 = 站里没这本书（search_miss，永不参与淘汰）。
+
+        def _mk(host: str, **extra) -> dict:
+            R.note_site(host, name=host, search_tpl="/?s={kw}",
+                        search_method="get", search_ver=R.LEARN_VER, **extra)
+            return R.known_site(host)
+
+        alive = _mk("alive.example.com")
+        check("前提：模板合法、已核实 → 算可搜源", R.is_searchable(alive),
+              str(alive))
+
+        R.note_search_result("alive.example.com", hits=3, raw=40)
+        alive = R.known_site("alive.example.com")
+        check("搜出结果 → search_hit +1", int(alive.get("search_hit") or 0) == 1,
+              str(alive.get("search_hit")))
+        check("搜出结果不该被记成 miss/shape",
+              not alive.get("search_miss") and not alive.get("search_shape"),
+              f"miss={alive.get('search_miss')} shape={alive.get('search_shape')}")
+
+        # ① 抽出 N 条、过滤后 0 条 = "站里没这本书"，**永远不淘汰**
+        _mk("miss.example.com")
+        for _ in range(6):
+            R.note_search_result("miss.example.com", hits=0, raw=12)
+        miss = R.known_site("miss.example.com")
+        check("抽出链接但没这本书 → 记 search_miss",
+              int(miss.get("search_miss") or 0) == 6, str(miss.get("search_miss")))
+        check("★ 搜了 6 次都没有这本书，仍然算可搜源（这不是站的错）",
+              R.is_searchable(miss),
+              f"shape={miss.get('search_shape')} tpl={miss.get('search_tpl')!r}")
+
+        # ② 抽出 0 条 = 打开的不是搜索页 → 连记到顶就作废模板
+        _mk("dead.example.com")
+        for i in range(R.SEARCH_SHAPE_MAX):
+            R.note_search_result("dead.example.com", hits=0, raw=0)
+            st = R.known_site("dead.example.com")
+            if i < R.SEARCH_SHAPE_MAX - 1:
+                check(f"第 {i + 1} 次「不是搜索页」还留着模板（别一棒子打死）",
+                      bool((st.get("search_tpl") or "").strip()),
+                      str(st.get("search_tpl")))
+        dead = R.known_site("dead.example.com")
+        check("★ 连续到顶 → 模板作废（写空串，不 pop）",
+              dead.get("search_tpl") == "", repr(dead.get("search_tpl")))
+        check("★ 作废后不再算可搜源", not R.is_searchable(dead), str(dead))
+        check("作废后回复核队列（search_ver 清 0）",
+              int(dead.get("search_ver") or 0) == 0, str(dead.get("search_ver")))
+        check("作废后回到「可以重学」状态（模板没了、失败账未满）",
+              R.should_try_learn("dead.example.com"), "重学被挡住就不会再变好")
+        check("作废记了一次学站失败（用来兜底，顶到上限自然放弃）",
+              int(dead.get("search_fail") or 0) == 1, str(dead.get("search_fail")))
+
+        # ③ 「搜出过东西」是硬证据 —— 之后偶发几次不是搜索页，不能判死
+        _mk("flaky.example.com")
+        R.note_search_result("flaky.example.com", hits=2, raw=9)
+        for _ in range(R.SEARCH_SHAPE_MAX + 2):
+            R.note_search_result("flaky.example.com", hits=0, raw=0)
+        flaky = R.known_site("flaky.example.com")
+        check("★ 搜出过一次 → 之后连续「不是搜索页」也不作废模板",
+              bool((flaky.get("search_tpl") or "").strip()),
+              "站点会临时拦爬虫，一次两次不该判死")
+        check("这种站仍然算可搜源", R.is_searchable(flaky), str(flaky))
+        check("但形态失败账照样记着（排查时看得见）",
+              int(flaky.get("search_shape") or 0) == R.SEARCH_SHAPE_MAX + 2,
+              str(flaky.get("search_shape")))
+
+        # ④ 混合：搜出过一次之后，再攒满形态失败，账要归零（不能慢慢积成死刑）
+        R.note_search_result("flaky.example.com", hits=1, raw=5)
+        flaky = R.known_site("flaky.example.com")
+        check("再次搜出结果 → 形态失败账清零",
+              int(flaky.get("search_shape") or 0) == 0, str(flaky.get("search_shape")))
+
+        # ⑤ 换模板之后搜索产出的账必须从头记
+        #    不清的话两种错都会出现：旧模板的"搜出过"护着新坏模板（永久留着白打）、
+        #    旧模板的形态失败账让新模板**只剩 1 次机会**就把自己弄死（实测过）。
+        #    真实路径是「复核判假 → clear_search_tpl 撤掉 → 重学」——
+        #    这条路径上一个模板是**搜出过东西、也攒过形态失败**的，
+        #    所以必须走这一遍才测得出那两个计数有没有被清。
+        _mk("reborn.example.com")
+        R.note_search_result("reborn.example.com", hits=2, raw=9)
+        for _ in range(R.SEARCH_SHAPE_MAX):
+            R.note_search_result("reborn.example.com", hits=0, raw=0)
+        old = R.known_site("reborn.example.com")
+        check("前提：旧模板搜出过东西、也攒过形态失败",
+              int(old.get("search_hit") or 0) == 1
+              and int(old.get("search_shape") or 0) == R.SEARCH_SHAPE_MAX, str(old))
+        R.clear_search_tpl("reborn.example.com", why="复核判假")
+        check("前提：复核把旧模板撤掉了",
+              R.known_site("reborn.example.com").get("search_tpl") == "",
+              str(R.known_site("reborn.example.com").get("search_tpl")))
+        R.note_search_tpl("reborn.example.com", "/?s={kw}", enc="utf-8")
+        reborn = R.known_site("reborn.example.com")
+        check("重学之后模板回来了", bool((reborn.get("search_tpl") or "").strip()),
+              str(reborn))
+        check("★ 重学之后形态失败账清零（新模板等于新假设，不能被旧账挡死）",
+              int(reborn.get("search_shape") or 0) == 0,
+              str(reborn.get("search_shape")))
+        check("★ 重学之后「搜出过」也清零（旧模板的成绩不能护着新模板）",
+              int(reborn.get("search_hit") or 0) == 0, str(reborn.get("search_hit")))
+        check("重学之后立刻算可搜源（给它一次机会）",
+              R.is_searchable(reborn), str(reborn))
+        # 反向验一遍：新模板有**完整的 3 次机会**，不是接着旧账只剩 1 次
+        for i in range(R.SEARCH_SHAPE_MAX - 1):
+            R.note_search_result("reborn.example.com", hits=0, raw=0)
+            check(f"新模板第 {i + 1} 次搜不出东西还留着（旧账不许提前把它弄死）",
+                  bool((R.known_site("reborn.example.com").get("search_tpl") or "").strip()),
+                  str(R.known_site("reborn.example.com").get("search_tpl")))
+        R.note_search_result("reborn.example.com", hits=0, raw=0)
+        check("★ 攒满 3 次才作废（旧模板的成绩/旧账都不许护着它）",
+              R.known_site("reborn.example.com").get("search_tpl") == "",
+              str(R.known_site("reborn.example.com").get("search_tpl")))
+
+        print("—— 上面这些必须真落了盘（不只是内存） ——")
+        R.flush()
+        dsk = disk()["sites"]
+        check("search_shape 落盘", int(dsk["flaky.example.com"].get("search_hit") or 0) >= 2,
+              str(dsk["flaky.example.com"]))
+        check("作废的模板在盘上也是空串", dsk["dead.example.com"].get("search_tpl") == "",
+              repr(dsk["dead.example.com"].get("search_tpl")))
+
+        # -----------------------------------------------------------------
         print("\n—— 护栏：全清要显式确认 ——")
         # 先落一次盘：缩水护栏是拿「盘上那份」当基准的，
         # 上面这些 note_* 都还压在内存里（落盘有 1 秒节流）

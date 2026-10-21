@@ -460,8 +460,9 @@ MUTATIONS: list[Mutation] = [
              REGISTRY_TEST),
     Mutation("registry", "『可搜源』的判据漏掉健康度（坏站又被算成资产）",
              REGISTRY,
-             "    return has_search_tpl(site) and _tpl_can_search(site) and is_healthy(site)",
-             "    return has_search_tpl(site) and _tpl_can_search(site)",
+             "    return (has_search_tpl(site) and _tpl_can_search(site)\n"
+             "            and is_healthy(site))",
+             "    return (has_search_tpl(site) and _tpl_can_search(site))",
              REGISTRY_TEST),
     Mutation("registry", "总览的『可搜源』不走统一判据（数模板不管健康，与列表对不上）",
              REGISTRY,
@@ -854,8 +855,8 @@ MUTATIONS: list[Mutation] = [
              REGISTRY_TEST),
     Mutation("learnver", "撤假模板时用 pop（合并落盘时又复活，撤了等于没撤）",
              REGISTRY,
-             '        cur["search_tpl"] = ""',
-             '        cur.pop("search_tpl", None)',
+             '        cur["search_tpl"] = ""\n        cur["search_enc"] = ""',
+             '        cur.pop("search_tpl", None)\n        cur["search_enc"] = ""',
              REGISTRY_TEST),
     Mutation("learnver", "学站清单不按书页证据排序（船艇站/百科站排到小说站前面）",
              REGISTRY,
@@ -909,8 +910,9 @@ MUTATIONS: list[Mutation] = [
              REGISTRY_TEST),
     Mutation("kwless", "`is_searchable` 不再校验模板能不能带关键词（库里假模板变回可搜）",
              REGISTRY,
-             "    return has_search_tpl(site) and _tpl_can_search(site) and is_healthy(site)",
-             "    return has_search_tpl(site) and is_healthy(site)",
+             "    return (has_search_tpl(site) and _tpl_can_search(site)\n"
+             "            and is_healthy(site))",
+             "    return (has_search_tpl(site) and is_healthy(site))",
              REGISTRY_TEST),
     Mutation("kwless", "`note_search_tpl` 来者不拒（裸路径模板照样进库）",
              REGISTRY,
@@ -989,6 +991,76 @@ MUTATIONS: list[Mutation] = [
              '        cur["search_ver"] = LEARN_VER\n'
              '        cur["search_fail"] = 0          # 学会了，失败账清零',
              REGISTRY_TEST),
+    Mutation("verdict", "真实探测 0 条也去跑控制实验（「控制词也 0 条」被当成真站证据 → 盖章）",
+             SITELEARN,
+             "    if not hits or not urls:",
+             "    if False:",
+             TRUST_TEST),
+    # ---------------- 搜不出东西的站不许算「可搜源」（tools/test_registry.py）----------------
+    # ⚠ 背景：线上 15 个「可搜源」里 **7 个拿任何关键词都抽不出一条书链接**
+    #   （POST 落回「搜索_首页」/ 前端渲染 SPA / 吞掉 `?s=` 回首页 / 403），
+    #   而界面照报 15 个 —— 数字是虚的，每次搜索还白占一个并发名额。
+    #   这一组破坏的就是「如实记账 → 连记到顶 → 作废模板重学」这条链。
+    Mutation("srchdead", "`_search_one` 把「一条链接都没抽到」也记成 empty（和「没这本书」混了）",
+             REGISTRY_SOURCE,
+             "            registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)\n"
+             "        # 无论成败都把「这次真实产出」记一笔：hits 与 raw 必须分开（见函数注释）\n"
+             "        registry.note_search_result(host, hits=len(out), raw=len(items))",
+             "            registry.note_site(host, ok=False, why=registry.FAIL_EMPTY)\n"
+             "        # 无论成败都把「这次真实产出」记一笔：hits 与 raw 必须分开（见函数注释）\n"
+             "        registry.note_search_result(host, hits=len(out), raw=len(items))",
+             REGSRC_TEST),
+    Mutation("srchdead", "raw=0 也记成 miss（形态失败永远攒不满 → 不作废、永不重学）",
+             REGISTRY,
+             "        elif raw <= 0:\n            cur[\"search_shape\"] = int(cur.get(\"search_shape\") or 0) + 1",
+             "        elif raw <= 0:\n            cur[\"search_miss\"] = int(cur.get(\"search_miss\") or 0) + 1",
+             REGISTRY_TEST),
+    Mutation("srchdead", "攒到顶也留着坏模板（只清 search_ver，每晚白查、永远不重学）",
+             REGISTRY,
+             '            cur["search_tpl"] = ""\n',
+             "",
+             REGISTRY_TEST),
+    Mutation("srchdead", "「搜出过一次」不再清零形态失败账（好站被偶发拦截慢慢判死）",
+             REGISTRY,
+             '            cur["search_hit"] = int(cur.get("search_hit") or 0) + 1\n'
+             '            cur["search_shape"] = 0',
+             '            cur["search_hit"] = int(cur.get("search_hit") or 0) + 1',
+             REGISTRY_TEST),
+    Mutation("srchdead", "不优先取「标题含关键词」的候选（正主排第 7 位就被截掉）",
+             REGISTRY_SOURCE,
+             "            items = keyed + rest",
+             "            items = rest + keyed",
+             REGSRC_TEST),
+    # 换个新模板 = 换了一次假设，旧模板的账不能接着算（否则新模板一定被挡死/护死）
+    Mutation("srchdead", "重学不清形态失败账（新模板一上来就被旧账挡死，永远没机会）",
+             REGISTRY,
+             '        cur["search_hit"] = 0\n        cur["search_shape"] = 0',
+             '        cur["search_hit"] = 0',
+             REGISTRY_TEST),
+    Mutation("srchdead", "重学不清「搜出过」（旧模板的成绩护着新坏模板，永久留着白打）",
+             REGISTRY,
+             '        cur["search_hit"] = 0\n        cur["search_shape"] = 0',
+             '        cur["search_shape"] = 0',
+             REGISTRY_TEST),
+    # ---------------- 超时 ≠ 站点挂了（tools/test_registry_source.py）----------------
+    # ⚠ 单站只给 3.5 秒，慢站必然超时；超时若记成 fail_down，
+    #   `is_healthy` 的 `down >= 3 and down > ok*2` 会把慢站往死里推 ——
+    #   线上 350.ooo 当时 ok=35 / fail_down=70，再超时一次就从可搜源里消失。
+    Mutation("slow", "分类器把超时也当成站点故障（慢站被慢慢判死）",
+             UTILS,
+             '    if isinstance(e, httpx.TimeoutException):\n        return "slow"',
+             '    if isinstance(e, httpx.TimeoutException):\n        return "other"',
+             REGSRC_TEST),
+    Mutation("slow", "分类器把「连不上」也算成慢（死站永远清不掉）",
+             UTILS,
+             "    if isinstance(e, _CONNECT_DEAD):\n        return \"connect\"",
+             "    if isinstance(e, _CONNECT_DEAD):\n        return \"slow\"",
+             REGSRC_TEST),
+    Mutation("slow", "分类器不沿 __cause__ 下钻（永远只看到 RuntimeError → 全归 other）",
+             UTILS,
+             "    if isinstance(e, RuntimeError) and cause is not None:\n        e = cause",
+             "    if False:\n        e = cause",
+             REGSRC_TEST),
 ]
 
 

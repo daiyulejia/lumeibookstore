@@ -142,6 +142,16 @@ def main() -> int:
         check("学站阶段仍是单轮判假（control_says_fake 兼容）",
               sitelearn.control_says_fake("/?s={kw}", "h.com",
                                           urls=A, hits=2) is True)
+        # ⚠ 真实探测 0 条时必须直接判"没结论"，**连请求都不该发**。
+        #   否则「控制词也 0 条」会被当成"站点确实按关键词过滤"的正面证据
+        #   → 判真 → 盖章免检，而一个任何关键词都抽不出链接的坏模板正好长这样
+        #   （线上 15 个可搜源里 7 个）。盖章就等于把它永久钉在"已核实"上。
+        seq[:] = []
+        check("★ 真实探测 0 条 → 判不了（不发请求、更不盖章）",
+              sitelearn.judge_by_control("/?s={kw}", "h.com",
+                                         urls=set(), hits=0) == "unknown")
+        check("★ 这个分支真的没去打控制词（seq 一个都没被消费）",
+              seq == [], f"还剩 {len(seq)} 条预置返回值没被用掉")
     finally:
         sitelearn._fetch_hits_ex = real_ex
 

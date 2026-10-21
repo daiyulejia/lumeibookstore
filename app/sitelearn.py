@@ -642,6 +642,15 @@ def judge_by_control(tpl: str, host: str, *, enc: str = "utf-8",
     """
     if not control_kw:
         return "unknown"
+    # ⚠ 真实探测**一条都没搜到**时，控制实验什么也证明不了：
+    #   控制词也 0 条，下面那句 `if not n2: diff_rounds += 1` 会把它当成
+    #   「站点确实按关键词过滤」的正面证据 → 判真 → 盖章免检。
+    #   而一个**任何关键词都抽不出链接**的坏模板正好长这样（线上 15 个
+    #   可搜源里 7 个），盖章就等于把它永久钉在"已核实"上。
+    #   现在显式拒绝：没有真实命中 = 没结论。
+    if not hits or not urls:
+        logger.info("控制实验跳过 %s %s —— 真实探测 0 条，判不出真假", host, tpl)
+        return "unknown"
     same_rounds = 0
     diff_rounds = 0
     for _ in range(max(1, int(rounds))):

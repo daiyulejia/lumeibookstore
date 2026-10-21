@@ -13,8 +13,9 @@
 "站不行" 还是 "这次抓法不对"。
 
 所以给 `note_site` 加了 `why`：按原因单独计数
-（`fail_down` / `fail_empty` / `fail_shape` / `fail_video` / `fail_gated`）。
-**本改动是纯增量** —— 先攒数据，不改任何现有健康判定（不动线上行为）。
+（`fail_down` / `fail_empty` / `fail_shape` / `fail_video` / `fail_gated` /
+`fail_slow`）。其中 **只有 `fail_down`** 算「站点自身故障」，其余都在说
+「这次抓法不对」或「我们给的时间不够」。
 
 这个测试钉三件事：
   ① why 传了会落盘成 `fail_<why>` 且逐次累加；
@@ -61,13 +62,24 @@ def main() -> int:
     from app import registry  # noqa: E402
 
     print("\n── 1. 分类常量齐全 ──")
-    for c in ("FAIL_DOWN", "FAIL_EMPTY", "FAIL_SHAPE", "FAIL_VIDEO", "FAIL_GATED"):
+    for c in ("FAIL_DOWN", "FAIL_EMPTY", "FAIL_SHAPE", "FAIL_VIDEO", "FAIL_GATED",
+              "FAIL_SLOW"):
         check(f"常量 {c} 存在", hasattr(registry, c), "缺这个常量")
-    check("FAIL_WHY_ALL 覆盖全部 5 类",
-          len(registry.FAIL_WHY_ALL) == 5, f"实际 {len(registry.FAIL_WHY_ALL)}")
+    # ⚠ 不写死"共 N 类"—— 加一类就红一次，红的是判据不是产品。
+    #   要钉的是「FAIL_WHY_ALL 恰好覆盖所有 FAIL_* 常量」，这样新增原因
+    #   忘了登记会红，写死数字反而会逼着人改数字、把真问题盖过去。
+    consts = {v for k, v in vars(registry).items()
+              if k.startswith("FAIL_") and isinstance(v, str)
+              and k != "FAIL_WHY_SITE_FAULT"}
+    check("FAIL_WHY_ALL 覆盖所有 FAIL_* 原因",
+          set(registry.FAIL_WHY_ALL) == consts,
+          f"库里 {sorted(consts)} vs 登记 {sorted(registry.FAIL_WHY_ALL)}")
     check("只有 DOWN 算『站点自身故障』",
           registry.FAIL_WHY_SITE_FAULT == (registry.FAIL_DOWN,),
           f"实际 {registry.FAIL_WHY_SITE_FAULT}")
+    check("超时（slow）不算站点故障",
+          registry.FAIL_SLOW not in registry.FAIL_WHY_SITE_FAULT,
+          "把『我们等得不够』算成站挂了，慢站会被慢慢判死")
 
     print("\n── 2. why 落盘成 fail_<why> 并累加 ──")
     for _ in range(3):

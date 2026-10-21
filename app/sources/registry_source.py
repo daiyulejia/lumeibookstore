@@ -46,7 +46,8 @@ from urllib.parse import urljoin, urlparse
 
 from .. import registry, sitelearn, webfetch
 from ..models import Book, BookResult, Chapter
-from ..utils import fast_mode, fetch_text, host_of, normalize_title
+from ..utils import (classify_fetch_error, fast_mode, fetch_text, host_of,
+                     normalize_title)
 from .base import Source, tidy_content
 
 logger = logging.getLogger("novel.registry_source")
@@ -201,7 +202,13 @@ class RegistrySource(Source):
                     html, final = fetch_text(url, with_url=True)
         except Exception as e:  # noqa: BLE001
             logger.debug("自有来源抓取失败 %s: %s", host, e)
-            registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
+            # ⚠ 超时 ≠ 站点挂了。单站只给 `SEARCH_SITE_TIMEOUT` 秒，慢站必然
+            #   超时；记成 FAIL_DOWN 会让 `is_healthy` 的
+            #   `down >= 3 and down > ok*2` 把"只是慢"的站判死（线上 350.ooo
+            #   当时差一次超时就越线）。两类分开记账，见 utils.classify_fetch_error。
+            slow = classify_fetch_error(e) == "slow"
+            registry.note_site(host, ok=False,
+                               why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
             # 留口条给熔断器 + 让 search() 数得出"有几个站失败"。
             # 只在**整批**都失败时才上抛成"这个源挂了"（见 search() 末尾）。
             self.note_error(e)
@@ -213,12 +220,25 @@ class RegistrySource(Source):
             # 请求成功但没拿到 HTML —— 站能开、只是这次没内容，
             # 归 empty（不是 down，别把站判死）
             registry.note_site(host, ok=False, why=registry.FAIL_EMPTY)
+            registry.note_search_result(host, hits=0, raw=0)
             return []
 
         base = final or url
         # 抽「书页链接」：列表页里书名链接通常都指向 /book/… /info_… 这种详情页。
         # 用通用启发式 —— 拿所有 <a>，按 URL 模板分组，取条目最多那组。
         items = _extract_book_links(html, base)
+        # ⚠ 「含关键词的排在前面」再截断（2026-10-22 实测）。
+        #   站点自己的排序不保证把正主放前面：实测 `www.384g.com` 搜
+        #   「斗破苍穹」返回 **100 条**，含关键词的第一条在**第 7 位** ——
+        #   而 `PER_SITE=6` 恰好把前 6 条（NBA/末日逃亡/斗破：无限模拟…）
+        #   全取走，正主一条都没进候选池。排序阶段再准也救不回来。
+        #   所以先按「标题里有没有这个词」稳定排序，再截断：
+        #   只是把站点给的顺序**换了个更有效的顺序**，不多发一个请求。
+        kw_key = (keyword or "").strip()
+        if kw_key:
+            keyed = [x for x in items if kw_key in x[0]]
+            rest = [x for x in items if kw_key not in x[0]]
+            items = keyed + rest
         out: list[BookResult] = []
         for title, href in items[:PER_SITE]:
             if not title or _BAD_TITLE.match(title):
@@ -236,11 +256,21 @@ class RegistrySource(Source):
 
         if out:
             registry.note_site(host, ok=True)
-        else:
-            # 搜到了结果页、但一条书链接都没有 —— 多半是这个模板「能开但搜不出」
-            # （站改版了）。记一笔失败，但不删模板（模板本身没错，
-            # 是抽链接的启发式需要跟着变）。
+        elif items:
+            # 结果页里**有**书链接，但过滤（导航词/长度）后一条不剩 ——
+            # 多半是这个模板「能开但搜不出这本书」。记 empty，不删模板。
             registry.note_site(host, ok=False, why=registry.FAIL_EMPTY)
+        else:
+            # ⚠ 一条书链接都抽不到 —— 这和「站里没这本书」是**两件事**。
+            #   线上实测（2026-10-22）：15 个可搜源里 7 个是这样的，
+            #   而且是确定性的：POST 落回"搜索_首页"（参数名不对）、
+            #   前端渲染的 SPA、把 `?s=` 吞掉回首页、403 拦爬虫……
+            #   记成 empty 的话库里看不出区别，"可搜源 15 个"永远是虚的。
+            #   所以单独记 shape，并由 `note_search_result()` 连记 3 次就
+            #   作废模板、让它重学。
+            registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)
+        # 无论成败都把「这次真实产出」记一笔：hits 与 raw 必须分开（见函数注释）
+        registry.note_search_result(host, hits=len(out), raw=len(items))
         return out
 
     @classmethod
@@ -277,9 +307,12 @@ class RegistrySource(Source):
         host = host_of(url)
         try:
             html = fetch_text(url)
-        except Exception:  # noqa: BLE001
-            # 取正文失败 = 网络层，算站的账
-            registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
+        except Exception as e:  # noqa: BLE001
+            # 取正文失败 —— 只有**连不上**才算站的账；读超时是我们这边等得不够
+            # （长章节 + 慢站很常见），记 FAIL_SLOW，不推进 is_healthy 的死亡比值。
+            slow = classify_fetch_error(e) == "slow"
+            registry.note_site(host, ok=False,
+                               why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
             raise
 
         site = registry.known_site(host)

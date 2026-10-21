@@ -84,22 +84,53 @@ SAVE_MIN_INTERVAL = 1.0
 # 站点「不健康」的判定门槛：成功过 0 次、失败 ≥ 3 次
 UNHEALTHY_FAILS = 3
 
+# 「模板打开的根本不是搜索结果页」—— 连续几次、且从没搜出过东西，就作废这个模板。
+#
+# ⚠ 这条修的是「可搜源数量是虚的」（2026-10-22 线上实测）。
+#   当时 `searchable_sites()` 报 15 个，逐个拿同一个关键词去搜，**7 个一条
+#   书链接都抽不出来**，而且是**确定性的**（换成别的关键词、换成它自己站上
+#   有的书名，一样 0 条）：
+#     · `www.xizids.com` / `www.itiandixs.com`  POST 落回「小说搜索_首页」——
+#       参数名不对，站根本没执行搜索
+#     · `fanqienovel.com`                       前端渲染的 SPA，HTML 里没有书链接
+#     · `www.biquhui.vip`                       把 `?s=` 吞掉、直接回首页
+#     · `m.kudushu.org`                         403（拦爬虫）
+#     · `www.guazimanhua.com`                   漫画站，本来就不该在这份名单里
+#     · `wap.jjwxc.net`                         编码错 → 标题是乱码，全被过滤
+#   这和以前「界面说能搜 6 个、实际只问 3 个」是同一类病：**数字不代表能力**。
+#   修法：搜索时如实记「抽出几条链接」——
+#     · 抽出 0 条      → 这不是搜索页（`search_shape` +1）
+#     · 抽出 N 条但全被过滤 → 这才是"站里没这本书"（`search_miss` +1，永不淘汰）
+#   连续 `SEARCH_SHAPE_MAX` 次"不是搜索页"且**从来没搜出过东西** → 作废模板、
+#   记一次学站失败，让它用修好的学习器重学。重学仍不行就由
+#   `SEARCH_LEARN_MAX_TRIES` 自然放弃 —— 有终点，不会每晚白查。
+SEARCH_SHAPE_MAX = 3
+
 # 失败原因分类 —— 传给 `note_site(..., why=...)`。
 # 为什么必须分类：`fail` 是个混装桶，"站点真的连不上"和"我们 URL 猜错了"
 # 都只让它 +1。于是 is_healthy 的比值判据会把猜错路径算成"这个站不行"，
 # 好站被慢慢判死；而真挂掉的站如果历史成功多，比值也压不下去。
 # 分类之后「定期排查坏源」才能只盯 FAIL_DOWN 那一类（见 FAIL_WHY_* 命名）。
-FAIL_DOWN = "down"      # 网络层失败：连不上/超时/5xx —— 站点可能真的挂了
+FAIL_DOWN = "down"      # 网络层失败：连不上/5xx —— 站点可能真的挂了
 FAIL_EMPTY = "empty"    # 打开了但没内容：模板能开、搜不出（多半改版了）
 FAIL_SHAPE = "shape"    # 打开了但不是章节目录：URL 猜错 / 页面形态不符
 FAIL_VIDEO = "video"    # 判为影视站（剧集列表冒充章节目录）—— 主动否决，非故障
 FAIL_GATED = "gated"    # 正文要登录 / 靠 JS 渲染，只拿到一屏控件 —— 不是挂了
-FAIL_WHY_ALL = (FAIL_DOWN, FAIL_EMPTY, FAIL_SHAPE, FAIL_VIDEO, FAIL_GATED)
+# 「我们给的时间不够」—— 和「站点挂了」必须分开（2026-10-22 补）。
+#   扇出时单站只给 3.5 秒（`SEARCH_SITE_TIMEOUT`），慢站必然超时；
+#   而超时原先一律记成 FAIL_DOWN「网络层失败」，`is_healthy` 的
+#   `down >= 3 and down > ok*2` 就把它往死里推。
+#   线上实测 `350.ooo`：ok=35 / fail_down=**70** —— 刚好卡在 `70 > 70` 不成立
+#   的临界点上，**再超时一次就判死**，然后悄悄从可搜源里消失。
+#   而它其实只是慢：同一轮里它照样能返回结果。所以超时单独一类，不算站故障。
+FAIL_SLOW = "slow"      # 超时（我们给的时间太短）—— 不是站点故障
+FAIL_WHY_ALL = (FAIL_DOWN, FAIL_EMPTY, FAIL_SHAPE, FAIL_VIDEO, FAIL_GATED,
+                FAIL_SLOW)
 
 # 哪些原因**不该**算作「这个站挂了」。
 # is_healthy 目前仍是旧的"总 fail"判据（纯增量改动，先不动线上行为），
 # 但「定期排查坏源」要按这份名单算：只有 DOWN 才说明站点真出问题了，
-# 其余三类都在说"这次抓法不对"，站点本身可能是好的。
+# 其余几类都在说"这次抓法不对 / 我们给的时间不够"，站点本身可能是好的。
 FAIL_WHY_SITE_FAULT = (FAIL_DOWN,)
 
 # 写盘前的「缩水护栏」：盘上至少这么多条、且新内容不到原来一半时，先留一份备份。
@@ -666,6 +697,16 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
         cur["search_ver"] = 0
         cur["search_fail"] = 0          # 学会了，失败账清零
         cur["search_fail_ver"] = LEARN_VER
+        # ⚠ **换了新模板，搜索产出的账必须从头记**（2026-10-22）。
+        #   `search_hit` / `search_shape` 说的是「**这个模板**行不行」，不是
+        #   「这个站行不行」。不清的话会两头出错：
+        #     · 旧模板攒满 `search_shape` → 作废 → 重学出新模板 → 计数还停在 3，
+        #       新模板一上来就被判"搜不出东西"的站，永远没机会证明自己；
+        #     · 旧模板曾经搜出过东西（`search_hit > 0`）→ 新模板再烂也不会被
+        #       作废（判据要求 `search_hit == 0`），坏模板永久留着、每次搜索白打。
+        #   所以学到一个**新**模板 = 一次新假设 = 证据重采。
+        cur["search_hit"] = 0
+        cur["search_shape"] = 0
         cur["ok"] = int(cur.get("ok", 0)) + 1
         cur["last_ok"] = _now()
         if "first_seen" not in cur:
@@ -675,6 +716,71 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
         _dirty = True
         _maybe_save()
         return True
+
+
+def note_search_result(host: str, *, hits: int, raw: int) -> None:
+    """记一次「拿关键词去这个站搜」的**真实产出**（只由 `_search_one` 调）。
+
+    参数是两个不同层次的数量，**不能合成一个**：
+      · `raw`  = 结果页里抽出几条**书链接**（还没过滤）
+      · `hits` = 过滤后真正交给上层的条数
+
+    为什么要分开记（线上实测，2026-10-22）：
+      `_search_one` 原先只看「最后有没有结果」，于是两种完全相反的情况
+      记成了同一笔 `FAIL_EMPTY`：
+        ① 页面对、站里就是没这本书（`raw > 0`，全被过滤）→ 正常业务结果
+        ② **打开的根本不是搜索页**（`raw == 0`）→ 模板/抓法坏了
+      表现是 15 个「可搜源」里 7 个对任何关键词都 0 条，而库里看不出来区别。
+      分开之后 `search_shape`（②）才有资格当「这站算不算可搜源」的判据，
+      `search_miss`（①）**永远不参与**任何淘汰 —— "没这本书"不是站的错。
+
+    另一个方向也要清账：**只要搜出过东西，`search_shape` 就归零**。
+    站点会临时拦爬虫、会偶发 403，一次两次形态失败不该累积成死刑；
+    而"搜出过结果"是模板确实可用的**硬证据**。
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return
+    with _lock:
+        db = _load()
+        cur = db["sites"].setdefault(host, {})
+        hits = max(0, int(hits or 0))
+        raw = max(0, int(raw or 0))
+        if hits > 0:
+            cur["search_hit"] = int(cur.get("search_hit") or 0) + 1
+            cur["search_shape"] = 0
+            cur["search_last"] = _now()
+        elif raw <= 0:
+            cur["search_shape"] = int(cur.get("search_shape") or 0) + 1
+        else:
+            cur["search_miss"] = int(cur.get("search_miss") or 0) + 1
+        # 连续「不是搜索页」到顶，且从来没搜出过 → 模板作废、回重学队列。
+        # ⚠ 为什么是「清掉」而不是「留着但不用」：
+        #   留着的话它每晚都要进 `reverify_candidates()`，而控制实验对
+        #   "真词 0 条、控制词 0 条"的站**判不出结论**（见 `judge_by_control`
+        #   的三态），于是它会永远在队列里转圈、永远不干活。既然实测已经
+        #   是"拿任何关键词都抽不出链接"，这个模板就是**确定无用**的 ——
+        #   清掉，让学站器用修好的逻辑（`tpl_carries_kw` + 控制实验）重学一遍。
+        #   重学失败会记 `search_fail`，顶到 `SEARCH_LEARN_MAX_TRIES` 就自然放弃。
+        # ⚠ 写 `""` 不 `pop` —— 落盘 `_merge()` 逐键覆盖，内存里没的键会从盘上复活
+        #   （和 `note_book(note=)` 那条三态教训同一个坑）。
+        if (int(cur.get("search_hit") or 0) == 0
+                and int(cur.get("search_shape") or 0) >= SEARCH_SHAPE_MAX
+                and (cur.get("search_tpl") or "").strip()):
+            dead_tpl = (cur.get("search_tpl") or "").strip()
+            cur["search_tpl"] = ""
+            cur["search_ver"] = 0
+            cur["search_fail"] = int(cur.get("search_fail") or 0) + 1
+            cur["search_fail_ver"] = LEARN_VER
+            cur["search_fail_why"] = "模板打开的不是搜索页"
+            logger.info("站 %s 连续 %d 次打开的不是搜索页（模板 %s），"
+                        "作废该模板让它重学（已失败 %d 次）",
+                        host, int(cur.get("search_shape") or 0), dead_tpl[:60],
+                        int(cur.get("search_fail") or 0))
+        cur["updated"] = _now()
+        global _dirty
+        _dirty = True
+        _maybe_save()
 
 
 def note_search_fail(host: str, *, reason: str = "") -> None:
@@ -1031,8 +1137,14 @@ def is_searchable(site: dict) -> bool:
     没有占位就等于关键词没发给站点，打开的是搜索页/首页（那儿本来就有一堆书），
     所以验证时"数到十几条链接"也判真。详见 `sitelearn.tpl_carries_kw`。
     ⚠ 判据仍然只在这一处 —— 界面、总览、扇出、复核全都调它。
+    ⚠ 「搜不出东西」不在这里判：到顶那一刻模板已经在 `note_search_result()`
+      里被清空了，`has_search_tpl()` 自然返回 False。再加一条
+      `search_shape >= MAX` 是**冗余**的（反证实测：把它改成恒假，全部测试
+      照样绿）—— 冗余判据还会带来真危害：重学出新模板后计数若没清零，
+      新模板会被立刻挡死。所以这里只留一条真实生效的判据。
     """
-    return has_search_tpl(site) and _tpl_can_search(site) and is_healthy(site)
+    return (has_search_tpl(site) and _tpl_can_search(site)
+            and is_healthy(site))
 
 
 def _tpl_can_search(site: dict) -> bool:

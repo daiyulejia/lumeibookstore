@@ -255,6 +255,107 @@ def main() -> int:
     check("有结果时不报「挂」（空结果≠挂，这是熔断器的红线）",
           bool(out3) and not err3, f"out={len(out3)} err={err3!r}")
 
+    print("\n── 8. 空结果的两种形态必须分开记（否则「可搜源」是虚的）──")
+    # 线上实测（2026-10-22）：15 个可搜源里 **7 个拿任何关键词都抽不出
+    # 一条书链接**（POST 落回「搜索_首页」/ 前端渲染 SPA / 吞掉 `?s=` 回首页），
+    # 而 `_search_one` 把它们和「站里没这本书」记成了同一笔 `fail_empty` ——
+    # 库里看不出区别，界面照报 15 个可搜源。
+    # 现在：抽到 0 条 = FAIL_SHAPE + search_shape；抽到 N 条全被过滤 = FAIL_EMPTY。
+    nav_only = ("<html><body><a href='/'>首页</a><a href='/login'>登录</a>"
+                "<a href='/top'>排行</a></body></html>")
+    # 有书链接、但标题全是单字（长度 < 2 被过滤）→ 过滤后为空
+    # ⚠ 链接形状必须用 `/html/#/#/`（杰奇系书页）：`/book/1.html` 会被
+    #   `_CHAPTER_TAIL` 判成章节正文页而直接丢掉，那样测的就不是"过滤后为空"。
+    junk_books = ("<html><body>"
+                  + "".join(f"<a href='/html/10{i}/10{i}12/'>书</a>" for i in range(1, 9))
+                  + "</body></html>")
+
+    def shape_fetch(url, **kw):
+        if "shape0.com" in url:
+            return (nav_only, url)
+        return (junk_books, url)
+
+    R.note_site("shape0.com", ok=True, search_tpl="/?s={kw}")
+    R.note_site("filtered.com", ok=True, search_tpl="/?s={kw}")
+    R.flush()
+    RS.fetch_text = shape_fetch
+    try:
+        got_shape = RS.RegistrySource()._search_one("shape0.com", {"search_tpl": "/?s={kw}"}, "喵")
+        got_filt = RS.RegistrySource()._search_one("filtered.com", {"search_tpl": "/?s={kw}"}, "喵")
+    finally:
+        RS.fetch_text = real_fetch
+    s0 = R.known_site("shape0.com")
+    f0 = R.known_site("filtered.com")
+    check("两条路都返回空（不抛异常）", got_shape == [] and got_filt == [],
+          f"{got_shape} / {got_filt}")
+    check("★ 一条链接都抽不到 → 记 fail_shape（打开的不是搜索页）",
+          int(s0.get("fail_shape") or 0) == 1, str(s0))
+    check("★ 同时记 search_shape（能不能当可搜源的判据靠它）",
+          int(s0.get("search_shape") or 0) == 1, str(s0))
+    check("这条不算 fail_empty（否则和「站里没这本书」混了）",
+          int(s0.get("fail_empty") or 0) == 0, str(s0))
+    check("有链接但没这本书 → 记 fail_empty", int(f0.get("fail_empty") or 0) == 1,
+          str(f0))
+    check("★ 这条不算 fail_shape（站是好的，只是没这本书）",
+          int(f0.get("fail_shape") or 0) == 0 and int(f0.get("search_miss") or 0) == 1,
+          str(f0))
+
+    print("\n── 9. 超时 ≠ 站点挂了（慢站不该被慢慢判死）──")
+    # 单站只给 SEARCH_SITE_TIMEOUT 秒，慢站必然超时。原先一律记 fail_down，
+    # `is_healthy` 的 `down >= 3 and down > ok*2` 于是把慢站往死里推 ——
+    # 线上 350.ooo 当时 ok=35 / fail_down=70，再超时一次就越线从可搜源里消失。
+    import httpx as _httpx
+
+    def _as_fetch(cause):
+        def _f(url, *a, **k):
+            # 照 fetch_text 的真实形状抛：RuntimeError 包着原始异常（__cause__）
+            try:
+                raise cause
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(f"抓取失败: {url} ({e})") from e
+        return _f
+
+    R.note_site("slow.com", ok=True, search_tpl="/?s={kw}")
+    R.note_site("conn.com", ok=True, search_tpl="/?s={kw}")
+    R.flush()
+    for host, cause in (("slow.com", _httpx.ReadTimeout("timed out")),
+                        ("conn.com", _httpx.ConnectError("refused"))):
+        RS.fetch_text = _as_fetch(cause)
+        try:
+            try:
+                RS.RegistrySource()._search_one(host, {"search_tpl": "/?s={kw}"}, "喵")
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            RS.fetch_text = real_fetch
+    slow = R.known_site("slow.com")
+    conn = R.known_site("conn.com")
+    check("读超时 → 记 fail_slow", int(slow.get("fail_slow") or 0) == 1, str(slow))
+    check("★ 读超时**不许**记 fail_down（这是「我们等得不够」，不是站的错）",
+          int(slow.get("fail_down") or 0) == 0, str(slow))
+    check("连接失败 → 记 fail_down（这才像站挂了）",
+          int(conn.get("fail_down") or 0) == 1, str(conn))
+    check("连接失败不记 fail_slow", int(conn.get("fail_slow") or 0) == 0, str(conn))
+
+    print("\n── 10. 每站只回 6 条时，正主不能排在第 7 位被截掉 ──")
+    # 线上实测：www.384g.com 搜「斗破苍穹」返回 **100 条**，含关键词的第一条
+    # 在**第 7 位**，而 PER_SITE=6 把前 6 条（NBA/末日逃亡/同人…）全取走 ——
+    # 正主一条都没进候选池，排序再准也救不回来。
+    many = ("<html><body>"
+            + "".join(f"<a href='/html/80{i}/80{i}12/'>别的书{i}</a>" for i in range(1, 9))
+            + "<a href='/html/999/999001/'>喵喵正主</a>"
+            + "</body></html>")
+    RS.fetch_text = lambda url, **k: (many, url)
+    try:
+        got10 = RS.RegistrySource()._search_one("many.com", {"search_tpl": "/?s={kw}"}, "喵")
+    finally:
+        RS.fetch_text = real_fetch
+    titles = [r.title for r in got10]
+    check("★ 标题里带关键词的那条必须进候选（站点排序靠不住）",
+          "喵喵正主" in titles, str(titles))
+    check(f"候选仍然只回 {RS.PER_SITE} 条（不放开上限）",
+          len(got10) <= RS.PER_SITE, str(len(got10)))
+
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")
     print("=" * 62)

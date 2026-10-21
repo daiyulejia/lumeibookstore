@@ -19,7 +19,7 @@ import time
 
 from .. import discovery, registry, webfetch
 from ..models import Book, BookResult, Chapter
-from ..utils import fetch_text, host_of
+from ..utils import classify_fetch_error, fetch_text, host_of
 from .base import Source, check_content_quality, note_for_exception, tidy_content
 
 
@@ -98,8 +98,11 @@ class DiscoveredSource(Source):
         def one(u: str) -> tuple[str, str]:
             try:
                 html = fetch_text(u)
-            except Exception:  # noqa: BLE001
-                registry.note_site(host, ok=False, why=registry.FAIL_DOWN)
+            except Exception as e:  # noqa: BLE001
+                slow = classify_fetch_error(e) == "slow"
+                registry.note_site(
+                    host, ok=False,
+                    why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
                 raise
             last["html"] = html
             site = registry.known_site(host_of(u))
@@ -172,7 +175,10 @@ class DiscoveredSource(Source):
         try:
             text = self.fetch_chapter(chapters[idx]) or ""
         except Exception as e:  # noqa: BLE001
-            registry.note_site(host_of(result.url), ok=False, why=registry.FAIL_DOWN)
+            slow = classify_fetch_error(e) == "slow"
+            registry.note_site(
+                host_of(result.url), ok=False,
+                why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
             return {"ok": False, "chars": 0,
                     "note": note_for_exception(e), "ms": _ms(t0)}
 

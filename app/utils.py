@@ -383,7 +383,40 @@ def fetch_text(url: str, *, encoding: Optional[str] = None, retries: int | None 
                 time.sleep(0.8 * (2 ** attempt) + random.uniform(0, 0.5))
         attempt += 1
 
-    raise RuntimeError(f"抓取失败: {url} ({last_err})")
+    raise RuntimeError(f"抓取失败: {url} ({last_err})") from last_err
+
+
+def classify_fetch_error(exc: BaseException) -> str:
+    """把一次抓取失败分成 `"connect"` / `"slow"` / `"other"` 三类。
+
+    为什么要分（2026-10-22 线上实测）：
+      扇出时单站只给 3.5 秒（`SEARCH_SITE_TIMEOUT`），**慢站必然超时**，
+      而超时原先被记成 `registry.FAIL_DOWN`「网络层失败」。`is_healthy`
+      的 `down >= 3 and down > ok*2` 于是把「只是慢」的站往死里推 ——
+      线上 `350.ooo` 当时 ok=35 / fail_down=70，**再超时一次就判死**，
+      然后悄悄从可搜源里消失。
+      "我们等得不够"和"站点挂了"必须分开记账，否则池子会自己缩水。
+
+    分类口径：
+      · `connect` —— 连 TCP 都没建成（`httpx.ConnectTimeout` / `ConnectError`）。
+        这类才像「站点挂了 / 被封 IP」，`fetch_text` 里已有冷却逻辑。
+      · `slow` —— 连上了但读得慢（`ReadTimeout` / `WriteTimeout` / `PoolTimeout`）。
+        **不是站点故障**，记 `FAIL_SLOW`。
+      · `other` —— 其它（4xx/5xx/协议错/证书），沿用原来的处置。
+
+    ⚠ `fetch_text` 最终抛的是 `RuntimeError("抓取失败: …")`，原始异常在
+      `__cause__` 里（靠 `raise … from last_err` 保住）。所以这里要先沿
+      `__cause__` 下钻一层再看类型 —— 否则永远只能看到 RuntimeError。
+    """
+    e = exc
+    cause = getattr(e, "__cause__", None)
+    if isinstance(e, RuntimeError) and cause is not None:
+        e = cause
+    if isinstance(e, _CONNECT_DEAD):
+        return "connect"
+    if isinstance(e, httpx.TimeoutException):
+        return "slow"
+    return "other"
 
 
 # 探测模式下使用的宽松参数（线程局部，避免污染正常下载）
