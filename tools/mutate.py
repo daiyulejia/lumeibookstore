@@ -28,9 +28,11 @@ import argparse
 import atexit
 import hashlib
 import json
+import os
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -91,10 +93,14 @@ LAUNCH_TEST = ROOT / "tools" / "test_chrome_launcher.py"
 DIRECT_TEST = ROOT / "tools" / "test_adapt_direct.py"
 MOTION_TEST = ROOT / "tools" / "test_motion.py"
 RANKS_TEST = ROOT / "tools" / "test_ranks.py"
+OFFTOPIC_TEST = ROOT / "tools" / "test_offtopic.py"
 REGISTRY_TEST = ROOT / "tools" / "test_registry.py"
 REGSRC_TEST = ROOT / "tools" / "test_registry_source.py"
 # 源熔断（含「源自己吞了异常也要熔断」，见 app/sources/base.py::note_error）
 HEALTH_TEST = ROOT / "tools" / "test_source_health.py"
+# 源自己的墙钟上限（tools/test_source_budget.py）
+WIKI = ROOT / "app" / "sources" / "wikisource.py"
+BUDGET_SRC_TEST = ROOT / "tools" / "test_source_budget.py"
 # 自有来源（学到的模板 → 真的能搜出书）
 REGISTRY_SOURCE = ROOT / "app" / "sources" / "registry_source.py"
 FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
@@ -430,6 +436,89 @@ MUTATIONS: list[Mutation] = [
              RANKS_VUE,
              "const HUE = { allvisit: 22, weekvisit: 315, allvote: 350",
              "const HUE = { allvisit: 22, allvote: 350",
+             RANKS_TEST),
+
+    # ------------- 非小说站拦截（tools/test_offtopic.py）--------------
+    # ⚠ 这一组之前**一条反证都没有**（漏项）。它的失败方式全是静默的：
+    #   漫画/音乐站混在候选池里、轻小说站被误清掉、判据能匹配空串 ——
+    #   都不报错，只表现为"搜索里混进一堆给不出书的站"或者"某个小说站
+    #   用着用着就不见了"。
+    Mutation("offtopic", "判据表里混进「动漫」（哔哩轻小说这类站被清掉）",
+             REGISTRY,
+             r'r"漫画|漫畫|音乐|音樂|影视|电影|剧集|视频|壁纸|写真|"',
+             r'r"漫画|动漫|漫畫|音乐|音樂|影视|电影|剧集|视频|壁纸|写真|"',
+             OFFTOPIC_TEST),
+    Mutation("offtopic", "漫画/音乐站完全不判（旧行为，它们继续占着候选位）",
+             REGISTRY,
+             r'r"漫画|漫畫|音乐|音樂|影视|电影|剧集|视频|壁纸|写真|"',
+             r'r""',
+             OFFTOPIC_TEST),
+    Mutation("offtopic", "只看 host 不看站名（教程站/漫画站全放回来）",
+             REGISTRY,
+             '    return bool(_OFFTOPIC_NAME_RE.search(str(site.get("name") or "")))',
+             "    return False",
+             OFFTOPIC_TEST),
+    Mutation("offtopic", "站名是空串就判成非小说站（爬不到名字的站全被误杀）",
+             REGISTRY,
+             '    return bool(_OFFTOPIC_NAME_RE.search(str(site.get("name") or "")))',
+             '    _n = str(site.get("name") or "")\n'
+             '    return (not _n) or bool(_OFFTOPIC_NAME_RE.search(_n))',
+             OFFTOPIC_TEST),
+
+    # ------------- hodei 一页十榜（tools/test_ranks.py R/S 段）--------------
+    # ⚠ 这一组的共同点：改错**不会报错**，只是四个标签点开是同一份数据
+    #   （或者悄悄变成"把默认序当总推荐榜"）。判据必须钉"四份数据不同"。
+    Mutation("rankhodei", "按 id 取第一个 tabData 块（四个榜全是「总点击」那一份）",
+             RANKS,
+             "    for name, rows in blocks:\n"
+             "        if name == tab:                 # ⚠ 整串相等，不许用 `in`\n"
+             "            picked = rows\n"
+             "            break",
+             "    for name, rows in blocks:\n"
+             "        picked = rows\n"
+             "        break",
+             RANKS_TEST),
+    Mutation("rankhodei", "周榜的块名映射写错（那个来源静默空掉）",
+             RANKS,
+             '    "weekvisit": "周点击",',
+             '    "weekvisit": "本周期",',
+             RANKS_TEST),
+    Mutation("rankhodei", "默认序冒充榜单的守卫失效（把站点的默认入库序当总收藏榜给用户）",
+             RANKS,
+             "        same = ([r[\"title\"] for r in dflt] == [r[\"title\"] for r in picked])",
+             "        same = False",
+             RANKS_TEST),
+    Mutation("rankhodei", "守卫一刀切（名单不同也判没数据，那一榜永远是空的）",
+             RANKS,
+             "        same = ([r[\"title\"] for r in dflt] == [r[\"title\"] for r in picked])",
+             "        same = True",
+             RANKS_TEST),
+    Mutation("rankhodei", "把站点的最近更新日期丢了（榜单上看不到「更新」）",
+             RANKS,
+             '                "updated": _clean(hit.group(1)) if hit else "",',
+             '                "updated": "",',
+             RANKS_TEST),
+    Mutation("rankhodei", "作者没解析出来（榜单只剩书名）",
+             RANKS,
+             '                "author": _clean(au.group(1)) if au else "",\n'
+             '                "url": "https://www.hodei.net" + tag.group(1),',
+             '                "author": "",\n'
+             '                "url": "https://www.hodei.net" + tag.group(1),',
+             RANKS_TEST),
+    Mutation("rankhodei", "「一页多榜」的 HTML memo 失效（7 类刷新把同一页抓 4 遍）",
+             RANKS,
+             '    if once:\n        now = time.time()',
+             '    if False:\n        now = time.time()',
+             RANKS_TEST),
+    Mutation("rankhodei", "所有来源都当 once 用（榜单内容永远停在一小时前）",
+             RANKS,
+             '    once = bool(src.get("once"))',
+             "    once = True",
+             RANKS_TEST),
+    Mutation("rankhodei", "清缓存时不清 HTML memo（点「刷新」内容不变）",
+             RANKS,
+             "        _MEMO.clear()\n",
+             "",
              RANKS_TEST),
 
     # ------- 「目录可能不全」备注（tools/test_registry.py）-------
@@ -1052,6 +1141,28 @@ MUTATIONS: list[Mutation] = [
              '        cur["search_hit"] = 0\n        cur["search_shape"] = 0',
              '        cur["search_shape"] = 0',
              REGISTRY_TEST),
+    # ---------------- 卡死/超时也必须兜住（tools/test_source_budget.py、
+    #                  tools/test_source_health.py 的「卡死不返回」组）----------------
+    # ⚠ 线上实测（2026-10-21）：`wikisource.search()` 单次 **186.9 秒**才返回。
+    #   引擎 20 秒就收手，那个线程还活 167 秒 —— 占着线程和连接池，
+    #   同期别的搜索偶发 0 条（同一本书 6 分钟内一次 0 条、一次 1 条）。
+    #   两个缺口：① 源自己没有时间上限；② 收手时把卡死的源一丢了之，
+    #   连熔断器都不知道它挂过（熔断器只统计"跑完但抛异常"的源）。
+    Mutation("hung", "源不看 deadline（到点了还照发下一次请求）",
+             WIKI,
+             "            if deadline is not None and time.time() >= deadline:",
+             "            if False:",
+             BUDGET_SRC_TEST),
+    Mutation("hung", "搜索预算用光仍串第二次查询（186 秒就是它串出来的）",
+             WIKI,
+             "        if not hits and time.time() < deadline:",
+             "        if not hits:",
+             BUDGET_SRC_TEST),
+    Mutation("hung", "引擎收手时不清算「卡住没答话」的源（熔断器永远学不到）",
+             ENGINE,
+             "            if hit_deadline and pending and not _stop():",
+             "            if False:",
+             HEALTH_TEST),
     # ---------------- 超时 ≠ 站点挂了（tools/test_registry_source.py）----------------
     # ⚠ 单站只给 3.5 秒，慢站必然超时；超时若记成 fail_down，
     #   `is_healthy` 的 `down >= 3 and down > ok*2` 会把慢站往死里推 ——
@@ -1076,6 +1187,11 @@ MUTATIONS: list[Mutation] = [
 
 # ---------------------------------------------------------------- 还原保险
 _ORIGINALS: dict[Path, str] = {}
+
+# 被**外部改动**过的文件：本次进程缓存的原文已经过期，绝不能再往上写
+# （见 `check_one` 的 finally —— 反证工具把别人刚保存的代码覆盖掉，
+#   比"没还原"严重得多）。收尾的 `restore_all()` 也要跳过它们。
+_CLOBBERED: set[Path] = set()
 
 # ⚠ 一律用 `newline=""` 读写。为什么不是小事：
 #   默认的文本模式会把 **CRLF 归一成 \n**（读）再把 \n **按平台写成 CRLF**（写）。
@@ -1112,6 +1228,53 @@ def _write(path: Path, text: str) -> None:
 _PENDING = ROOT / "dist" / "tmp" / "mutate_pending.json"
 # 上一次写进 `_PENDING` 的内容（内存里去重，避免上百次重复写盘）
 _PENDING_LAST: str | None = None
+
+# ------------------------------------------------------------------ 独占锁
+# ⚠⚠ 为什么必须有它（2026-10-21 实测，代价是两个文件的源码被永久改坏）：
+#   同一个仓库里**跑两个反证**（两个会话各跑一次 ship / 各自跑 mutate）时，
+#   后启动那个进程的"基线"读到的是前一个**还没还原的突变版**，
+#   于是它把"被改坏的源码"当成原文缓存下来；等它还原时，写回去的
+#   就是这个坏版本 —— 突变变成了永久改动，还不报错。
+#   当时的表现：`is_searchable()` 少了 `and is_healthy(site)`（坏站被算成
+#   可搜资产）、`wikisource` 少了 deadline 判断，接着十几套测试"基线红"，
+#   看上去像一堆测试同时烂了。
+#   判据：**拿不到锁就不许改源码**。宁可让这次 ship 红，也不能把工作区改坏。
+_LOCK = ROOT / "dist" / "tmp" / "mutate.lock"
+_LOCK_FRESH = 20 * 60          # 秒。一轮全量反证约 5 分钟，20 分钟足够宽松
+
+
+def _acquire_lock() -> bool:
+    """拿到独占锁才能动源码。返回 False = 已经有一个反证在跑。"""
+    try:
+        if _LOCK.exists():
+            age = time.time() - _LOCK.stat().st_mtime
+            if age < _LOCK_FRESH:
+                holder = ""
+                try:
+                    holder = _LOCK.read_text(encoding="utf-8").strip()
+                except OSError:
+                    pass
+                print(f"✗ 已经有一个反证在跑（{holder or '?'}，"
+                      f"{int(age)} 秒前留下的锁）—— 两个反证同时跑会把源码改坏。")
+                print(f"  等它跑完再试；确认是残留的话删掉 {_LOCK.relative_to(ROOT)}")
+                return False
+            print(f"⚠ 捡到一个过期锁（{int(age / 60)} 分钟前），当残留处理")
+        _LOCK.parent.mkdir(parents=True, exist_ok=True)
+        _LOCK.write_text(f"pid={os.getpid()} at={time.strftime('%H:%M:%S')}",
+                         encoding="utf-8")
+        return True
+    except OSError as e:
+        # 写不了锁文件（只读目录之类）—— 不该因此把反证停掉，
+        # 但要说出来：这种情况下"两个反证同时跑"的护栏就没有了。
+        print(f"⚠ 拿不到锁文件（{e}）—— 这一轮没有并发保护")
+        return True
+
+
+def _release_lock() -> None:
+    try:
+        _LOCK.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _save_pending() -> None:
@@ -1198,6 +1361,10 @@ def restore_all() -> list[str]:
     """把动过的文件按原内容写回；返回"没能还原"的文件名。"""
     bad: list[str] = []
     for path, text in _ORIGINALS.items():
+        if path in _CLOBBERED:
+            # 这个文件在跑的过程中被别人改过 —— 我们手里的原文是旧的，
+            # 写回去就是覆盖别人的改动。跳过并在下面如实说出来。
+            continue
         try:
             if _read(path) != text:
                 _write(path, text)
@@ -1233,7 +1400,7 @@ def run_test(test: Path) -> tuple[bool, list[str]]:
 
 
 def check_one(m: Mutation) -> tuple[str, str]:
-    """返回 (结果, 说明)。结果是 'caught' / 'survived' / 'detached'。"""
+    """返回 (结果, 说明)。结果见下面四处 return。"""
     src = _load(m.path)                      # 原样（可能带 CRLF）
     flat = _to_lf(src)                       # 匹配与替换都在 LF 上做
     if m.old not in flat:
@@ -1243,18 +1410,47 @@ def check_one(m: Mutation) -> tuple[str, str]:
     patched = flat.replace(m.old, m.new, 1)
     if patched == flat:
         return "detached", "替换没有改动内容"
+    after: str | None = None
     try:
+        # ⚠⚠ 先把"原文"记进待还原清单，**再**动源码。
+        #   反过来的顺序（先写、后记）有一个要命的时间窗：进程恰好在这两步
+        #   之间被强杀 → 源码被改坏、清单里却没有它 → 下次启动也还原不了，
+        #   于是**产品代码永久坏着**。2026-10-21 就这样把
+        #   `save_adapted()` 的"同名覆盖"整行弄丢过（表现成 test_adapt_save
+        #   红，看着像测试烂了，其实是产品真的会写重复条目）。
+        #   记在前面不会造成"白还原一遍"：`_recover_pending()` 是**按内容比对**
+        #   的，没真被改过的文件它跳过、不写。
+        _save_pending()
         _write(m.path, _in_style(patched, src))
         if _to_lf(_read(m.path)) == flat:
             # 替换"没落盘"是最隐蔽的假反证：看起来跑过了，其实产品代码没变。
             return "detached", "替换没有真正落盘（源码没变）"
-        # ⚠ 必须在**写坏之后**才记待还原清单：否则"没来得及写就崩"也会留下
-        #   一条记录，下次启动凭空"还原"一遍（内容其实没变，但白吓一跳）。
-        _save_pending()
         ok, reds = run_test(m.test)
+        # ⚠⚠ 跑完之后必须确认"突变还在盘上"。为什么：
+        #   两个 mutate 进程同时跑（同一个仓库、两个会话 / 两次 ship），
+        #   或者另一个会话正拿着自己的缓冲区保存这个文件时，**对方会把源码
+        #   写回它缓存的那一份** —— 于是这一条测试其实跑在**没被破坏的代码**
+        #   上，结果被报成「存活」，看上去像"断言没牙"，其实什么都没测到。
+        #   这不是设想：2026-10-21 两个会话同时在这个仓库里跑反证，
+        #   engine 那条连着两次报存活，单独跑又稳稳抓住。
+        after = _to_lf(_read(m.path))
     finally:
-        _write(m.path, src)
+        # ⚠⚠ 只在"我们的突变仍然在盘上"时才写回原文。
+        #   无条件写回会把**别人刚保存的改动整份覆盖掉**（`src` 是本次进程
+        #   第一次读到的内容，早就过期了）—— 反证工具把产品代码改坏一版，
+        #   还理直气壮说"已逐字节还原"，这比不还原更糟。
+        try:
+            if _to_lf(_read(m.path)) == patched:
+                _write(m.path, src)
+            else:
+                # 被别人改过了 —— 别碰它，也别在收尾时再"还原"一次。
+                _CLOBBERED.add(m.path)
+        except OSError:
+            pass
         _clear_pending()
+    if after is not None and after != patched:
+        return "touched", ("测试期间源码被外部改动（另一个进程/会话在写同一个"
+                           "文件），这一条不算数 —— 重跑一次")
     if ok:
         return "survived", "突变后测试仍然全绿 —— 断言没有牙"
     return "caught", " · ".join(reds[:2])[:150]
@@ -1284,6 +1480,13 @@ def main() -> int:
     except (ValueError, OSError, AttributeError):
         pass     # 非主线程 / 平台不支持 —— 还有 `_PENDING` 兜底
 
+    # ⚠⚠ 先抢锁，再碰源码。顺序不能反：`_recover_pending()` 会**写源码**，
+    #   而另一个反证可能正跑到一半 —— 我去"还原"它正在改的文件，就是把它的
+    #   突变成永久改动（这个事故真发生过，见 `_acquire_lock` 的注释）。
+    if not _acquire_lock():
+        return 4
+    atexit.register(_release_lock)
+
     # ⚠ 先清掉上一次被强杀留下的残留突变，再拿基准。
     #   顺序不能反：`_load()` 第一次读盘就是基准，读到的若是污染内容，
     #   整轮反证就全建在错的基线上（轻则"基线就红"，重则全绿而其实没测）。
@@ -1311,6 +1514,13 @@ def main() -> int:
         if got == "caught":
             print(f"✓ 被抓住  [{m.group}] {m.name}")
             print(f"      {why}")
+        elif got == "touched":
+            # ⚠ 和"存活"分开报：存活说的是"断言没牙"（产品问题），
+            #   这个说的是"这一条根本没测到"（环境问题）。混在一起报，
+            #   下次真出现没牙的断言时，人会以为是并发干扰而放过它。
+            print(f"!  被外部改动  [{m.group}] {m.name}")
+            print(f"      {why}")
+            bad.append((m.group, m.name, why))
         else:
             tag = "✗ 存活  " if got == "survived" else "? 脱节  "
             print(f"{tag}[{m.group}] {m.name}")

@@ -22,6 +22,7 @@ import ast
 import contextlib
 import importlib.util
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -169,9 +170,22 @@ def main() -> int:
     check("每条突变的目标文件都存在", not bad_path, str(bad_path[:5]))
 
     drift, ambiguous, same, inflight = scan(mut.MUTATIONS, mut._to_lf)
+    # ⚠ 「源码现在处于 new 状态」这条只能**当线索**，不能当判据。
+    #   会误报的原因很实在：突变片段写短了（比如 `例子=[])`），
+    #   别人重构之后这段字面量恰好在别处存在、而原来的 `old` 不在了 ——
+    #   于是"看起来像残留"，其实只是那条突变脱节了（下面 `drift` 会红）。
+    #   真正靠得住的判据是**状态文件**：`dist/tmp/mutate_pending.json` 非空
+    #   = 此刻正有一次反证在改源码（见 mutate._save_pending）。
+    #   而"被强杀留下残留"这个洞已经用**先记后改**堵死了（见下面那条断言）。
+    _pend = ROOT / "dist" / "tmp" / "mutate_pending.json"
+    try:
+        _running = bool(json.loads(_pend.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        _running = False
     if inflight:
-        # 不是失败：反证（mutate）跑的时候源码正被改成 `new`，本条必然"脱节"。
-        print(f"  · 有 {len(inflight)} 条正处于反证的中间状态（源码现在是 new），跳过")
+        print(f"  · 有 {len(inflight)} 条源码正处于 new 形态"
+              f"（{'反证在跑' if _running else '**没有反证在跑，值得看一眼**'}）："
+              f"{[i.split(':')[0] for i in inflight][:4]}")
     check("★ 没有脱节的突变（片段在源码里找得到）—— 之前要等 17 分钟才发现",
           not drift, str(drift[:5]))
     check("★ 每条突变都唯一命中（多处命中会改错地方，反证失去意义）",
@@ -189,6 +203,36 @@ def main() -> int:
     d2, a2, _, _ = scan(fake, mut._to_lf)
     check("★ 判据自己有牙：编一条脱节突变必须被扫出来", len(d2) == 1, str(d2))
     check("★ 判据自己有牙：编一条多处命中的突变也必须被扫出来", len(a2) == 1, str(a2))
+
+    print("\n—— 反证工具自身：并发/外部改动必须能被认出来 ——")
+    # ⚠ 真事（2026-10-21）：两个会话在同一个仓库里各跑一次反证，
+    #   对方的"还原"会把我这边的突变写回去 —— 于是那条测试其实跑在
+    #   **没被破坏的代码**上，却被报成「存活（断言没牙）」。
+    #   更糟的方向是：收尾时把别人刚保存的改动**整份覆盖**掉。
+    #   这两条都靠工具自己的判据守住，不是靠人记得别同时跑。
+    msrc = (ROOT / "tools" / "mutate.py").read_text(encoding="utf-8")
+    check("★ 跑完测试后复核「突变还在盘上」（否则并发干扰会被误报成断言没牙）",
+          "after = _to_lf(_read(m.path))" in msrc)
+    check("★ 只在自己的突变还在盘上时才写回原文（否则覆盖别人的改动）",
+          "if _to_lf(_read(m.path)) == patched:" in msrc)
+    check("被外部改动过的文件收尾时也不再还原（原文已经过期）",
+          "_CLOBBERED.add(m.path)" in msrc and "if path in _CLOBBERED:" in msrc)
+    check("「被外部改动」与「存活」分开报（环境问题别伪装成产品问题）",
+          '"touched"' in msrc and "被外部改动  [" in msrc)
+    # ⚠ 独占锁：两个反证同时跑会把源码**永久改坏**（对方的"原文"其实是
+    #   我改坏的版本，它还原时写回来的就是坏代码）。当时的表现是
+    #   `is_searchable()` 少了健康度判断 → 十几套测试"基线红"。
+    check("★ 反证有独占锁（两个同时跑会把源码永久改坏）",
+          "_acquire_lock()" in msrc and "_LOCK_FRESH" in msrc)
+    check("抢锁在「还原残留」之前（否则会去改别人正在改的文件）",
+          msrc.index("_acquire_lock()") < msrc.index("_recover_pending()"))
+    # ⚠⚠ 这条钉的是**被强杀也不会留残留**：原来的顺序是"先改源码、再记清单"，
+    #   恰好在这两步之间被杀 → 源码改坏了、清单里却没有它 → 下次启动也救不回来。
+    #   2026-10-21 就这样把 `save_adapted()` 的"同名覆盖"整行弄丢过
+    #   （产品会写出重复站点，而表现只是 test_adapt_save 红）。
+    check("★ 先把原文记进清单、再动源码（被强杀也不留残留）",
+          msrc.index("_save_pending()\n        _write(m.path")
+          < msrc.index("_write(m.path, _in_style(patched, src))"))
 
     print("\n" + "=" * 60)
     print(f"通过 {OK} · 失败 {FAIL}")

@@ -356,6 +356,13 @@ class Engine:
                         len(skipped), ", ".join(skipped), len(targets))
 
         raw: list[BookResult] = []
+        # 这一轮**挂了**的源名（抛异常 / 自己吞了异常 / 墙钟到点仍不返回）。
+        # 为什么要单独攒一份而不是只打日志：
+        #   `search.done` 里只有「候选=0」这一个数字，复盘时**分不清**
+        #   「书真的没有」和「源全挂了」—— 今天就是靠散在几行日志里的
+        #   403 / 握手超时反推的，白烧半小时。把名字带进 stats，
+        #   search.done 就能一眼看出是哪种。
+        failed_sources: set[str] = set()
         lock = threading.Lock()
         # 「已推给前端的条数」。**不能拿 len(raw) 当「有结果」的判据** ——
         # raw 里可能全是噪声（实测搜「诡秘之主」raw=20 条但去噪后 0 条），
@@ -414,6 +421,7 @@ class Engine:
                 if items or not err:
                     HEALTH.note_ok(src.name)
                 else:
+                    failed_sources.add(src.name)
                     log_event(logger, "source.fail", 源=src.name, 原因=err[:160])
                     if HEALTH.note_fail(src.name, err):
                         logger.warning("源 %s 连续失败，熔断 %d 分钟（%s）",
@@ -427,6 +435,7 @@ class Engine:
                 #   grep 'source.fail' logs/app.log  就能看出哪个源最近老出问题
                 log_event(logger, "source.fail", 源=src.name,
                           原因=f"{type(e).__name__}: {e}")
+                failed_sources.add(src.name)
                 # 记进熔断器：连续挂到阈值就把这个源暂时摘出扇出名单，
                 # 别让「永远打不通的源」每次都吃掉 20 秒墙钟。
                 if HEALTH.note_fail(src.name, e):
@@ -600,6 +609,39 @@ class Engine:
                     # 会导致「已有结果但卡在等下一个慢源」时白等到那个源回来。
                     # 本 batch 处理完若已满足条件，下一轮顶部会立刻 break。
         finally:
+            # ---- 墙钟到点仍没返回的源：必须记账，而且**必须喂给熔断器** ----
+            # ⚠ 这是今天复盘出来的一个**判据漏洞**（不是"源慢"那么轻）：
+            #   熔断器只统计「跑完、但抛了异常」的源（见 _run 里的 take_error）。
+            #   而**卡死不返回**的源，future 永远不完成 → _run 永远走不到
+            #   note_fail → 熔断器一次都不知道它挂过 → 每轮搜索它还在名单里。
+            #   线上实测（2026-10-21）：`wikisource.search()` 单次 **186.9 秒**
+            #   才返回（5 次重试 + 递增退避 + search 里串两次），而这台机器
+            #   到 zh.wikisource.org 的 TLS 握手天天超时（当天 117 次）。
+            #   于是每搜一次书就多一个活 167 秒的僵尸线程，占着线程和连接池，
+            #   同期别的搜索就会偶发「一个源都没答话」→ 0 条
+            #   （这就是「同一本书 6 分钟内一次 0 条、一次 1 条」的机制）。
+            #
+            # 判据：**真的等满了硬上限**（hit_deadline）+ **客户端没走**
+            #   + fut 确实还没完成。三条缺一不可：
+            #   · 有结果提前收手时不清算 —— 那时剩下的源只是"来不及"，不是坏；
+            #   · 客户端断开时不清算 —— 那是用户不看了，不是源的错，
+            #     否则连点两次搜索就能把全部源拉黑。
+            if hit_deadline and pending and not _stop():
+                hung: list[str] = []
+                for fut in list(pending):
+                    if fut.done():
+                        continue
+                    src = futs.get(fut)
+                    if src is None:
+                        continue
+                    hung.append(src.name)
+                    failed_sources.add(src.name)
+                    HEALTH.note_fail(src.name, "timeout: 墙钟到点仍未答话")
+                    log_event(logger, "source.fail", 源=src.name,
+                              原因="timeout: 墙钟到点仍未答话")
+                if hung:
+                    logger.info("墙钟到点仍未答话：%s（已记账，连续两轮就会被熔断）",
+                                ", ".join(sorted(set(hung))))
             # 不等没回来的慢源 —— 它们在后台自然结束，结果对本轮无意义。
             # cancel_futures 只能取消**还没开始跑**的；已经在跑的线程
             # 会在自己超时后退出，不会泄漏（每次 fetch 都有 timeout）。
@@ -781,6 +823,11 @@ class Engine:
                 "sources_answered": done_count,
                 "sources_total": len(targets),
                 "timed_out": max(0, len(targets) - done_count),
+                # 这一轮**挂了**的源（异常 / 吞异常 / 墙钟到点不返回）。
+                # 有它才能把「书真的没有」和「源全挂了」分开 ——
+                # 两者在 search.done 里都只是「候选=0」，而处置完全相反：
+                # 前者该补源/补书，后者等几分钟重试就好。
+                "failed_sources": sorted(failed_sources),
                 "search_ms": int((time.time() - t_search) * 1000),
                 "ms": int((time.time() - t_start) * 1000),
                 # 总预算有没有被突破。**这是对外契约的判据**：

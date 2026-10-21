@@ -40,6 +40,27 @@ class WikisourceSource(Source):
     SLEEP = 0.2         # 请求间隔
     CONCURRENCY = 3     # 并发线程数（过高会触发限流）
 
+    # ---- 搜索自己的墙钟上限（秒）----
+    #
+    # ⚠ 为什么必须有，而且**不能指望引擎的 20s**：
+    #   这台服务器到 zh.wikisource.org 的 TLS 握手经常超时（2026-10-21 当天
+    #   日志里 `The handshake operation timed out` 出现 **117 次**）。而
+    #   `_api()` 是「5 次重试 + 递增退避」（最坏 5×25s 握手 + 30s 睡眠），
+    #   `search()` 还要**串两次**（intitle 一次、全文一次）——
+    #   服务器上实测 `search("青叶灵异事务所")` 花了 **186.9 秒**才返回。
+    #
+    #   引擎在第 20 秒就收手了，可这个线程还活了 167 秒：每搜一次书就多一个
+    #   僵尸线程，占着线程池和连接池（共享 httpx client 只有 10 个连接）。
+    #   同期别的搜索就会偶发「一个源都没答话」→ 候选 0 条，
+    #   这就是「同一本书 6 分钟内一次 0 条、一次 1 条」的机制。
+    #
+    #   所以本文件自己兜住时间：6 秒（引擎给单源的实际窗口不必更长，
+    #   因为维基文库对当代网文本来就零覆盖，它答话快才有价值）。
+    SEARCH_BUDGET = 6.0
+    # 搜索只重试 2 次。5 次是给「抓正文」用的（长文、可接受慢），
+    # 搜索是扇出里的一员，慢一次就拖住整轮。
+    SEARCH_RETRIES = 2
+
     # ---------- 搜索 ----------
     def search(self, keyword: str) -> list[BookResult]:
         """两步搜索。
@@ -48,10 +69,16 @@ class WikisourceSource(Source):
         「北京互联网法院（2021）京0491民初9699号民事判决书」——因为判决书
         正文里提到了这本书名。所以先用 intitle: 限定「标题必须包含关键词」，
         没有结果再退回全文检索（交给上层相关性过滤去重排）。
+
+        ⚠ 两次查询共用**同一个 deadline**（SEARCH_BUDGET）。第一次就把预算
+          用光时**不许**再串第二次 —— 那正是 186.9 秒的来源。
+          代价是"这篇古籍可能搜不到"，但维基文库本来只收公版书，
+          而它拖住的却是整轮网文搜索。
         """
-        hits = self._search_raw(f"intitle:{keyword}")
-        if not hits:
-            hits = self._search_raw(keyword)
+        deadline = time.time() + self.SEARCH_BUDGET
+        hits = self._search_raw(f"intitle:{keyword}", deadline=deadline)
+        if not hits and time.time() < deadline:
+            hits = self._search_raw(keyword, deadline=deadline)
 
         out: list[BookResult] = []
         for h in hits:
@@ -68,7 +95,7 @@ class WikisourceSource(Source):
             )
         return out
 
-    def _search_raw(self, query: str) -> list[dict]:
+    def _search_raw(self, query: str, deadline: float | None = None) -> list[dict]:
         params = {
             "action": "query",
             "list": "search",
@@ -79,7 +106,7 @@ class WikisourceSource(Source):
             "utf8": 1,
         }
         try:
-            data = self._api(params)
+            data = self._api(params, retries=self.SEARCH_RETRIES, deadline=deadline)
         except Exception as e:  # noqa: BLE001
             # 吞掉异常是合理的（对调用方来说"这次没搜到"），但**必须告诉引擎**
             # 这是"挂"而不是"没这本书" —— 否则熔断器永远收不到失败，
@@ -168,12 +195,29 @@ class WikisourceSource(Source):
         return s.replace("_", " ").strip()
 
     # ---------- 内部实现 ----------
-    def _api(self, params: dict, retries: int = 5) -> dict:
+    def _api(self, params: dict, retries: int = 5,
+             deadline: float | None = None) -> dict:
+        """发一次 API 请求。
+
+        `deadline`（绝对时间戳）为 None 时是**老行为**（抓正文/子页面用，
+        那边慢一点可以接受）；传了 deadline 就变成「到点立刻放弃」——
+        搜索路径必须传，理由见 SEARCH_BUDGET 的注释。
+        """
         url = f"{API}?{urlencode(params)}"
         last: Exception | None = None
         for i in range(retries):
+            if deadline is not None and time.time() >= deadline:
+                # 到点了：不再发第 N 次请求，也不再睡退避。
+                # 这里的 `last` 一定非空（第一次进来就可能为空 —— 那种情况下
+                # 说明预算给得比一次握手还短，如实报"超预算"）。
+                last = last or TimeoutError("搜索预算用完，没再发请求")
+                break
+            # 单次请求的超时也不能超过剩余预算 —— 否则「3 次 × 25s 握手」
+            # 依然能突破 deadline（httpx 的 timeout 是按次算的）。
+            left = None if deadline is None else max(0.5, deadline - time.time())
             try:
-                r = get_client().get(url)
+                kw = {} if left is None else {"timeout": left}
+                r = get_client().get(url, **kw)
                 ct = r.headers.get("content-type", "")
                 if "json" in ct:
                     data = r.json()

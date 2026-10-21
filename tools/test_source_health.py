@@ -275,6 +275,87 @@ def main() -> int:
           "flaky_err" not in HEALTH.open_sources(), str(HEALTH.open_sources()))
     HEALTH.reset()
 
+    # ------------------------------------------------------------------
+    print("\n—— 卡死**不返回**的源：熔断器也必须学得到 ——")
+    # ⚠ 这一段钉的是「判据漏项」，不是「源慢」。
+    #   线上实测（2026-10-21）：wikisource 单次 search 要 **186.9 秒**才返回
+    #   （5 次重试 + 递增退避，还串两次查询），而引擎 20 秒就收手。
+    #   收手时只是把 future 丢下（pool.shutdown(wait=False)）——
+    #   _run 永远走不到 note_fail，熔断器一次都不知道它挂过，
+    #   于是**下一轮它还在名单里**，再占 20 秒。
+    #   实测当天日志里 `The handshake operation timed out` 117 次、熔断 1 次。
+    #
+    # 所以判据必须是：墙钟到点仍未答话的源 → 也要 note_fail。
+    class _Hang(Source):
+        name = "hang_src"
+        display = "永远不返回的源"
+        priority = 1
+        enabled = True
+        calls = 0
+
+        def search(self, keyword):
+            type(self).calls += 1
+            # 比本轮墙钟长，但**有限**：线程能自己收尾，测试进程不会挂死。
+            # 不能用"真的永久 sleep"—— ThreadPoolExecutor 的线程是
+            # 非 daemon 的，进程退出时会 join 它，测试就永远退不出来。
+            time.sleep(2.0)
+            return []
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    class _Fast(Source):
+        name = "fast_src"
+        display = "正常答话的源"
+        priority = 2
+        enabled = True
+        calls = 0
+
+        def search(self, keyword):
+            type(self).calls += 1
+            return []          # 空结果 —— 正常业务结果
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    # 把墙钟压到亚秒级，否则这条测试要等 20 秒 × 3 轮。
+    # ⚠ 改的是**模块常量**（引擎每次调用都现读），不是函数默认参数 ——
+    #   后者在 def 那一刻就固化了，改了也不生效（这个坑本项目踩过）。
+    import app.engine as E
+    _old = (E.SEARCH_HARD_DEADLINE, E.SEARCH_MIN_WAIT, E.SEARCH_SOFT_DEADLINE)
+    E.SEARCH_HARD_DEADLINE = 0.6
+    E.SEARCH_MIN_WAIT = 0.1
+    E.SEARCH_SOFT_DEADLINE = 0.3
+    try:
+        HEALTH.reset()
+        hang, fast = _Hang(), _Fast()
+        eng4 = Engine(sources=[hang, fast])
+        st: dict = {}
+        seen: list[dict] = []
+        for i in range(3):
+            st = {}
+            eng4.search("随便一本书", discover=False, probe=False,
+                        sample=False, stats=st)
+            seen.append(st)
+        # ⚠ 只能看**熔断之前**那两轮的 stats：第三轮它已被摘出扇出名单，
+        #   failed_sources 当然是空的。这条断言第一次写成只看最后一轮，
+        #   于是"修好了"和"根本没记"长得一模一样（= 没牙）。
+        check("墙钟到点的源被记进 failed_sources（日报才分得清"
+              "「没这本书」和「源挂了」）",
+              any("hang_src" in (s.get("failed_sources") or []) for s in seen),
+              str([s.get("failed_sources") for s in seen]))
+        check("★ 卡死不返回的源也会被熔断（不修则永远是「从不熔断」）",
+              "hang_src" in HEALTH.open_sources(), str(HEALTH.open_sources()))
+        check("★ 熔断接上了扇出：第三轮不再调用它",
+              _Hang.calls <= 2, f"calls={_Hang.calls} —— 每轮还在撞这堵墙")
+        check("正常答话（哪怕空结果）的源没被误杀",
+              "fast_src" not in HEALTH.open_sources(), str(HEALTH.open_sources()))
+        check("正常源每轮都被调用", _Fast.calls == 3, f"calls={_Fast.calls}")
+    finally:
+        HEALTH.reset()
+        (E.SEARCH_HARD_DEADLINE, E.SEARCH_MIN_WAIT,
+         E.SEARCH_SOFT_DEADLINE) = _old
+
     print("\n" + "=" * 62)
     if fail_n == 0:
         print(f"通过 {ok_n} · 失败 0\n✓ 全部通过")

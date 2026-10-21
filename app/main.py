@@ -991,6 +991,17 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           # 它不像耗时那样随源站快慢漂移（实测漂 5 倍），
                           # 只取决于机制本身该不该收手。
                           aborted=bool(stats.get("aborted")),
+                          # ---- 「0 条」的两种含义，必须在这里就分开 ----
+                          # 复盘日报每天要回答的问题是「这本书为什么搜不到」，
+                          # 而 候选=0 同时对应两件**处置相反**的事：
+                          #   ① 源都答话了、就是没有这本书   → 该补源 / 记进 known-missing
+                          #   ② 源挂了 / 卡死 / 没答完        → 等几分钟重试，别当"没有"
+                          # 只打 候选=0 时，只能回头去 grep 散落的 403 和握手超时，
+                          # 2026-10-21 复盘就是这么白烧了半小时。所以把账摊开：
+                          #   答=已答/总数、超=没答完的个数、挂=挂了名字的源。
+                          答=f"{stats.get('sources_answered', 0)}/{stats.get('sources_total', 0)}",
+                          超=stats.get("timed_out", 0),
+                          挂=",".join(stats.get("failed_sources") or []) or "-",
                           耗时ms=int((time.perf_counter() - _t0) * 1000))
                 push({
                     "type": "done",

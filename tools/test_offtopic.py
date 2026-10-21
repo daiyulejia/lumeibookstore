@@ -94,6 +94,15 @@ OFFTOPIC_SITES = [
     ("docs.pingcode.com", ""),
     ("github.com", ""),
     ("www.xiaohongshu.com", "你的生活兴趣社区"),
+    # ⚠ 2026-10-22 线上实测补的一类：**漫画 / 音乐站**。
+    #   和教程站同一套病：健康、页面有"正文"、分析也分析得出来，
+    #   只是一本小说都给不出。下面五行是**线上 registry.json 里的原样条目**
+    #   （host 与 name 一字不改），它们曾经全都混在候选池里。
+    ("www.guazimanhua.com", "瓜子漫画"),
+    ("www.doubaomanhua.com", "豆包漫画"),
+    ("www.manhuazhan.com", "漫画站"),
+    ("www.5nd.com", "5nd音乐网"),
+    ("www.kugou.com", "酷狗音乐"),
 ]
 
 
@@ -123,6 +132,23 @@ def main() -> int:
     check("站名含'动漫'的站不被误杀",
           not registry._is_offtopic_site("www.example-ln.com", {"name": "XX动漫轻小说"}),
           "把轻小说站当成了非小说站")
+    # ⚠ 静态判据：这条比上面那条更难绕。上面验的是"现在没问题"，
+    #   这条验的是"判据表里根本没这个词" —— 将来谁顺手把「动漫」加进
+    #   正则（听起来很合理：动漫站不是小说站嘛），这条会立刻红。
+    check("判据表里没有「动漫」这两个字",
+          "动漫" not in registry._OFFTOPIC_NAME_RE.pattern,
+          "「动漫」进了判据表 —— 哔哩轻小说/轻之文库这类站会被清掉")
+    # 名字是空的站（爬不到 og:site_name）不能因为"空串"被误判
+    check("name 为空的站不会被误判成非小说站",
+          not registry._is_offtopic_site("www.384g.com", {}),
+          "空名字触发了判据（正则写成了能匹配空串的形状）")
+    # 反证式的两条：同一个 host，只有站名换掉 —— 命中与否必须跟着站名变。
+    # 没有这两条的话，"判据其实是按 host 命中的"或者"其实恒真"都测不出来。
+    check("同一 host：站名叫「瓜子漫画」→ 命中",
+          registry._is_offtopic_site("www.example-x.com", {"name": "瓜子漫画"}))
+    check("同一 host：站名叫「瓜子书城」→ 不命中（证明是站名那个词起的作用）",
+          not registry._is_offtopic_site("www.example-x.com", {"name": "瓜子书城"}),
+          "不带关键词也命中，说明判据不是靠这几个词")
 
     print("\n── 4. _scrub 把命中的站判死但不删记录 ──")
     db = {"sites": {

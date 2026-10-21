@@ -34,6 +34,21 @@
   每类榜单可以挂**多个来源**（`_SOURCES` 表里按 kind 声明），并且必须
   **按来源交错**（round-robin）合并，见 `_interleave()`。
 
+⚠⚠ **2026-10-22 线上实测：这功能当时仍然是假的。** 逐类数
+  `cache/ranks.json` 里的 `source` 集合 —— 7 类里有 **6 类只有一个元素**
+  （`384g`）。声明写了 4 家，实际只有 1 家出力，页脚照旧写"综合 4 个站点"。
+  原因不是交错写错，而是**别的来源根本没有这几类榜**：
+  · xbqg5200 首页 502（服务器自己坏了）、luoxiaks 只有一张综合榜、
+  · xbiquge 只有总榜/周榜，没有"字数/推荐/最近更新"。
+  这一轮补的是**真能抓到内容**的两个站：
+  · **hodei.net/paihang.html** —— 一个页面 10 个榜单块，实测有真数据的 4 类
+    （总点击 / 周点击 / 收藏数 / 入库时间），解析要注意的坑见 `parse_hodei`。
+  · **xbiquge.info 的 `/lastupdate/` 与 `/lastpost/`** —— 不是榜单页，是列表页，
+    但 HTML 结构与 `/top/` 完全一致，直接复用 `parse_xbiquge`。
+  补完：`allvisit` 5 家、`weekvisit` 2 家、`goodnum` 2 家、`postdate` 3 家、
+  `lastupdate` 2 家；`allvote` 和 `size` 仍是单源 —— 这两类是真没人做，
+  有测试盯着"新增榜单类别必须至少两个来源"，例外要在测试里明写。
+
 ⚠ **为什么必须交错、不能"主源在前、辅源接在后面"**（这是真踩过的坑）：
   旧写法是 `items.extend(384g)` 然后 `items.extend(luoxiaks)`，最后
   `items[:MAX_ITEMS]`。而 384g 一源就出满 20 条 —— 截断之后**辅源一条都
@@ -423,6 +438,146 @@ def parse_xbiquge(html: str, kind: str = "allvisit") -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# hodei.net（好读小说网）—— 一个页面里挂了 10 个榜单块
+# ---------------------------------------------------------------------------
+# 为什么值得为它单独写解析：**它是唯一一个"总点击/周点击/收藏/入库"四类
+# 都有真数据"的站**。加上它之前，7 类榜单里 6 类只有 384g 一家（线上的
+# `cache/ranks.json` 里 source 集合就一个元素）—— 用户翻完榜单只见识过
+# 一家站，「综合多来源」形同虚设。
+#
+# 但要小心两个坑（都是实测踩出来的）：
+#
+# ⚠⚠ **坑一：10 个块的 id 全都一样，id 完全不能当判据。**
+#   整页 `id="top_all_1"` 出现 10 次、`id="tabData_1"` 也出现 10 次。
+#   按 id 选块 = 永远拿到第 1 块（总点击），于是"周点击"和"总点击"
+#   是同一份数据 —— 不报错、不报警，四个标签点开一模一样。
+#   唯一可靠的锚是块标题的文字（`<div class="toptab"><span>总点击</span>`）。
+#
+# ⚠⚠ **坑二：块名高度相似，必须整串相等，不能"包含"。**
+#   总点击 / 月点击 / 周点击 / 日点击 四个都带「点击」。
+#   用 `"点击" in tab` 之类的写法会把 4 个块当成一类。
+#
+# ⚠ **坑三：有 4 个 tab 是空的，站方拿默认序冒充榜单。**
+#   实测 推荐数 / 下载数 / 评论数 / 评分 四块抽出来的书名**一字不差**
+#   （都是 `/book/1/`、`/book/2/`… 的默认入库序）。这不是榜单，
+#   是模板兜底。所以：**推荐数不给 allvote 用**，并且解析时拿这个
+#   默认序当指纹 —— 目标块的名单跟它一模一样就直接判"这榜没数据"，
+#   宁可不给，也不把默认序当"总推荐榜"递给用户。
+_HODEI_TABS: dict[str, str] = {
+    "allvisit": "总点击",
+    "weekvisit": "周点击",
+    "goodnum": "收藏数",
+    "postdate": "入库时间",
+}
+
+# 拿它当"默认序指纹"（见上面坑三）。
+_HODEI_DEFAULT_TAB = "下载数"
+
+
+def _hodei_blocks(html: str) -> list[tuple[str, list[dict[str, Any]]]]:
+    """把 hodei 的榜单页切成 `[(块标题, 条目列表), …]`，保持页面顺序。
+
+    结构与切法（实测）:
+        <div class="index_toplist mright mbottom">
+          <div class="toptab" id="top_all_1"><span>总点击</span></div>
+          <div id="tabData_1">
+            <div class="topbooks"><ul>
+              <li><span class="hits">05-17</span><span class="num">1.</span>
+                  <a href="/book/19797/" title="我在精神病院学斩神" target="_blank">…</a>
+                  / <a href="/author/sanjiuyinyu.html">三九音域</a></li>
+              …
+            </ul></div>
+          </div>
+        </div>
+
+    按 `<div class="index_toplist"` 切块：块与块之间是并列关系，
+    切出来的每一段里**只含自己的那一份列表**（下一个块从下一次 split 开始）。
+    """
+    out: list[tuple[str, list[dict[str, Any]]]] = []
+    for chunk in re.split(r'<div class="index_toplist', html)[1:]:
+        tm = re.search(r'<div class="toptab"[^>]*>\s*<span>\s*([^<]{1,12}?)\s*</span>',
+                       chunk)
+        if not tm:
+            continue
+        tab = tm.group(1)
+
+        ul = re.search(r"<ul[^>]*>([\s\S]*?)</ul>", chunk)
+        if not ul:
+            out.append((tab, []))
+            continue
+
+        rows: list[dict[str, Any]] = []
+        for li in re.findall(r"<li[^>]*>([\s\S]*?)</li>", ul.group(1)):
+            # 书籍链接：href 和 title 在同一个 <a> 标签里，但属性顺序不保证，
+            # 所以先整段取出标签再分别找，别写 `href…title` 这种定序正则。
+            tag = re.search(r'<a\b[^>]*href="(/book/\d+/)"[^>]*>', li)
+            if not tag:
+                continue
+            raw_tag = tag.group(0)
+            t_attr = re.search(r'title="([^"]{1,60})"', raw_tag)
+            if t_attr:
+                title = _clean(t_attr.group(1))
+            else:
+                inner = re.search(r"<a\b[^>]*>([^<]{1,60})</a>", li)
+                title = _clean(inner.group(1)) if inner else ""
+            if not title:
+                continue
+
+            au = re.search(r'href="/author/[^"]*"[^>]*>([^<]{1,20})</a>', li)
+            # `<span class="hits">` 其实是**这本书的最近更新日期**（形如 05-17），
+            # 不是本榜的名次值 —— 实测同一本书在不同块里这个值相同。
+            hit = re.search(r'class="hits"[^>]*>([^<]{1,12})<', li)
+
+            rows.append({
+                "title": title,
+                "author": _clean(au.group(1)) if au else "",
+                "url": "https://www.hodei.net" + tag.group(1),
+                "source": "hodei",
+                "source_display": "hodei.net",
+                "words": "",
+                "updated": _clean(hit.group(1)) if hit else "",
+                "status": "",
+                "kind": "",          # 由 parse_hodei 统一盖，见下
+            })
+        out.append((tab, rows))
+    return out
+
+
+def parse_hodei(html: str, kind: str) -> list[dict[str, Any]]:
+    """解析 hodei.net 的 `/paihang.html`：按**块标题文字**选块。
+
+    `kind` 不在 `_HODEI_TABS` 里（比如 allvote / size / lastupdate）→ 空列表：
+    这个站确实没有那几类榜，别硬凑（更别拿默认序冒充，见文件里坑三）。
+    """
+    tab = _HODEI_TABS.get(kind)
+    if not tab:
+        return []
+
+    blocks = _hodei_blocks(html)
+    picked: Optional[list[dict[str, Any]]] = None
+    for name, rows in blocks:
+        if name == tab:                 # ⚠ 整串相等，不许用 `in`
+            picked = rows
+            break
+    if picked is None:
+        return []
+
+    # 默认序冒充的守卫（坑三）：跟「下载数」那块一模一样 → 这榜没真数据
+    dflt = next((rows for name, rows in blocks if name == _HODEI_DEFAULT_TAB), None)
+    if dflt and len(dflt) > 1:
+        same = ([r["title"] for r in dflt] == [r["title"] for r in picked])
+        if same:
+            print(f"  [ranks] hodei {kind}（{tab}）抽出来是站点的默认序，"
+                  f"不是真榜单，跳过", flush=True)
+            return []
+
+    out = picked[:MAX_ITEMS]
+    for it in out:
+        it["kind"] = kind
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 来源表（定义在这里，因为每一项要指向上面这些解析函数）
 # ---------------------------------------------------------------------------
 # 每一项 = 一个**榜单页**。同一个站点有几种榜就写几项 —— 比如 xbiquge.info
@@ -464,6 +619,35 @@ _SOURCES: list[dict[str, Any]] = [
         "parser": parse_xbiquge,
         "kinds": {"weekvisit"},
     },
+    {
+        # ⚠ 这两条不是「榜单页」，是站点的**列表页**（首页右上角「更多」跳过去
+        #   的那两页）。它们的 HTML 结构和 `/top/` **完全一样**（`<dd><h3>` 块 +
+        #   中文标签字段），所以直接复用 `parse_xbiquge` —— 实测 20 条能正常解出。
+        #
+        #   为什么要它们：`lastupdate`（最近更新）和 `postdate`（最新入库）
+        #   原来都只有 384g 一家。这两类数据几乎每个小说站都有，只是不一定
+        #   叫「榜」—— 找的时候别只盯着带「排行」二字的页面。
+        "key": "xbiquge-lastupdate", "display": "xbiquge.info",
+        "url": "https://www.xbiquge.info/lastupdate/",
+        "parser": parse_xbiquge,
+        "kinds": {"lastupdate"},
+    },
+    {
+        "key": "xbiquge-lastpost", "display": "xbiquge.info",
+        "url": "https://www.xbiquge.info/lastpost/",
+        "parser": parse_xbiquge,
+        "kinds": {"postdate"},
+    },
+    {
+        # 一个页面挂 10 个榜单块 —— 只声明**实测有真数据**的那 4 类。
+        # 推荐数 / 下载数 / 评论数 / 评分 四块是默认序冒充，不给 allvote 用。
+        # `once`：页面不随 kind 变，一轮刷新里只抓一次（见 _fetch_source）。
+        "key": "hodei", "display": "hodei.net",
+        "url": "https://www.hodei.net/paihang.html",
+        "parser": parse_hodei,
+        "once": True,
+        "kinds": {"allvisit", "weekvisit", "goodnum", "postdate"},
+    },
 ]
 
 
@@ -483,6 +667,12 @@ def sources_for(kind: str) -> list[str]:
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _TTL = 1800.0          # 30 分钟
 _lock = threading.Lock()
+
+# 「一个页面挂多个榜」的来源，抓回来的 HTML 短时间留一份（见 `_fetch_source`）。
+# 只按 **URL** 存，不按 kind —— 存的本来就是同一个页面。TTL 比一次刷新
+# 预算长得多、又远小于榜单缓存，够覆盖"7 类连着刷"这一阵子。
+_MEMO: dict[str, tuple[float, str]] = {}
+_MEMO_TTL = 180.0
 # 抓取中标记：同一个人连点两次不该触发两次抓取
 _inflight: set[str] = set()
 _loaded = False
@@ -573,12 +763,39 @@ def _fetch_source(src: dict[str, Any], kind: str) -> list[dict[str, Any]]:
 
     为什么吞：一个站抽风不该让整类榜单变空。调用方拿到的是"其他来源的并集"，
     少一家总比一条都没有强。
+
+    `src["once"] = True` 的来源（页面不随 kind 变化，比如 hodei 一个页面挂
+    10 个榜）**同一轮里只抓一次**：7 类榜单并发刷新时，不然同一个 49KB 页面
+    会被抓 4 遍 —— 同域限速把那 4 次排成一条队（每次至少 0.3s 间隔），
+    白等两三秒，还可能把整次刷新顶过预算（预算到点就收手，剩下的类别
+    这一轮就不更新了）。
     """
-    try:
-        html = fetch_text(src["url"].format(kind=kind))
-    except Exception as e:  # noqa: BLE001
-        print(f"  [ranks] {src['key']} {kind} 抓取失败：{e}", flush=True)
-        return []
+    url = src["url"].format(kind=kind)
+    # ⚠ 一个来源要不要走 memo，只在**这一处**决定（读写共用这个变量）。
+    #   分开写两个 `if src.get("once")` 的话，改错一处只影响一半：
+    #   比如"写"那半也放开 —— 所有来源都会被当成"一轮只抓一次"，
+    #   榜单内容就永远停在一小时前，而且不报错。反证脚本正是靠这一行
+    #   来验"只有声明过的来源才复用"的。
+    once = bool(src.get("once"))
+
+    html: Optional[str] = None
+    if once:
+        now = time.time()
+        with _lock:
+            hit = _MEMO.get(url)
+        if hit and now - hit[0] < _MEMO_TTL:
+            html = hit[1]
+
+    if html is None:
+        try:
+            html = fetch_text(url)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [ranks] {src['key']} {kind} 抓取失败：{e}", flush=True)
+            return []
+        if once:
+            with _lock:
+                _MEMO[url] = (time.time(), html)
+
     try:
         items = src["parser"](html, kind)
     except Exception as e:  # noqa: BLE001
@@ -896,6 +1113,10 @@ def clear_cache() -> None:
     global _loaded
     with _lock:
         _CACHE.clear()
+        # ⚠ `_MEMO` 也要清 —— 它缓存的是**抓回来的 HTML**。不清的话
+        #   "强制重来一次"仍可能拿到上一次的页面（对用户就是"点了刷新
+        #   内容没变"），测试里换一份假网络也会读到上一份假页面。
+        _MEMO.clear()
         _loaded = True
         try:
             _DB.unlink(missing_ok=True)
