@@ -579,7 +579,9 @@ MUTATIONS: list[Mutation] = [
              RANKS_TEST),
     Mutation("ranksbreaker", "刷新日志不写「哪几类没跑完」（事后查不出漏哪类）",
              MAIN,
+             '              成功=rep.get("ok"), 失败=rep.get("failed"),\n'
              '              跳过=rep.get("skipped"), 没跑完=rep.get("pending"),\n',
+             '              成功=rep.get("ok"), 失败=rep.get("failed"),\n'
              '              跳过=rep.get("skipped"),\n',
              RANKS_TEST),
     Mutation("ranksource", "把被 JS 挑战墙拦住的站加回来源表（页脚多数一个站、每轮白撞）",
