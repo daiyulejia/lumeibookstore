@@ -28,11 +28,26 @@ from .models import Book, BookResult, Chapter
 from .relevance import CHAPTER_TITLE_RE
 from .relevance import rank, score as score_result
 from .sources import BUILTIN_SOURCES, DISCOVER_SOURCE
-from .sourcehealth import HEALTH, classify
+from .sourcehealth import HEALTH
 from .sources.base import Source, note_for_exception, tidy_content
 from .utils import fast_mode, fetch_text, host_of
 
 logger = logging.getLogger("novel.engine")
+
+
+def _log_trip(name: str, seconds: float, why: str) -> None:
+    """把「熔断了多久」写成一句人话。
+
+    ⚠ 为什么要有这个函数：原来这行日志是**写死**「熔断 15 分钟」——
+    加了指数退避之后第二次是 30 分钟、第三次 60 分钟，写死的字就开始撒谎，
+    而这种谎**不会报错**，只会让复盘的人按 15 分钟去推断现场。
+    时长由 `note_fail()` 返回（真实值），这里只负责排版。
+    """
+    if seconds >= 3600:
+        how = f"{seconds / 3600:.1f} 小时".replace(".0 ", " ")
+    else:
+        how = f"{max(1, int(round(seconds / 60)))} 分钟"
+    logger.warning("源 %s 连续失败，熔断 %s（%s）", name, how, why[:120])
 
 # 一次最多探测多少个候选
 DEFAULT_PROBE_TOP = 14
@@ -423,11 +438,9 @@ class Engine:
                 else:
                     failed_sources.add(src.name)
                     log_event(logger, "source.fail", 源=src.name, 原因=err[:160])
-                    if HEALTH.note_fail(src.name, err):
-                        logger.warning("源 %s 连续失败，熔断 %d 分钟（%s）",
-                                       src.name,
-                                       int(HEALTH.cooldown.get(classify(err), 300) // 60),
-                                       err[:120])
+                    cd = HEALTH.note_fail(src.name, err)
+                    if cd:
+                        _log_trip(src.name, cd, err)
                 return items
             except Exception as e:  # noqa: BLE001
                 # 单个来源挂掉是常态（站点会抽风、会改版、会拦爬虫），
@@ -438,11 +451,9 @@ class Engine:
                 failed_sources.add(src.name)
                 # 记进熔断器：连续挂到阈值就把这个源暂时摘出扇出名单，
                 # 别让「永远打不通的源」每次都吃掉 20 秒墙钟。
-                if HEALTH.note_fail(src.name, e):
-                    logger.warning("源 %s 连续失败，熔断 %d 分钟（%s）",
-                                   src.name,
-                                   int(HEALTH.cooldown.get(classify(e), 300) // 60),
-                                   f"{type(e).__name__}: {e}"[:120])
+                cd = HEALTH.note_fail(src.name, e)
+                if cd:
+                    _log_trip(src.name, cd, f"{type(e).__name__}: {e}")
                 return []
             finally:
                 src.set_log(None)

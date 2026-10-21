@@ -98,6 +98,8 @@ REGISTRY_TEST = ROOT / "tools" / "test_registry.py"
 REGSRC_TEST = ROOT / "tools" / "test_registry_source.py"
 # 源熔断（含「源自己吞了异常也要熔断」，见 app/sources/base.py::note_error）
 HEALTH_TEST = ROOT / "tools" / "test_source_health.py"
+# 熔断器本体（冷却退避 + 跨重启落盘）
+HEALTH_PY = ROOT / "app" / "sourcehealth.py"
 # 源自己的墙钟上限（tools/test_source_budget.py）
 WIKI = ROOT / "app" / "sources" / "wikisource.py"
 BUDGET_SRC_TEST = ROOT / "tools" / "test_source_budget.py"
@@ -1201,6 +1203,47 @@ MUTATIONS: list[Mutation] = [
              "            if hit_deadline and pending and not _stop():",
              "            if False:",
              HEALTH_TEST),
+    # ---------------- 冷却退避 + 跨重启记忆（tools/test_source_health.py）----------
+    # ⚠ 2026-10-22 线上实测：维基文库是境外站，云端 SSL 握手**必**超时。
+    #   固定 15 分钟冷却 = 每小时被放进来试 4 次，每次都让一次真实搜索陪它等；
+    #   `cache` 里没有任何地方记着"这个源打不通"，每次 sync/重启又从头试一遍。
+    #   四条改动全都不报错，只表现为"搜索一直慢、答不完"。
+    Mutation("backoff", "冷却不退避（死源永远按最短的 15 分钟一轮回来）",
+             HEALTH_PY,
+             '                dur = min(base * (BACKOFF ** (s["streak"] - 1)), MAX_COOLDOWN)',
+             "                dur = min(base, MAX_COOLDOWN)",
+             HEALTH_TEST),
+    Mutation("backoff", "冷却不封顶（连挂十几次 = 冷却涨到几年，等于永久拉黑）",
+             HEALTH_PY,
+             '                dur = min(base * (BACKOFF ** (s["streak"] - 1)), MAX_COOLDOWN)',
+             '                dur = base * (BACKOFF ** (s["streak"] - 1))',
+             HEALTH_TEST),
+    Mutation("backoff", "答话一次不清连续轮数（抖动型的源被一路按 8 小时冷却）",
+             HEALTH_PY,
+             "            had = self._st.pop(name, None) is not None",
+             "            _s = self._st.get(name)\n"
+             "            had = _s is not None\n"
+             "            if _s:\n"
+             "                _s[\"until\"] = 0\n"
+             "                _s[\"fails\"] = 0",
+             HEALTH_TEST),
+    Mutation("backoff", "熔断状态不落盘（每次重启都忘光，重启后第一搜又陪坏源等满一轮）",
+             HEALTH_PY,
+             "    def _save(self) -> None:\n"
+             "        \"\"\"把**仍在冷却中**的条目写盘（原子替换）。失败不抛。\"\"\"\n"
+             "        if not self._path:\n"
+             "            return",
+             "    def _save(self) -> None:\n"
+             "        \"\"\"把**仍在冷却中**的条目写盘（原子替换）。失败不抛。\"\"\"\n"
+             "        if True:\n"
+             "            return",
+             HEALTH_TEST),
+    Mutation("backoff", "读回落盘时不校验过期（一份两天前的旧文件把源永久拉黑）",
+             HEALTH_PY,
+             "                if until <= now or until < now - STALE_AFTER:",
+             "                if until <= 0:",
+             HEALTH_TEST),
+
     # ---------------- 超时 ≠ 站点挂了（tools/test_registry_source.py）----------------
     # ⚠ 单站只给 3.5 秒，慢站必然超时；超时若记成 fail_down，
     #   `is_healthy` 的 `down >= 3 and down > ok*2` 会把慢站往死里推 ——

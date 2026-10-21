@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.sourcehealth import (COOLDOWN, HEALTH, KIND_NET, KIND_OTHER,  # noqa: E402
-                              SourceHealth, classify)
+                              STALE_AFTER, SourceHealth, classify)
 
 ok_n = 0
 fail_n = 0
@@ -355,6 +355,117 @@ def main() -> int:
         HEALTH.reset()
         (E.SEARCH_HARD_DEADLINE, E.SEARCH_MIN_WAIT,
          E.SEARCH_SOFT_DEADLINE) = _old
+
+    # ------------------------------------------------------------------
+    print("\n—— 冷却退避：永远打不通的源不该每 15 分钟回来一次 ——")
+    # ⚠ 线上实测（2026-10-22）：维基文库是境外站，云端 SSL 握手**必**超时。
+    #   固定 15 分钟冷却 = 它每小时被放进来试 4 次，每次都让一次真实搜索
+    #   陪它等（日志里 117 条 handshake timed out，救回来 0 次）。
+    #   所以连挂的轮数越多，冷却越长。
+    from app.sourcehealth import BACKOFF, MAX_COOLDOWN
+
+    def trip_once(h, name: str, exc=None) -> float:
+        """挂两次把它熔断，返回这次熔断用的冷却秒数。
+
+        `exc` 直接传异常对象（不是消息字符串）—— 分类看的是类型：
+        TimeoutError → 网络类（15 分钟起），ValueError → 解析类（5 分钟起）。
+        """
+        e = exc if exc is not None else TimeoutError("t")
+        h.note_fail(name, e)
+        return h.note_fail(name, e)
+
+    def rearm(h, name: str) -> None:
+        """把某个源的冷却拨到过去，模拟"时间到了、半开试探"。
+
+        ⚠ 必须再调一次 `allows()`：`trial` 标记是它打的，只改 until 不算
+          进入半开（不调的话下一次 note_fail 会当成"又挂了一次"，不熔断）。
+        """
+        with h._lock:                                   # noqa: SLF001
+            h._st[name]["until"] = time.time() - 1      # noqa: SLF001
+        h.allows(name)
+
+    hb = SourceHealth()
+    d1 = trip_once(hb, "bk")
+    check(f"第一次熔断用基础冷却（{d1:.0f}s）",
+          abs(d1 - COOLDOWN[KIND_NET]) < 1)
+    rearm(hb, "bk")
+    d2 = hb.note_fail("bk", TimeoutError("t"))
+    check(f"第二次熔断翻倍（{d2:.0f}s ≈ {d1 * BACKOFF:.0f}s）",
+          abs(d2 - d1 * BACKOFF) < 1)
+    rearm(hb, "bk")
+    d3 = hb.note_fail("bk", TimeoutError("t"))
+    check(f"第三次再翻倍（{d3:.0f}s ≈ {d2 * BACKOFF:.0f}s）",
+          abs(d3 - d2 * BACKOFF) < 1)
+    # 一路挂下去要有天花板，否则冷却会涨到几年（等于永久拉黑，且不可解释）
+    for _ in range(12):
+        rearm(hb, "bk")
+        last = hb.note_fail("bk", TimeoutError("t"))
+    check(f"冷却封顶在 MAX_COOLDOWN（{last:.0f}s <= {MAX_COOLDOWN:.0f}s）",
+          last <= MAX_COOLDOWN + 1)
+    check("封顶真的到了（否则上面那条是恒真）", last >= MAX_COOLDOWN - 1)
+    # 返回值必须就是真正写进去的时长：日志拿它去说人话，对不上就撒谎
+    with hb._lock:                                     # noqa: SLF001
+        wrote = hb._st["bk"]["until"] - time.time()    # noqa: SLF001
+    check(f"返回的秒数 == 实际写入的冷却（{last:.0f} / {wrote:.0f}）",
+          abs(wrote - last) < 2)
+
+    # 反向：恢复一次就该从最小的冷却重新开始 —— 抖动型的源不能被一路
+    # 按 8 小时冷却（那等于"挂过一次就再也回不来"）。
+    hb.note_ok("bk")
+    d_again = trip_once(hb, "bk")
+    check(f"答话一次后，再挂又回到基础冷却（{d_again:.0f}s）",
+          abs(d_again - COOLDOWN[KIND_NET]) < 1,
+          "没清 streak 的写法会一直按封顶值计算")
+
+    # 解析类（非网络）也按同样规则退避，只是起点短
+    ho = SourceHealth()
+    o1 = trip_once(ho, "pr", ValueError("找不到目录容器"))
+    check(f"解析类第一次冷却 = 它自己的基础值（{o1:.0f}s）",
+          abs(o1 - COOLDOWN[KIND_OTHER]) < 1)
+
+    print("\n—— 落盘：重启之后还记得谁打不通 ——")
+    # 为什么需要它：每次 sync / 重启都丢掉内存记忆 → 重启后第一次搜索
+    # 又要陪那几个坏源等满一整轮。
+    import json as _json
+    import tempfile
+    tmpdir = Path(tempfile.mkdtemp(prefix="health-test-"))
+    hp = tmpdir / "sourcehealth.json"
+    h1 = SourceHealth(path=hp)
+    trip_once(h1, "dead_src")
+    check(f"熔断后文件写出来了（{hp.name}）", hp.exists())
+    h1.note_ok("alive_src")          # 先制造一条"不熔断"的记录
+    # 模拟重启：新实例、同一个文件
+    h2 = SourceHealth(path=hp)
+    check("★ 重启后仍然熔断（不至于重启就忘光）", not h2.allows("dead_src"))
+    check("没熔断过的源照常放行", h2.allows("alive_src"))
+    raw = _json.loads(hp.read_text(encoding="utf-8"))
+    check(f"只写还在冷却中的条目（写了 {sorted(raw)}）",
+          "dead_src" in raw and "alive_src" not in raw)
+    # 过期的旧账必须丢：一份两天前的文件不该让某个源永久回不来
+    raw["dead_src"]["until"] = time.time() - (STALE_AFTER + 60)
+    hp.write_text(_json.dumps(raw), encoding="utf-8")
+    h3 = SourceHealth(path=hp)
+    check("★ 过期（>24 小时）的落盘条目被丢掉，不会永久拉黑",
+          h3.allows("dead_src"), str(h3.snapshot()))
+    # ⚠ 上面那条单独**没有牙**：读进来但已过期，`allows()` 一样返回 True，
+    #   "丢掉了"和"留着一句早过期的 until"看起来完全一样（mutate 抓出来过）。
+    #   所以再钉一条：内存里不该留这条账 —— 留着它，下次 `_save()`/诊断面板
+    #   都会看到一条凭空的老记录，复盘时误判"这个源刚挂过"。
+    check("过期条目没有被塞进内存账本", "dead_src" not in h3.snapshot(),
+          str(h3.snapshot()))
+    # 不传 path 的实例一次磁盘都不该碰（测试/库使用者不该被偷偷写文件）
+    h4b = SourceHealth()
+    trip_once(h4b, "nofile")
+    check("没给 path 就不写盘（副作用为零）", sorted(p.name for p in tmpdir.iterdir())
+          == ["sourcehealth.json"])
+
+    # 引擎那行日志必须用**真实**时长：原来写死「熔断 15 分钟」，
+    # 加了退避之后那句话会开始撒谎（第二次是 30 分钟）。
+    eng_src = (ROOT / "app" / "engine.py").read_text(encoding="utf-8")
+    check("★ 引擎日志不再从常量里算时长（写死 15 分钟 = 静默撒谎）",
+          "HEALTH.cooldown.get" not in eng_src)
+    check("引擎用 note_fail 的返回值去写日志",
+          "_log_trip(" in eng_src and "cd = HEALTH.note_fail" in eng_src)
 
     print("\n" + "=" * 62)
     if fail_n == 0:

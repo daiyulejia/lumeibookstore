@@ -403,6 +403,11 @@ class LocalServer:
         _tmpstats = tempfile.mkdtemp(prefix="novel-ship-stats-")
         env["NOVEL_HISTORY"] = str(Path(_tmpstats) / "history.json")
         env["NOVEL_VISITS"] = str(Path(_tmpstats) / "visits.json")
+        # ⚠ 熔断账本也要隔离（2026-10-22 起它落盘了）。
+        #   真机套件里有故意做失败源的用例（boom_src / hang_src …），
+        #   不隔离的话它们会被写进真实 `cache/sourcehealth.json`，
+        #   下次真实搜索时账本里躺着一堆根本不存在的源名。
+        env["NOVEL_HEALTH"] = str(Path(_tmpstats) / "sourcehealth.json")
         self._stats_dir = _tmpstats
         self.proc = subprocess.Popen(
             [PY, str(ROOT / "run.py"), "--host", "127.0.0.1",
