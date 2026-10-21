@@ -18,8 +18,14 @@
        （HTTP 200、4471 字节、0 条），总字数榜是按一列**自相矛盾的字数**
        排的（见下面 SUPPORTED 那段）。真要加类目，先抓一页数条数。
 
-  ✅ **xbqg5200.com** —— `/top.html`，`li.list-group-item` 列表：
-     书名（`a[title]`，书名前带 `[玄幻]` 分类）+ 作者。54 条（6 个分类各 9 条）。
+  ❌ **xbqg5200.com** —— 曾经是 `/top.html`（`li.list-group-item`，54 条，
+     书名带 `[玄幻]` 分类前缀）。**2026-10-22 又一轮线上实测：整站被
+     JS 挑战墙拦住了** —— `/top.html` 和 `/` 都 302 到
+     `/GE/CC/VALIDATOR?key=…`（带时间戳的一次性验证页），站内搜那边一直是
+     403。解析器（`parse_xbqg5200`）和它的样本测试都留着，哪天撤墙一行就能接回来，
+     但**来源声明必须摘掉**：声明一个永远 0 条的站，页脚"综合 5 个站"就是
+     在撒谎，而且每轮刷新都要为它白花一次请求。
+     判据见 `test_ranks.py` S 段「被挑战墙拦住的站不许声明」。
 
   ✅ **xbiquge.info** —— `/top/`（总榜）、`/top/week_0_1.html`（周榜）…
      每本是一个 `<dd><h3>` 块 + 若干 `<dd class="book_other">` 行，
@@ -56,9 +62,10 @@
   ② 「总字数榜」的唯一来源 384g 字数列自相矛盾（同一本 4551 章的书两个条目
      差 5 倍），而它的 size 榜正是按这个字段排的 → 顺序和数字都是假的。
      这个类别已下线，换成有真数据的 **本月热读（monthvisit）**。
-  现状：`allvisit` 5 家、`weekvisit` 3 家、`allvote` 2 家、`goodnum` 3 家、
+  现状：`allvisit` 4 家、`weekvisit` 3 家、`allvote` 2 家、`goodnum` 3 家、
   `monthvisit` 2 家、`postdate` 3 家、`lastupdate` 2 家 —— **没有单源类别**了。
   测试里"每类至少两个来源"不再有例外（`SINGLE_OK` 已清空）。
+  ⚠ 之后又摘掉了 xbqg5200（整站挑战墙），`allvisit` 由 5 家变 4 家。
 
 ⚠ **为什么必须交错、不能"主源在前、辅源接在后面"**（这是真踩过的坑）：
   旧写法是 `items.extend(384g)` 然后 `items.extend(luoxiaks)`，最后
@@ -646,12 +653,15 @@ _SOURCES: list[dict[str, Any]] = [
         "parser": parse_luoxiaks,
         "kinds": {"allvisit", "allvote", "weekvisit", "monthvisit", "goodnum"},
     },
-    {
-        "key": "xbqg5200", "display": "xbqg5200.com",
-        "url": "https://www.xbqg5200.com/top.html",
-        "parser": parse_xbqg5200,
-        "kinds": {"allvisit"},
-    },
+    # ⚠ 2026-10-22 摘掉 xbqg5200：整站被 JS 挑战墙拦住（`/top.html` 与 `/` 都
+    #   302 到 `/GE/CC/VALIDATOR?key=…`，站内搜 403）。声明它 = 每轮刷新白花
+    #   一次请求 + 页脚"综合 N 个站"里多一个**永远**不出数据的名字。
+    #   解析器 `parse_xbqg5200` 与样本测试保留（撤墙后一行接回来），
+    #   但**来源表里不许再出现** —— 判据见 test_ranks.py S 段。
+    #   要接回来就写：
+    #     {"key": "xbqg5200", "display": "xbqg5200.com",
+    #      "url": "https://www.xbqg5200.com/top.html",
+    #      "parser": parse_xbqg5200, "kinds": {"allvisit"}},
     {
         "key": "xbiquge", "display": "xbiquge.info",
         "url": "https://www.xbiquge.info/top/",

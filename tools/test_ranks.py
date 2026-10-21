@@ -850,6 +850,16 @@ def main() -> int:
     g384 = next(s for s in ranks._SOURCES if s["key"] == "384g")
     check(f"384g 不声明 monthvisit/weekvisit（那两页是空壳，声明了页脚会撒谎）",
           not ({"monthvisit", "weekvisit"} & g384["kinds"]))
+    # ⚠ xbqg5200 整站被 JS 挑战墙拦住（线上实测 2026-10-22：`/top.html` 与 `/`
+    #   都 302 到 `/GE/CC/VALIDATOR?key=…`，站内搜 403）。声明它 = 每轮刷新
+    #   白花一次请求，页脚"综合 N 个站"里还多一个**永远**不出数据的名字。
+    #   解析器和它的样本测试都留着（撤墙后一行接回来），只是不许出现在来源表。
+    #   ⚠ 判据钉的是"来源表里没有它"，不是"没有 parser" —— 两件事。
+    check(f"被挑战墙拦住的 xbqg5200 不在来源表里（现在是 "
+          f"{[s['key'] for s in ranks._SOURCES]}）",
+          "xbqg5200" not in {s["key"] for s in ranks._SOURCES})
+    check("但它的解析器还在（撤墙后能一行接回来）",
+          callable(getattr(ranks, "parse_xbqg5200", None)))
 
     # -----------------------------------------------------------------
     # 「一页多榜」的来源：一轮里只该抓一次。
