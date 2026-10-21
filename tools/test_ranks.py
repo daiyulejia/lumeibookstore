@@ -47,6 +47,14 @@ def main() -> int:
     #     这里漏了。）
     import tempfile
     ranks._DB = Path(tempfile.mkdtemp(prefix="ranks-test-")) / "ranks.json"
+    # ⚠⚠ 熔断账本同理（2026-10-22 起它落盘了）：榜单来源挂了会写
+    #   `cache/sourcehealth.json`。测试造的假来源名不该留在真账本里。
+    #   ⚠ 换的必须是 `ranks.HEALTH` 这个**模块属性**：`ranks.py` 里写的是
+    #     `from .sourcehealth import HEALTH`，导入那一刻就把对象绑死了，
+    #     改 `sourcehealth.HEALTH` 对它没有任何影响（经典陷阱）。
+    import app.sourcehealth as _sh  # noqa: E402
+    ranks.HEALTH = _sh.SourceHealth(
+        path=Path(tempfile.mkdtemp(prefix="ranks-health-")) / "sourcehealth.json")
 
     fails: list[str] = []
 
@@ -879,6 +887,140 @@ def main() -> int:
         ranks.fetch_text = real_fetch
     check("清缓存后 hodei 会重新抓（memo 被清掉了）",
           sum(1 for u in asked if "hodei.net" in u) == 1)
+
+    # -----------------------------------------------------------------
+    print()
+    print("== T. 榜单抓取接进熔断器（死源别再每 30 分钟占一次预算）==")
+    # ⚠ 动机（2026-10-22 线上实测）：`xbqg5200.com` 站内搜 403、榜单页 502，
+    #   **搜索侧早就把它熔断了，榜单侧完全不知道** —— 定时任务每 30 分钟
+    #   照样原样去撞它（重试 + 退避一路等到超时）。11:02 那次全量刷新正好
+    #   撞满 25 秒预算、到点收手，后面没跑的类目这一轮就不更新了；
+    #   而日志里只有一行 `ms="25006 慢"`，查不出是哪几类没跑完。
+    #
+    # ⚠ 这段必须用**独立**的熔断账本（开头已经换成临时目录那份），
+    #   否则跑一次测试就把真实账本里"谁打不通"的记忆清了/写脏了。
+
+    # ① 榜单侧的名字必须和搜索侧**分开记**
+    key0 = ranks._SOURCES[0]["key"]
+    check(f"榜单来源在熔断器里用独立名字（{key0} → {ranks._breaker_key(key0)}）",
+          ranks._breaker_key(key0) != key0
+          and ranks._breaker_key(key0).endswith(key0))
+    # ② **熔断中的来源这一轮一个请求都不发**
+    ranks.HEALTH.reset()
+    for _ in range(_sh.OPEN_AFTER):
+        ranks._note_fail("384g", "allvisit", TimeoutError("connect timed out"))
+    check(f"384g 连挂 {_sh.OPEN_AFTER} 次后确实熔断了",
+          ranks.HEALTH.is_open(ranks._breaker_key("384g")))
+    # ⚠ 照妖镜：如果谁图省事直接拿裸 key 记账，搜索侧 xbqg5200 的
+    #   403 就会让榜单也跳过（明明榜单页好好的）—— 反过来榜单每轮成功
+    #   一次又会把搜索侧的退避清零，退避等于没做。所以两本账必须分得开。
+    check("榜单熔断不影响搜索侧的裸名记账（两本账）",
+          ranks.HEALTH.allows("384g") is True
+          and ranks.HEALTH.allows(ranks._breaker_key("384g")) is False)
+
+    ranks.fetch_text = fake_fetch
+    try:
+        ranks.clear_cache()
+        asked.clear()
+        skip = ranks._fetch_one("allvisit")
+    finally:
+        ranks.fetch_text = real_fetch
+    g384_asked = [u for u in asked if "384g.com" in u]
+    check(f"熔断期间 384g 一个请求都没发（发了 {len(g384_asked)} 次）",
+          not g384_asked)
+    sskip = {i.get("source") for i in skip}
+    check(f"跳过 384g 后其余来源照常出结果（{sorted(sskip)}）",
+          "384g" not in sskip and len(sskip) >= 3)
+    # ⚠ 只判"没发请求"是不够的：把 `allows()` 那行删掉，`fetch_text` 照样
+    #   会被调用，但假网络**认得**这个地址 → 请求发出去、内容也拿回来，
+    #   于是"没发请求"这条会红；反过来若谁改成 `return []` 之前先请求一遍，
+    #   这条也红。两条一起才钉得住"省下的是真实请求"。
+    check(f"跳过的那一类不是整页空白（还有 {len(skip)} 条）", len(skip) >= 10)
+
+    # ③ 成功一次必须把账清干净（否则抖动的源会被一路按 8 小时冷却）。
+    #    ⚠ 这里**走真实的抓取路径**、不手调 `_note_ok()`：要验的是
+    #      `_fetch_source` 成功分支里那个调用点，不是辅助函数本身。
+    with ranks.HEALTH._lock:                              # noqa: SLF001
+        ranks.HEALTH._st[ranks._breaker_key("384g")]["until"] = time.time() - 1  # noqa: SLF001
+    ranks.HEALTH.allows(ranks._breaker_key("384g"))       # 冷却到期 → 半开试探
+    ranks.fetch_text = fake_fetch
+    try:
+        ranks.clear_cache()
+        asked.clear()
+        back = ranks._fetch_one("allvisit")
+    finally:
+        ranks.fetch_text = real_fetch
+    check("半开试探成功 → 熔断记录被清掉（不是一直挂着）",
+          not ranks.HEALTH.is_open(ranks._breaker_key("384g"))
+          and ranks._breaker_key("384g") not in ranks.HEALTH.snapshot())
+    check("清账后 384g 又会被正常请求",
+          any("384g.com" in u for u in asked)
+          and "384g" in {i.get("source") for i in back})
+
+    # ③' 端到端：真抓失败两轮之后，第三轮**一个请求都不该再发**。
+    #    上面 ② 是手动 `_note_fail` 标的账，这条验的是"抓取失败真的进了账本"
+    #    —— 少了它，把 `_note_fail(...)` 那行删掉照样一路绿（反证脚本抓得到）。
+    ranks.HEALTH.reset()
+
+    def dead_hodei(url: str, **kw):
+        if "hodei.net" in url:
+            raise ConnectionError("502 bad gateway")
+        return fake_fetch(url, **kw)
+
+    ranks.fetch_text = dead_hodei
+    try:
+        for _ in range(_sh.OPEN_AFTER):
+            ranks.clear_cache()
+            ranks._fetch_one("allvisit")
+        asked.clear()
+        ranks.clear_cache()
+        after = ranks._fetch_one("allvisit")
+    finally:
+        ranks.fetch_text = real_fetch
+    check("真抓失败进账本了（不是只记在日志里）",
+          ranks.HEALTH.is_open(ranks._breaker_key("hodei")))
+    check(f"第三轮不再请求已经挂掉两次的 hodei（发了 "
+          f"{sum(1 for u in asked if 'hodei.net' in u)} 次）",
+          not any("hodei.net" in u for u in asked))
+    check(f"少了一家来源，榜单照样有内容（{len(after)} 条）", len(after) >= 10)
+    ranks.HEALTH.reset()
+
+    # ④ 榜单侧的冷却也要退避 —— 判据看真实写到账本里的秒数，
+    #    不看日志文案（文案是从这个值算出来的，值错了文案跟着错）。
+    #    ⚠ open_after=2：第 1 次只是计数（返回 0），第 2 次才熔断；
+    #      冷却到期要先 `allows()` 进半开态，下一次 note_fail 才会重新熔断。
+    ranks.HEALTH.reset()
+    _b = ranks._breaker_key("hodei")
+    _first = [ranks.HEALTH.note_fail(_b, TimeoutError("t")) for _ in range(2)]
+    with ranks.HEALTH._lock:                              # noqa: SLF001
+        ranks.HEALTH._st[_b]["until"] = time.time() - 1   # noqa: SLF001
+    ranks.HEALTH.allows(_b)                               # 进半开态
+    _second = ranks.HEALTH.note_fail(_b, TimeoutError("t"))
+    check(f"榜单来源也走退避（计数 {round(_first[0])}s / 首次熔断 "
+          f"{round(_first[1])}s / 再次熔断 {round(_second)}s）",
+          _sh.OPEN_AFTER == 2 and _first == [0.0, 900.0] and _second == 1800.0)
+    ranks.HEALTH.reset()
+
+    # ⑤ 刷新收尾那行埋点必须带"没跑完的类目"——
+    #    日志里只有 `ms="25006 慢"` 时查不出是哪几类没更新，正是这次要修的。
+    import ast  # noqa: PLC0415
+    main_src = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(main_src)
+    refresh_fn = next((n for n in ast.walk(tree)
+                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                       and n.name == "ranks_refresh"), None)
+    call_kw: set[str] = set()
+    if refresh_fn is not None:
+        for node in ast.walk(refresh_fn):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == "log_event"):
+                kws = [k.arg for k in node.keywords]
+                if "ranks.refresh" in [a.value for a in node.args
+                                       if isinstance(a, ast.Constant)]:
+                    call_kw = {k for k in kws if k}
+    need = {"成功", "失败", "跳过", "没跑完", "类目", "耗时"}
+    check(f"ranks.refresh 埋点字段齐全（缺：{sorted(need - call_kw)}）",
+          need <= call_kw)
 
     print()
     if fails:

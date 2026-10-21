@@ -92,6 +92,7 @@ from typing import Any, Optional
 
 # 复用现有的抓取器：它已经处理了编码猜测（GBK→gb18030）、
 # 同域限速、指数退避重试。自己再写一套只会两边不一致。
+from .sourcehealth import HEALTH
 from .utils import fetch_text
 
 # 缓存落盘的位置。为什么要落盘：进程一重启内存缓存就没了，
@@ -803,6 +804,31 @@ def cache_status() -> dict[str, Any]:
     return out
 
 
+def _breaker_key(key: str) -> str:
+    """榜单来源在熔断器里的名字。
+
+    ⚠ 为什么加 `ranks:` 前缀、而**不**跟搜索侧共用 `xbqg5200` 这个名字：
+      同一个站的两条通路（站内搜索 vs 排行榜页）挂的原因经常不一样 ——
+      `xbqg5200` 站内搜 403，但它的 `/top.html` 可能好好地活着。
+      共用一本账的话，榜单每 30 分钟成功一次就会 `note_ok()` 把搜索侧的
+      退避计数清零，于是"连挂 4 轮才升到 1 小时"永远攒不够，退避等于没做。
+      两本账各记各的：谁挂了谁自己退避，互不抵消。
+    """
+    return f"ranks:{key}"
+
+
+def _note_fail(key: str, kind: str, exc: BaseException) -> None:
+    """记一次榜单抓取失败（复用搜索那套熔断器，见 `_breaker_key`）。"""
+    cd = HEALTH.note_fail(_breaker_key(key), exc)
+    if cd:
+        print(f"  [ranks] 来源 {key} 连续失败，熔断 {int(cd // 60) or 1} 分钟"
+              f"（{kind} 这一类这轮不更新）", flush=True)
+
+
+def _note_ok(key: str) -> None:
+    HEALTH.note_ok(_breaker_key(key))
+
+
 def _fetch_source(src: dict[str, Any], kind: str) -> list[dict[str, Any]]:
     """抓单个来源。**吞掉异常**并打印 —— 返回 [] 而不是往上抛。
 
@@ -816,6 +842,18 @@ def _fetch_source(src: dict[str, Any], kind: str) -> list[dict[str, Any]]:
     这一轮就不更新了）。
     """
     url = src["url"].format(kind=kind)
+
+    # ⚠ 熔断：打不通的站别再占预算。
+    #   线上实测（2026-10-22）：榜单是每 30 分钟由定时任务全类目刷新的，
+    #   而 `xbqg5200.com` 那个站站内搜 403、榜单页 502 —— 搜索侧早就熔断了，
+    #   **榜单侧完全不知道**，每次刷新都要把它从名单里再撞一遍（重试+退避
+    #   一路等到超时）。11:02 那次刷新正好撞满 25 秒预算（1500 秒 × 1/60），
+    #   到点收手 → 后面没跑的类目这一轮就不更新了。
+    #   现在两边各记一本账（见 `_breaker_key`）：它挂了，榜单也不再等它。
+    if not HEALTH.allows(_breaker_key(src["key"])):
+        print(f"  [ranks] {src['key']} 熔断中，{kind} 这一轮跳过", flush=True)
+        return []
+
     # ⚠ 一个来源要不要走 memo，只在**这一处**决定（读写共用这个变量）。
     #   分开写两个 `if src.get("once")` 的话，改错一处只影响一半：
     #   比如"写"那半也放开 —— 所有来源都会被当成"一轮只抓一次"，
@@ -836,10 +874,12 @@ def _fetch_source(src: dict[str, Any], kind: str) -> list[dict[str, Any]]:
             html = fetch_text(url)
         except Exception as e:  # noqa: BLE001
             print(f"  [ranks] {src['key']} {kind} 抓取失败：{e}", flush=True)
+            _note_fail(src["key"], kind, e)
             return []
         if once:
             with _lock:
                 _MEMO[url] = (time.time(), html)
+        _note_ok(src["key"])
 
     try:
         items = src["parser"](html, kind)

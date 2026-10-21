@@ -554,6 +554,35 @@ MUTATIONS: list[Mutation] = [
              '    {"kind": "size", "label": "总字数榜", "desc": "篇幅最长的"},',
              RANKS_TEST),
 
+    # ------- 榜单抓取接熔断器（tools/test_ranks.py T 段）-------
+    # ⚠ 这一组的失败方式全是**静默**的：坏源照旧每 30 分钟重撞一次，
+    #   只是定时刷新偶尔撞满预算、有几类榜不更新，日志里查不出来。
+    Mutation("ranksbreaker", "熔断检查形同虚设（打不通的站照样每轮重撞）",
+             RANKS,
+             "    if not HEALTH.allows(_breaker_key(src[\"key\"])):",
+             "    if False:",
+             RANKS_TEST),
+    Mutation("ranksbreaker", "榜单和搜索共用一本账（一方成功就把另一方的退避清零）",
+             RANKS,
+             '    return f"ranks:{key}"',
+             "    return key",
+             RANKS_TEST),
+    Mutation("ranksbreaker", "抓取失败不记账（熔断永远不会触发）",
+             RANKS,
+             '            _note_fail(src["key"], kind, e)',
+             "            pass",
+             RANKS_TEST),
+    Mutation("ranksbreaker", "抓取成功不清账（抖动的源被一路按 8 小时冷却）",
+             RANKS,
+             '        _note_ok(src["key"])',
+             "        pass",
+             RANKS_TEST),
+    Mutation("ranksbreaker", "刷新日志不写「哪几类没跑完」（事后查不出漏哪类）",
+             MAIN,
+             '              跳过=rep.get("skipped"), 没跑完=rep.get("pending"),\n',
+             '              跳过=rep.get("skipped"),\n',
+             RANKS_TEST),
+
     # ------- 「目录可能不全」备注（tools/test_registry.py）-------
     Mutation("registry", "「这次不评价目录」和「这次查过、目录是全的」混成一个语义"
                          "（顺手记一笔的调用会擦掉体检刚写下的警告）",

@@ -875,6 +875,16 @@ async def ranks_refresh(kind: str = "", force: bool = True):
         rep = await asyncio.to_thread(_rk.refresh, ks, force)
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": f"刷新失败：{e}"}, status_code=502)
+    # ⚠ 留痕：定时任务的调用方是 systemd（curl 的输出没人看），
+    #   所以"这次刷新到底成功几类、哪几类没跑完"只能写在日志里。
+    #   线上实测（2026-10-22 11:02）那次刷新用了 25.0 秒 = 正好撞满预算，
+    #   但日志里只有一行 `ms="25006 慢"` —— 到底哪几类被收手了、
+    #   有没有写进缓存，事后一句都查不出来。
+    log_event(logger, "ranks.refresh",
+              成功=rep.get("ok"), 失败=rep.get("failed"),
+              跳过=rep.get("skipped"), 没跑完=rep.get("pending"),
+              类目=",".join(rep.get("pending_kinds") or []) or "-",
+              耗时=str(rep.get("elapsed")))
     return {"ok": True, **rep}
 
 
