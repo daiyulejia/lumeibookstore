@@ -657,6 +657,15 @@ def main() -> int:
               str(reborn.get("search_shape")))
         check("★ 重学之后「搜出过」也清零（旧模板的成绩不能护着新模板）",
               int(reborn.get("search_hit") or 0) == 0, str(reborn.get("search_hit")))
+        # 上一条模板的**死因**同样属于「旧结论」，必须跟着清。
+        # 线上实例（2026-10-22 复盘）：16 个可搜源里有 8 个同时出现
+        # `searchable=True` 和 `why=复核：模板不认关键词（假搜索）`——
+        # 那 8 个站的模板其实都真的带 `{kw}`（5 个走 POST body），
+        # 只是 why 停在上一轮被判假的那条模板上没清。复盘照着这句话
+        # 去查「假站为什么还在扇出」，白花了半小时 —— 库是好的，是它在撒谎。
+        check("★ 重学之后旧模板的死因清空（不许把上一轮的结论挂在新模板上）",
+              not (reborn.get("search_fail_why") or "").strip(),
+              repr(reborn.get("search_fail_why")))
         check("重学之后立刻算可搜源（给它一次机会）",
               R.is_searchable(reborn), str(reborn))
         # 反向验一遍：新模板有**完整的 3 次机会**，不是接着旧账只剩 1 次

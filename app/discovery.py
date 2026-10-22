@@ -644,10 +644,12 @@ def discover(
     results: list[BookResult] = []
     seen_url: set[str] = set()
     lock = threading.Lock()
+    checked = 0        # 已经**核完**（不管成败）的候选数
     pool = ThreadPoolExecutor(max_workers=min(DISCOVER_WORKERS, len(uniq)))
     futs = {pool.submit(_verify, c, keyword): c for c in uniq}
     try:
         for fut in as_completed(futs, timeout=budget):
+            checked += 1
             try:
                 r = fut.result()
             except Exception as e:  # noqa: BLE001
@@ -663,8 +665,17 @@ def discover(
                 results.append(r)
             say("发现可用来源", f"{r.title} · {r.chapter_count} 章 ({host_of(r.url)})")
     except Exception:  # noqa: BLE001
-        logger.info("联网核实超预算，先用已有结果")
-        say("核实超时", "先把已经找到的给你", True)
+        # ⚠ 超预算这条日志**必须说清还欠多少**（2026-10-22 复盘）。
+        #   原来只写「先用已有结果」，于是复盘时看不出这一轮是
+        #   「12 个候选全部核完、只是都不可用」还是「还有 11 个压根没核」——
+        #   前者该换搜索词，后者该加预算，处置完全相反。
+        #   线上实例（2026-10-22 00:10 搜《阿兵的快乐生活》）：
+        #   命中在 3.9s 就拿到了，这条日志出现在 16.7s，而它只说"超预算"，
+        #   既看不出还剩几个，也看不出那 12.8 秒花在了谁身上。
+        left = max(0, len(futs) - checked)
+        logger.info("联网核实超预算，先用已有结果（%d/%d 个候选核完、还剩 %d 个没核）",
+                    checked, len(futs), left)
+        say("核实超时", f"先把已经找到的给你（还剩 {left} 个候选没核）", True)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 

@@ -106,6 +106,10 @@ BUDGET_SRC_TEST = ROOT / "tools" / "test_source_budget.py"
 # 自有来源（学到的模板 → 真的能搜出书）
 REGISTRY_SOURCE = ROOT / "app" / "sources" / "registry_source.py"
 FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
+# 联网核实的账目（tools/test_discover_async.py 第 4 组）—— 「超预算」那条
+# ⚠ 失败方式：日志只剩「超预算」半句话，复盘分不清"全核完了只是都不可用"
+#   和"还有 N 个压根没核"，两者处置相反。
+DISCOVER_ASYNC_TEST = ROOT / "tools" / "test_discover_async.py"
 # 搜索总预算 + 搜索账目（tools/test_engine_budget.py）
 BUDGET_TEST = ROOT / "tools" / "test_engine_budget.py"
 REL_TEST = ROOT / "tools" / "test_relevance.py"
@@ -1339,6 +1343,24 @@ MUTATIONS: list[Mutation] = [
              "    if isinstance(e, RuntimeError) and cause is not None:\n        e = cause",
              "    if False:\n        e = cause",
              REGSRC_TEST),
+
+    # ---------------- 判据会不会说真话（2026-10-22 复盘）----------------
+    # ⚠ 这一组的失败方式不是"功能坏了"，而是**日志/库在撒谎** ——
+    #   复盘每天要靠这两处判断"这本书为什么没搜到"，它们一撒谎，
+    #   排查方向就是错的。2026-10-22 实测：库里有 8 个站同时是
+    #   `searchable=True` 和 `why=复核：模板不认关键词（假搜索）`，
+    #   照着这句话去查「假站为什么还在扇出」白花半小时，最后证明
+    #   那 8 个站的模板都真的带 `{kw}`（5 个走 POST body）—— 库是好的。
+    Mutation("verdict", "重学成功后不清旧模板的死因（库同时说「能搜」和「假搜索」）",
+             REGISTRY,
+             '        cur["search_fail_why"] = ""',
+             '        cur["search_fail_why"] = cur.get("search_fail_why") or ""',
+             REGISTRY_TEST),
+    Mutation("verdict", "核实超预算时不报「还剩几个没核」（悄悄收手）",
+             DISCOVERY,
+             "        left = max(0, len(futs) - checked)",
+             "        left = 0",
+             DISCOVER_ASYNC_TEST),
 ]
 
 

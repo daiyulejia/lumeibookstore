@@ -36,10 +36,13 @@
 """
 from __future__ import annotations
 
+import io
+import logging
 import os
 import pathlib
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -133,11 +136,81 @@ def main() -> int:
           "而不是两条路都很快（否则本测试无牙）",
           (sync_ms - async_ms) > 2000, f"异步 {async_ms:.0f}ms vs 同步 {sync_ms:.0f}ms")
 
+    print("\n── 4. 核实超预算时必须说清「还剩几个没核」 ──")
+    # 为什么钉这条（2026-10-22 复盘）：线上那条日志原来只有
+    # 「联网核实超预算，先用已有结果」半句话，于是复盘时**分不清**
+    #   ① 12 个候选全核完了，只是都不可用  → 该换搜索/换词
+    #   ② 还有 11 个压根没核                → 该加预算
+    # 两者处置相反，而日志长得一模一样。实例：00:10 搜《阿兵的快乐生活》，
+    # 命中在 3.9s 就拿到了，这条日志出现在 16.7s，既看不出还剩几个，
+    # 也看不出那 12 秒花在谁身上。
+    # 判据不是耗时，是**日志里有没有那个数字**：造 3 个永久挂起的候选，
+    # 超预算时必然是「0/3 核完、还剩 3 个没核」。
+    gate = threading.Event()          # 永不 set：让 _verify 永远不返回
+
+    def _hang_verify(cand, keyword):
+        gate.wait(30)
+        return None
+
+    def _fake_three(keyword, *, limit=14, per_host=2, log=None):
+        return [{"url": f"https://hang{i}.test/book/1/", "host": f"hang{i}.test",
+                 "title": "假书", "engine": "stub"} for i in range(3)]
+
+    old_find, old_verify = discovery.websearch.find_book_pages, discovery._verify
+    discovery.websearch.find_book_pages = _fake_three
+    discovery._verify = _hang_verify
+    buf = io.StringIO()
+    h = logging.StreamHandler(buf)
+    lg = logging.getLogger("novel.discovery")
+    lg.addHandler(h)
+    old_level = lg.level
+    lg.setLevel(logging.INFO)
+    try:
+        res3 = discovery.discover("假书", budget=0.3)
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(old_level)
+        discovery.websearch.find_book_pages = old_find
+        discovery._verify = old_verify
+        gate.set()
+
+    said = buf.getvalue()
+    check("超预算时没返回半成品（3 个都挂起 → 0 条）", res3 == [], str(res3))
+    check("★ 日志说清了核完几个/共几个", "0/3" in said, said.strip()[:200])
+    check("★ 日志说清了还剩几个没核", "还剩 3 个没核" in said, said.strip()[:200])
+    # 反向：这句话不能是常量。1 个候选核完、2 个挂着 → 必须变成 1/3
+    buf2 = io.StringIO()
+    h2 = logging.StreamHandler(buf2)
+    done_gate = threading.Event()
+    calls = {"n": 0}
+
+    def _one_done_two_hang(cand, keyword):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None          # 第一个立刻核完（失败也算核完）
+        done_gate.wait(30)
+        return None
+
+    discovery.websearch.find_book_pages = _fake_three
+    discovery._verify = _one_done_two_hang
+    lg.addHandler(h2)
+    lg.setLevel(logging.INFO)
+    try:
+        discovery.discover("假书", budget=1.0)
+    finally:
+        lg.removeHandler(h2)
+        lg.setLevel(old_level)
+        discovery.websearch.find_book_pages = old_find
+        discovery._verify = old_verify
+        done_gate.set()
+    said2 = buf2.getvalue()
+    check("★ 数字跟着实际核完数走（不是写死的常量）",
+          "1/3" in said2 and "还剩 2 个没核" in said2, said2.strip()[:200])
+
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")
     print("=" * 62)
     return 1 if BAD else 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
