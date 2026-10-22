@@ -688,6 +688,40 @@ def main() -> int:
               repr(dsk["dead.example.com"].get("search_tpl")))
 
         # -----------------------------------------------------------------
+        print("\n—— 读库自愈：模板还在，就不许挂旧模板的死因 ——")
+        # 线上实测（2026-10-22 复盘）：16 个可搜源里 8 个同时是
+        # `searchable=True` 和 `why=复核：模板不认关键词（假搜索）`。
+        # 那 8 个站的模板其实都真的带 {kw}（5 个走 POST body），
+        # 旧结论是上一轮被判假的那条模板留下的。而且这类站**永远不会**
+        # 再走一遍重学（有模板的站两个入口都跳过），不靠读库自愈就永久留着。
+        R.flush()
+        raw = disk()
+        raw["sites"]["stale.example.com"] = {
+            "host": "stale.example.com", "ok": 5,
+            "search_tpl": "/?s={kw}", "search_enc": "utf-8",
+            "search_fail_why": "复核：模板不认关键词（假搜索）",
+            "updated": int(time.time()),
+        }
+        raw["sites"]["legacy.example.com"] = {
+            "host": "legacy.example.com", "ok": 5,
+            "search_tpl": "", "search_fail_why": "没找到可用的搜索接口",
+            "updated": int(time.time()),
+        }
+        R._DB.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        R._cache = None          # 强制走一次 _load()，自愈就发生在那里
+        stale = R.known_site("stale.example.com")
+        check("★ 模板还在 → 旧模板的死因被清空（否则同一行既说能搜又说假搜索）",
+              not (stale.get("search_fail_why") or "").strip(),
+              repr(stale.get("search_fail_why")))
+        check("模板还留着（自愈只清死因，不许顺手把站弄没）",
+              (stale.get("search_tpl") or "") == "/?s={kw}", repr(stale.get("search_tpl")))
+        # 反向：没模板的站，死因是**有效结论**，一个都不许清
+        legacy = R.known_site("legacy.example.com")
+        check("★ 没模板的站，死因照留（自愈不许把有效结论一起抹掉）",
+              (legacy.get("search_fail_why") or "") == "没找到可用的搜索接口",
+              repr(legacy.get("search_fail_why")))
+
+        # -----------------------------------------------------------------
         print("\n—— 护栏：全清要显式确认 ——")
         # 先落一次盘：缩水护栏是拿「盘上那份」当基准的，
         # 上面这些 note_* 都还压在内存里（落盘有 1 秒节流）

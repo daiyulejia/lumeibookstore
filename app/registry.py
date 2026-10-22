@@ -341,6 +341,43 @@ def _scrub_kwless(db: dict) -> int:
     return n
 
 
+def _scrub_stale_why(db: dict) -> int:
+    """清掉「模板还在、旧模板的死因还挂着」的结论，返回清了几条。
+
+    为什么写入口修了还不够（2026-10-22 复盘）：
+      `search_fail_why` 说的是「**那一个**模板为什么被撤」，重学成功后它就该失效
+      （写入口 `save_search_tpl()` 现在会清）。但**历史数据清不掉**，而且这类站
+      永远不会再走一遍重学 —— `save_search_tpl()` 见到已有模板直接 return False，
+      `should_try_learn()` 也不会挑它们。于是旧结论会**永久**挂在新模板上，
+      `/api/registry` 长期同时说「能搜」和「假搜索」。
+      线上实测：16 个可搜源里 8 个是这个形状。复盘照着这句"证据"去查
+      「8 个假站为什么还在扇出」，白花半小时，最后证明 16 个站的模板
+      **全部真的带 `{kw}`**（其中 5 个走 POST body，URL 上本来就看不到）——
+      库是好的，是这一行在撒谎。
+
+    判据为什么安全（「模板非空」与「记过死因」在写入侧互斥）：
+      · `note_search_result()` 记「模板打开的不是搜索页」时，**同一块代码**
+        把 `search_tpl` 写成空串；
+      · `clear_search_tpl()` 记「复核判假」时也是先清模板再记；
+      · `note_search_fail()`（学不出接口）只对**没有模板**的站调用
+        （`should_try_learn()` 会把有模板的站跳过）。
+    所以「模板在 + why 在」只可能是被撤掉的那条旧模板留下的。
+    """
+    n = 0
+    for site in (db.get("sites") or {}).values():
+        if not isinstance(site, dict):
+            continue
+        if not (site.get("search_tpl") or "").strip():
+            continue
+        if not (site.get("search_fail_why") or "").strip():
+            continue
+        # ⚠ 写 `""` 不 `pop`：落盘 `_merge()` 逐键覆盖，内存里没的键会从盘上复活
+        #   （和 `note_book(note=)` 那条三态教训同一个坑）。
+        site["search_fail_why"] = ""
+        n += 1
+    return n
+
+
 def _scrub_and_log(db: dict) -> None:
     """跑自愈并**留一条日志**（原先是静默的）。
 
@@ -353,6 +390,7 @@ def _scrub_and_log(db: dict) -> None:
     异常仍然吞掉（不能因为自愈失败就整个读库失败），但降级为 warning 留痕。
     """
     try:
+        n_why = _scrub_stale_why(db)
         n_kw = _scrub_kwless(db)
         n = _scrub(db)
     except Exception as e:  # noqa: BLE001
@@ -362,7 +400,7 @@ def _scrub_and_log(db: dict) -> None:
         except Exception:  # noqa: BLE001
             pass
         return
-    if n or n_kw:
+    if n or n_kw or n_why:
         # 清模板是**写操作**（`_scrub` 原来只改内存、靠后续写入顺带落盘，
         # 但清模板不会伴随任何写入，不主动置脏就等于重启后又回来）。
         #
@@ -373,11 +411,12 @@ def _scrub_and_log(db: dict) -> None:
         global _dirty
         _dirty = True
     if not n:
-        if n_kw:
+        if n_kw or n_why:
             try:
                 from .logging_setup import get_logger, log_event
                 log_event(get_logger("novel.registry"), "registry.scrub",
-                          新判死=0, 影视站=0, 非小说站=0, 空模板=n_kw)
+                          新判死=0, 影视站=0, 非小说站=0, 空模板=n_kw,
+                          陈旧死因=n_why)
             except Exception:  # noqa: BLE001
                 pass
         return
@@ -387,7 +426,8 @@ def _scrub_and_log(db: dict) -> None:
         video = sum(1 for s in blocked if isinstance(s, dict) and s.get("video_blocked"))
         off = sum(1 for s in blocked if isinstance(s, dict) and s.get("offtopic_blocked"))
         log_event(get_logger("novel.registry"), "registry.scrub",
-                  新判死=n, 影视站=video, 非小说站=off, 空模板=n_kw)
+                  新判死=n, 影视站=video, 非小说站=off, 空模板=n_kw,
+                  陈旧死因=n_why)
     except Exception:  # noqa: BLE001
         pass
 

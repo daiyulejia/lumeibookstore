@@ -1361,6 +1361,16 @@ MUTATIONS: list[Mutation] = [
              "        left = max(0, len(futs) - checked)",
              "        left = 0",
              DISCOVER_ASYNC_TEST),
+    Mutation("verdict", "读库自愈不清陈旧死因（模板已换、旧结论还在撒谎）",
+             REGISTRY,
+             '        site["search_fail_why"] = ""',
+             '        site["search_fail_why"] = site.get("search_fail_why") or ""',
+             REGISTRY_TEST),
+    Mutation("verdict", "自愈不看有没有模板就清死因（把有效结论一起抹掉）",
+             REGISTRY,
+             '        if not (site.get("search_tpl") or "").strip():\n            continue',
+             '        if False:\n            continue',
+             REGISTRY_TEST),
 ]
 
 
