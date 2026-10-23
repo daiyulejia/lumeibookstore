@@ -81,7 +81,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import history, security, tunnel, visits
-from .engine import Engine, source_meta
+from .engine import Engine, source_ledger, source_meta
 from .errors import Cancelled, SourceBlocked
 from .exporter import DOWNLOAD_DIR, export as export_book
 
@@ -1008,10 +1008,12 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           #   ② 源挂了 / 卡死 / 没答完        → 等几分钟重试，别当"没有"
                           # 只打 候选=0 时，只能回头去 grep 散落的 403 和握手超时，
                           # 2026-10-21 复盘就是这么白烧了半小时。所以把账摊开：
-                          #   答=已答/总数、超=没答完的个数、挂=挂了名字的源。
-                          答=f"{stats.get('sources_answered', 0)}/{stats.get('sources_total', 0)}",
-                          超=stats.get("timed_out", 0),
-                          挂=",".join(stats.get("failed_sources") or []) or "-",
+                          #   答=真的答话的源/总数、挂=返回了但挂了的源（带名字）、
+                          #   未回=收手时还没回来的源（带名字）、到点=是否撞满墙钟。
+                          # ⚠ 四格互斥，答+挂+未回 == 总数；名字必须打出来 ——
+                          #   只有数字的话，"到底谁在拖"永远查不出来（见
+                          #   app/engine.py::source_ledger 的注释）。
+                          **source_ledger(stats),
                           耗时ms=int((time.perf_counter() - _t0) * 1000))
                 push({
                     "type": "done",

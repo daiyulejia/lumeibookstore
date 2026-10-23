@@ -217,6 +217,44 @@ def main() -> int:
     check("★ 超预算日志带进度（答完几个 / 共几个 / 耗时 / 已有几条）",
           "个站已答完" in src and "len(ordered)" in src, src[src.find("超预算"):][:80])
 
+    # ⚠ 光有进度还不够：线上 15 次超预算里，「没答完的站」**一个名字都没留**，
+    #   于是分不清"预算太小"和"某个站永远慢"（前者加预算、后者把站降权，
+    #   处置相反）。这条是行为判据 —— 真跑一轮撞预算，看日志里有没有那个站名。
+    import logging as _log
+
+    class _Cap(_log.Handler):
+        def __init__(self):
+            super().__init__()
+            self.lines: list[str] = []
+
+        def emit(self, rec):        # noqa: D102
+            self.lines.append(rec.getMessage())
+
+    _cap = _Cap()
+    _lg = _log.getLogger("novel.registry_source")
+    _lg.addHandler(_cap)
+    _lg.setLevel(_log.DEBUG)
+    _old_budget = RS.SEARCH_BUDGET
+
+    def _slow_fetch(url, *a, **k):
+        import time as _t
+        _t.sleep(0.8)                       # 一定跑不完，但线程会自己结束
+        return "<html><body>nothing</body></html>"
+
+    R.note_site("slowbudget.com", ok=True, name="慢站", search_tpl="/?s={kw}")
+    R.flush()
+    RS.fetch_text = _slow_fetch
+    RS.SEARCH_BUDGET = 0.2
+    try:
+        RS.RegistrySource().search("喵")
+    finally:
+        RS.SEARCH_BUDGET = _old_budget
+        RS.fetch_text = real_fetch
+        _lg.removeHandler(_cap)
+    _txt = "\n".join(_cap.lines)
+    check("★ 超预算时点名没答完的站（只报个数等于没报）",
+          "slowbudget.com" in _txt, _txt[-240:] or "（这条日志压根没打）")
+
     print("\n── 7. 整批全挂要让熔断器知道（部分挂不算） ──")
     # `_search_one` 原来 catch 掉异常直接 return []，引擎会把"挂"当成
     # "没这本书" → note_ok 清零 → 熔断器永远收不到失败。

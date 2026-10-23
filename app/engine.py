@@ -212,6 +212,48 @@ def source_meta(src: Source) -> dict:
     }
 
 
+def source_ledger(stats: dict) -> dict:
+    """把「源账」摊成 search.done 里那四个字段 —— 每一格都带名字。
+
+    为什么要专门一个函数
+    --------------------
+    复盘日报每天要回答的第一个问题是「这本书为什么搜不到」。以前那行日志是
+
+        答=3/7 超=4 挂=wikisource,xbqg5200
+
+    `答` 其实是「把结果交回来的源数」（交回来的可以是 403 的源），
+    `超` 其实是「收手时还没回来的个数」，而 `挂` 里的源又**混在这两个数里** ——
+    3 + 4 = 7 已经等于总数，再挂两个名字就是 9 > 7，账根本加不起来。
+    线上 2026-10-22 00:10 就是这么一行，逼得人回头去翻散落的 source.fail。
+
+    现在四格互斥、都带名字，加起来必须等于总数：
+
+        答=真的答了话   挂=返回了但挂了   未回=到点没回来   到点=是否撞满墙钟
+
+    `未回` 尤其重要：线上真机 10 次搜索里有 9 次 `未回=1~2`，
+    而那些源只是慢、并没有死。没有名字就永远查不出"到底是谁在拖"。
+    """
+    names_fail = list(stats.get("failed_returned_sources") or [])
+    names_unret = list(stats.get("unreturned_sources") or [])
+
+    def _pack(n: int, names: list[str]) -> str:
+        return f"{n}" + (f"({','.join(names)})" if names else "")
+
+    return {
+        "答": f"{stats.get('sources_answered', 0)}/{stats.get('sources_total', 0)}",
+        "挂": _pack(stats.get("sources_failed", 0), names_fail),
+        "未回": _pack(stats.get("sources_unreturned", 0), names_unret),
+        # ⚠ 判「是不是慢到没结果」不能用 `耗时ms>=20000`：耗时是环境量，
+        #   机器一忙就漂，同一本书能差 5 倍。这个布尔量只取决于机制。
+        #
+        # 而且**不能直接用 hit_deadline**：它的语义只是「最后一次等待窗口
+        # 空手而归」，有结果之后把软截止等完也是 True（正常提速路径）。
+        # 复盘真正要分的是「一条都没出、硬等到底」—— 那才是慢到没结果，
+        # 和「有结果、只是收手时还有源没回来」处置完全不同。
+        "卡满": "是" if (stats.get("hit_deadline") and not stats.get("kept")) else "否",
+    }
+
+
 class Engine:
     """管理所有来源，提供搜索、探测、书架、阅读与下载。"""
 
@@ -378,6 +420,24 @@ class Engine:
         #   403 / 握手超时反推的，白烧半小时。把名字带进 stats，
         #   search.done 就能一眼看出是哪种。
         failed_sources: set[str] = set()
+        # ---- 源账：每个源**最终**落在哪一格（四类互斥，不重叠） ----
+        # ⚠ 之前只有 done_count 一个数字，于是日志里的 `答=3/7` 是
+        #   「3 个源把 future 交回来了」，**交回来的可以是挂掉的源**
+        #   （403 / 握手超时都算"返回了"）。后果是复盘时数字加不起来：
+        #   线上 2026-10-22 00:10 那行 `答=3/7 超=4 挂=wikisource,xbqg5200`，
+        #   3 + 4 = 7 已经等于总数，再挂两个名字就成了 9 > 7 ——
+        #   谁也不敢拿它下结论，结果还是要去翻散落的 source.fail。
+        #   所以改成显式记账：ok（真的答话）/ fail（返回了但挂了）/
+        #   hang（到点都没回来）/ skip（压根没轮到跑就被取消）。
+        #   四格之和必须等于 sources_total，对不上就当场说出来。
+        outcome: dict[str, str] = {}
+        outcome_lock = threading.Lock()
+
+        def _mark(name: str, kind: str) -> None:
+            """给源记一笔。**先写先得**：卡死后才姗姗来迟的结果不改判。"""
+            with outcome_lock:
+                outcome.setdefault(name, kind)
+
         lock = threading.Lock()
         # 「已推给前端的条数」。**不能拿 len(raw) 当「有结果」的判据** ——
         # raw 里可能全是噪声（实测搜「诡秘之主」raw=20 条但去噪后 0 条），
@@ -434,8 +494,10 @@ class Engine:
                 #   于是每次搜索都还在名单里陪它们等满 20 秒。
                 err = src.take_error() if hasattr(src, "take_error") else ""
                 if items or not err:
+                    _mark(src.name, "ok")
                     HEALTH.note_ok(src.name)
                 else:
+                    _mark(src.name, "fail")
                     failed_sources.add(src.name)
                     log_event(logger, "source.fail", 源=src.name, 原因=err[:160])
                     cd = HEALTH.note_fail(src.name, err)
@@ -449,6 +511,7 @@ class Engine:
                 log_event(logger, "source.fail", 源=src.name,
                           原因=f"{type(e).__name__}: {e}")
                 failed_sources.add(src.name)
+                _mark(src.name, "fail")
                 # 记进熔断器：连续挂到阈值就把这个源暂时摘出扇出名单，
                 # 别让「永远打不通的源」每次都吃掉 20 秒墙钟。
                 cd = HEALTH.note_fail(src.name, e)
@@ -478,6 +541,10 @@ class Engine:
         futs = {pool.submit(_run, s): s for s in targets}
         done_count = 0
         pending = set(futs)
+
+        def _pend_names() -> list[str]:
+            """还没回来的源名 —— 日志里只给个数，复盘时永远查不出"谁在拖"。"""
+            return sorted(futs[f].name for f in pending if f in futs)
         # 「是不是等到了墙钟上限才结束的」—— 见下面 need_web 的注释。
         # 默认 False = 因为「已经有结果」提前收手；True = 真的等到了头。
         hit_deadline = False
@@ -533,10 +600,11 @@ class Engine:
                         or elapsed >= SEARCH_SOFT_DEADLINE
                     ):
                         logger.info(
-                            "搜索收手：已答 %d/%d 个源（%.0f%%）、原始 %d 条/推给前端 %d 条、"
-                            "耗时 %.1fs，放弃 %d 个还没回来的慢源",
+                            "搜索收手：已返回 %d/%d 个源（%.0f%%）、原始 %d 条/推给前端 %d 条、"
+                            "耗时 %.1fs，放弃 %d 个还没回来的慢源（%s）",
                             done_count, total, answered_ratio * 100,
-                            len(raw), streamed, elapsed, len(pending))
+                            len(raw), streamed, elapsed, len(pending),
+                            ", ".join(_pend_names()) or "-")
                         break
                 # 有结果了 → 最多等到软截止；还没结果 → 放宽到硬上限再等。
                 # 这个区分是必须的：源内部会串行发多次请求（wyshu 试十来个
@@ -569,7 +637,7 @@ class Engine:
                 if _stop():
                     # 客户端已经断开（关页 / 连点两次搜索把上一次顶掉）——
                     # 没人看结果了，没必要再等这些慢源。立刻收手。
-                    logger.info("客户端已断开，扇出收手：已答 %d/%d 个源",
+                    logger.info("客户端已断开，扇出收手：已返回 %d/%d 个源",
                                 done_count, total)
                     break
                 if not batch:
@@ -583,10 +651,12 @@ class Engine:
                     #    追不上 total，联网兜底被永久跳过，搜什么都 0 条。）
                     hit_deadline = True
                     logger.info(
-                        "搜索收手（墙钟 %.1fs 到点，%s）：已答 %d/%d 个源、原始 %d 条",
+                        "搜索收手（墙钟 %.1fs 到点，%s）：已返回 %d/%d 个源、原始 %d 条、"
+                        "没回来的是 %s",
                         time.time() - t_search,
                         "已有结果推给前端" if streamed else "仍无结果",
-                        done_count, total, len(raw))
+                        done_count, total, len(raw),
+                        ", ".join(_pend_names()) or "-")
                     break
                 pending.difference_update(batch)
 
@@ -653,6 +723,25 @@ class Engine:
                 if hung:
                     logger.info("墙钟到点仍未答话：%s（已记账，连续两轮就会被熔断）",
                                 ", ".join(sorted(set(hung))))
+            # ---- 账尾：还没回来的源必须**记名字**，不能只留个数字 ----
+            # 为什么这一段独立于上面那段（后者只在"撞满硬上限"时跑）：
+            # 大部分搜索是**提前收手**的（线上 10 次真机搜索，9 次
+            # `未回=1~2` 但都没撞满 22 秒）。那些源不是死了，只是慢；
+            # 可复盘时看到 `超=2` 完全不知道是谁 —— 想知道就得再去翻
+            # `搜索收手…放弃 2 个` 后面那半句，而那半句当时根本没名字。
+            # 所以这里对**所有**没交回来的源都要留名：
+            #   · 还在跑（not done）→ hang：到点没回来
+            #   · 被取消（cancelled）→ skip：压根没轮到跑（线程池排不上）
+            for fut in list(pending):
+                src = futs.get(fut)
+                if src is None:
+                    continue
+                if fut.cancelled():
+                    _mark(src.name, "skip")
+                elif not fut.done():
+                    _mark(src.name, "hang")
+                # fut.done() 但没被消费（收手后 0.1 秒内刚回来）：
+                # _run 自己已经记过 ok/fail，这里不动 —— 它确实答话了。
             # 不等没回来的慢源 —— 它们在后台自然结束，结果对本轮无意义。
             # cancel_futures 只能取消**还没开始跑**的；已经在跑的线程
             # 会在自己超时后退出，不会泄漏（每次 fetch 都有 timeout）。
@@ -824,6 +913,20 @@ class Engine:
             # 这一轮适用哪个上限：走了联网兜底就有更大的额度（见 DISCOVER_TOTAL_BUDGET）
             _allow_s = (DISCOVER_TOTAL_BUDGET if (discover and need_web)
                         else SEARCH_TOTAL_BUDGET)
+            # ---- 源账：四格互斥，加起来必须等于总数 ----
+            with outcome_lock:
+                _snap = dict(outcome)
+            _ok_n = sum(1 for v in _snap.values() if v == "ok")
+            _fail_names = sorted(n for n, v in _snap.items() if v == "fail")
+            _unret_names = sorted(n for n, v in _snap.items() if v == "hang")
+            _skip_names = sorted(n for n, v in _snap.items() if v == "skip")
+            _accounted = _ok_n + len(_fail_names) + len(_unret_names) + len(_skip_names)
+            if _accounted != len(targets):
+                # 账对不上就当场说，别让日报拿着一个加不起来的数字下结论
+                logger.info(
+                    "源账对不上：扇出 %d 个源、记账 %d 个（答=%d 挂=%d 未回=%d 未跑=%d）",
+                    len(targets), _accounted, _ok_n, len(_fail_names),
+                    len(_unret_names), len(_skip_names))
             stats.update({
                 "raw": len(raw),
                 "kept": len(results),
@@ -831,13 +934,29 @@ class Engine:
                 "available": sum(1 for r in results if r.available),
                 "readable": sum(1 for r in results if r.readable),
                 "sources_queried": len(targets),
-                "sources_answered": done_count,
+                # ⚠ 语义收窄（2026-10-23）：只数**真的答了话**的源。
+                #   原来是 done_count，把"返回了 403 的源"也算进去 ——
+                #   于是 `答=3` 可能是"2 个有内容 + 1 个 403"，读者无从分辨。
+                "sources_answered": _ok_n,
                 "sources_total": len(targets),
-                "timed_out": max(0, len(targets) - done_count),
+                # 返回了但挂了的（403 / 握手超时 / 吞异常）—— 与"未回"互斥
+                "sources_failed": len(_fail_names),
+                "failed_returned_sources": _fail_names,
+                # 到点还没回来的（hang）+ 压根没轮到跑的（skip）
+                "sources_unreturned": len(_unret_names) + len(_skip_names),
+                "unreturned_sources": _unret_names + _skip_names,
+                # 保留旧键（`超=` 一直读它）：现在等于「未回」的个数
+                "timed_out": len(_unret_names) + len(_skip_names),
+                # 这一轮是不是**真的撞满了墙钟上限**。
+                # ⚠ 拿 `耗时ms>=20000` 当判据是不行的：那是环境量，
+                #   机器一忙就漂。这个布尔量只取决于机制该不该收手。
+                "hit_deadline": bool(hit_deadline),
                 # 这一轮**挂了**的源（异常 / 吞异常 / 墙钟到点不返回）。
                 # 有它才能把「书真的没有」和「源全挂了」分开 ——
                 # 两者在 search.done 里都只是「候选=0」，而处置完全相反：
                 # 前者该补源/补书，后者等几分钟重试就好。
+                # ⚠ 它含"墙钟到点未回"的源（那些也要喂熔断器），
+                #   所以**不能**和 `sources_failed` 混着用：一个含未回、一个只含返回了的。
                 "failed_sources": sorted(failed_sources),
                 "search_ms": int((time.time() - t_search) * 1000),
                 "ms": int((time.time() - t_start) * 1000),

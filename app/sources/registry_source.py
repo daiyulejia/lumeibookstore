@@ -139,8 +139,10 @@ class RegistrySource(Source):
         #   是 3 个站答完就超了（预算太小），还是 13 个答完只剩 1 个慢（正常）。
         #   线上 15 次这条日志就是这么白写的，排障时一句信息都没有。
         fails = 0       # 抓取就失败了的站数（网络层），用来判"整批是不是全挂了"
+        taken: set = set()
         try:
             for fut in as_completed(futs, timeout=SEARCH_BUDGET):
+                taken.add(fut)
                 done += 1
                 try:
                     got = fut.result()
@@ -160,8 +162,13 @@ class RegistrySource(Source):
                 if len(results) >= TOTAL_LIMIT:
                     break
         except Exception:  # noqa: BLE001
-            logger.info("自有来源搜索超预算（%d/%d 个站已答完、%.1fs），先用已有结果 %d 条",
-                        done, len(ordered), time.time() - t0, len(results))
+            # 同上：没答完的站要留名字。只有个数的话，"是预算太小还是某站
+            # 永远慢"判不出来 —— 而前者该加预算、后者该把这个站降权。
+            left_hosts = sorted(futs[f] for f in futs if f not in taken)
+            logger.info("自有来源搜索超预算（%d/%d 个站已答完、%.1fs），先用已有结果 %d 条；"
+                        "没答完的是 %s",
+                        done, len(ordered), time.time() - t0, len(results),
+                        ", ".join(left_hosts) or "-")
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 

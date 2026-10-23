@@ -838,6 +838,43 @@ MUTATIONS: list[Mutation] = [
              '                例子=[])',
              BUDGET_TEST),
 
+    # ------- 源账：谁答了、谁挂了、谁没回来，必须加得起来 -------
+    # 线上 2026-10-22 00:10 的 `答=3/7 超=4 挂=wikisource,xbqg5200`
+    # 三个数加起来是 9 > 7 —— 账加不起来，复盘还是得回头翻散落的 source.fail。
+    Mutation("源账", "「答」退回数「交回 future 的源」（403 的源也混进答里）",
+             ENGINE,
+             '                "sources_answered": _ok_n,',
+             '                "sources_answered": done_count,',
+             BUDGET_TEST),
+    Mutation("源账", "没回来的源只留个数、不留名字（等于没记）",
+             ENGINE,
+             '                "unreturned_sources": _unret_names + _skip_names,',
+             '                "unreturned_sources": [],',
+             BUDGET_TEST),
+    Mutation("源账", "只在撞满墙钟时记未回（提前收手的那批静默消失）",
+             ENGINE,
+             "                if fut.cancelled():\n"
+             '                    _mark(src.name, "skip")\n'
+             "                elif not fut.done():\n"
+             '                    _mark(src.name, "hang")',
+             "                pass",
+             BUDGET_TEST),
+    Mutation("源账", "「卡满」判据退回成 hit_deadline（有结果也报卡满）",
+             ENGINE,
+             '        "卡满": "是" if (stats.get("hit_deadline") and not stats.get("kept")) else "否",',
+             '        "卡满": "是" if stats.get("hit_deadline") else "否",',
+             BUDGET_TEST),
+    Mutation("源账", "学站撞预算只报个数（不知道是哪几个站没学）",
+             DISCOVERY,
+             '                    len(todo) - finished, ", ".join(left_hosts) or "-")',
+             '                    len(todo) - finished, "-")',
+             REGISTRY_TEST),
+    Mutation("源账", "自有源撞预算只报个数（不知道是哪个站慢）",
+             REGISTRY_SOURCE,
+             '                        ", ".join(left_hosts) or "-")',
+             '                        "-")',
+             REGSRC_TEST),
+
     # ------- 学站吞吐：单站成本必须与预算同量级 -------
     # 线上实测：120 秒预算只学完 0~1 个站（还剩 23 个），因为抓首页没走
     # fast_mode，一个死站最坏 200 秒。见 app/discovery.py 的注释。
@@ -1155,8 +1192,10 @@ MUTATIONS: list[Mutation] = [
              REGSRC_TEST),
     Mutation("kwless", "超预算日志只说「先用已有结果」（看不出卡在几个站）",
              REGISTRY_SOURCE,
-             '            logger.info("自有来源搜索超预算（%d/%d 个站已答完、%.1fs），先用已有结果 %d 条",\n'
-             "                        done, len(ordered), time.time() - t0, len(results))",
+             '            logger.info("自有来源搜索超预算（%d/%d 个站已答完、%.1fs），先用已有结果 %d 条；"\n'
+             '                        "没答完的是 %s",\n'
+             "                        done, len(ordered), time.time() - t0, len(results),\n"
+             '                        ", ".join(left_hosts) or "-")',
              '            logger.info("自有来源搜索超预算，先用已有结果")',
              REGSRC_TEST),
     # ---------------- 源吞异常也要熔断（tools/test_source_health.py）----------------

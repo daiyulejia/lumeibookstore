@@ -374,6 +374,150 @@ def main() -> int:
     check("明细里分开了「低于门槛」和「非确切命中被挤掉」两类",
           "低于门槛" in txt7 and "非确切命中" in txt7)
 
+    # --------------------------------------------------------------
+    print("\n—— ⑧ 源账要对得上（谁没回来，日志里得有名字） ——")
+    # 动机是线上 2026-10-22 00:10 那一行：
+    #
+    #     答=3/7 超=4 挂=wikisource,xbqg5200
+    #
+    # `答` 数的是「把结果交回来的源」，交回来的可以是 403 的源；
+    # `超` 数的是「收手时还没回来的源」；而 `挂` 里的源**又混在这两个数里**。
+    # 于是 3 + 4 = 7 已经等于总数，再挂两个名字就是 9 > 7 —— 账加不起来，
+    # 复盘还得回头翻散落的 source.fail。更关键的是：那些没回来的源
+    # 多半只是慢（10 次真机搜索里 9 次都有 1~2 个），名字一个都没留，
+    # 「到底谁在拖」永远查不出来。
+    #
+    # 所以这里钉三条：
+    #   ① 答/挂/未回 三格互斥，加起来等于总数
+    #   ② 没回来的源必须留下名字（提前收手时也要留，不能只在撞满墙钟时留）
+    #   ③ 「撞满墙钟」要有确定性布尔量 —— 耗时阈值会随机器负载漂，不能当判据
+    class _OkSrc(Source):
+        name = "ledger_ok"
+        display = "真的答话"
+        priority = 1
+        enabled = True
+
+        def search(self, keyword):
+            return [BookResult(title=keyword, url="http://ledger/1",
+                               source="ledger_ok", source_display="真的答话",
+                               author="某人")]
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    class _Bad403(Source):
+        name = "ledger_403"
+        display = "返回 403"
+        priority = 2
+        enabled = True
+
+        def search(self, keyword):
+            raise RuntimeError("抓取失败: https://x/ (HTTP 403)")
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    class _Empty(Source):
+        name = "ledger_empty"
+        display = "答话了但没这本书"
+        priority = 3
+        enabled = True
+
+        def search(self, keyword):
+            return []          # 正常业务结果，不是挂
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    class _HangA(Source):
+        name = "ledger_hang"
+        display = "很慢但会回来"
+        priority = 4
+        enabled = True
+
+        def search(self, keyword):
+            time.sleep(1.5)    # 比本轮墙钟长，但有限 —— 测试进程能退干净
+            return []
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    class _HangB(Source):
+        name = "ledger_hang2"
+        display = "永远回不来"
+        priority = 4
+        enabled = True
+
+        def search(self, keyword):
+            time.sleep(1.5)
+            return []
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    from app.sourcehealth import HEALTH as _H
+    _old_e = (E.SEARCH_HARD_DEADLINE, E.SEARCH_MIN_WAIT, E.SEARCH_SOFT_DEADLINE,
+              E.SEARCH_GRACE, E.SEARCH_ENOUGH)
+    E.SEARCH_HARD_DEADLINE = 0.7
+    E.SEARCH_MIN_WAIT = 0.05
+    E.SEARCH_SOFT_DEADLINE = 0.5
+    E.SEARCH_GRACE = 0.1
+    E.SEARCH_ENOUGH = 999          # 别让"候选够了"提前收手，本轮不测那条
+    try:
+        # ---- 场景 A：有结果 → 提前收手（没撞满墙钟），慢源仍要留名 ----
+        _H.reset()
+        stA: dict = {}
+        E.Engine(sources=[_OkSrc, _Bad403, _Empty, _HangA]).search(
+            "账目甲", stats=stA, discover=False, probe=False, sample=False)
+        check("A1 答只数**真的答话**的源（403 的不许混进来）",
+              stA.get("sources_answered") == 2,
+              f"答={stA.get('sources_answered')} 总共={stA.get('sources_total')}"
+              " —— 旧实现把挂掉的源也算进「答」，读者无从分辨")
+        check("A2 挂了的源单独一格且带名字",
+              stA.get("failed_returned_sources") == ["ledger_403"],
+              str(stA.get("failed_returned_sources")))
+        check("A3 ★ 提前收手时，没回来的源也留下名字",
+              stA.get("unreturned_sources") == ["ledger_hang"],
+              f"未回={stA.get('unreturned_sources')} —— "
+              "只留个数的话「谁在拖」永远查不出来")
+        _accA = (stA.get("sources_answered", 0) + stA.get("sources_failed", 0)
+                 + stA.get("sources_unreturned", 0))
+        check("A4 ★ 账要加得起来：答 + 挂 + 未回 == 扇出总数",
+              _accA == stA.get("sources_total") == 4,
+              f"答={stA.get('sources_answered')} 挂={stA.get('sources_failed')} "
+              f"未回={stA.get('sources_unreturned')} 总共={stA.get('sources_total')}")
+        _led = E.source_ledger(stA)
+        check("A5 日志字段把名字打出来了（未回里能读到是谁）",
+              "ledger_hang" in _led["未回"] and "ledger_403" in _led["挂"],
+              str(_led))
+        check("A6 ★ 有结果的那轮不许报「卡满」（判据是 kept 不是耗时）",
+              _led["卡满"] == "否" and stA.get("kept", 0) > 0,
+              f"卡满={_led['卡满']} kept={stA.get('kept')} —— "
+              "hit_deadline 本身只说明「最后一次等待空手而归」，"
+              "有结果时它也是 True，拿它当「慢到没结果」会误伤正常提速")
+
+        # ---- 场景 B：一条结果都没有 → 真的撞满墙钟 ----
+        # 反向判据：上面那条 A6 是"否"，这条必须是"是"。
+        # 两条一起才说明这个布尔量是量出来的，不是恒为某一值。
+        _H.reset()
+        stB: dict = {}
+        E.Engine(sources=[_HangB, _Empty]).search(
+            "账目乙", stats=stB, discover=False, probe=False, sample=False)
+        check("B1 ★ 一点结果都没有时，如实记为「撞满墙钟」",
+              stB.get("hit_deadline") is True and E.source_ledger(stB)["卡满"] == "是",
+              f"hit_deadline={stB.get('hit_deadline')} 卡满={E.source_ledger(stB)['卡满']}")
+        check("B2 撞满墙钟时没回来的源也带名字",
+              stB.get("unreturned_sources") == ["ledger_hang2"],
+              str(stB.get("unreturned_sources")))
+        check("B3 空结果（答话了但没这本书）不算挂",
+              stB.get("sources_failed") == 0
+              and stB.get("sources_answered") == 1,
+              f"挂={stB.get('sources_failed')} 答={stB.get('sources_answered')}")
+    finally:
+        _H.reset()
+        (E.SEARCH_HARD_DEADLINE, E.SEARCH_MIN_WAIT, E.SEARCH_SOFT_DEADLINE,
+         E.SEARCH_GRACE, E.SEARCH_ENOUGH) = _old_e
+
     print("\n" + "=" * 62)
     if fail_n == 0:
         print(f"通过 {ok_n} · 失败 0\n✓ 全部通过")

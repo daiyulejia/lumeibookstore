@@ -419,8 +419,10 @@ def learn_sites(
     #   收手可以，但**不许沉默地收手**。
     finished = 0
     timed_out = False
+    taken: set = set()
     try:
         for fut in as_completed(futs, timeout=budget):
+            taken.add(fut)
             try:
                 ok = bool(fut.result())
             except Exception:  # noqa: BLE001
@@ -433,7 +435,12 @@ def learn_sites(
                     failed += 1
     except Exception:  # noqa: BLE001
         timed_out = True
-        logger.info("站点学习超预算，先收手（还剩 %d 个没学完）", len(todo) - finished)
+        # 名字必须打出来：只报「还剩 7 个」等于没报 —— 复盘时不知道是哪 7 个，
+        # 也就分不清"某些站天生学不会（该放弃）"和"预算不够（该加预算）"。
+        # 这和 search.done 的「未回只给数字」是同一类病（见 2026-10-23 日报）。
+        left_hosts = sorted(futs[f] for f in futs if f not in taken)
+        logger.info("站点学习超预算，先收手（还剩 %d 个没学完：%s）",
+                    len(todo) - finished, ", ".join(left_hosts) or "-")
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 

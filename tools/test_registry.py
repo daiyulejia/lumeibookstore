@@ -487,6 +487,22 @@ def main() -> int:
         # 应当**一个都没跑完**，且 `pending` 如实等于目标数。
         saved = (D._learn_budget, D.registry.should_try_learn, D.fetch_text,
                  D.sitelearn.learn_site)
+
+        # 顺手抓日志：撞预算那条日志不能只报个数（见下面的断言）
+        import logging as _log
+
+        class _Cap(_log.Handler):
+            def __init__(self):
+                super().__init__()
+                self.lines: list[str] = []
+
+            def emit(self, rec):        # noqa: D102
+                self.lines.append(rec.getMessage())
+
+        _cap = _Cap()
+        _lg = _log.getLogger("novel.discovery")
+        _lg.addHandler(_cap)
+        _lg.setLevel(_log.DEBUG)
         try:
             hosts = ["stall1.com", "stall2.com", "stall3.com"]
             D._learn_budget = lambda n: 0.01
@@ -504,7 +520,16 @@ def main() -> int:
             check("learned + failed + pending 必须等于目标数（一个都不许凭空消失）",
                   rep["learned"] + rep["failed"] + rep.get("pending", -1) == len(hosts),
                   str(rep))
+            # ⚠ 只报「还剩 3 个」等于没报：复盘时不知道是哪 3 个，
+            #   也就分不清"这些站天生学不会（该放弃）"和"预算不够（该加预算）"——
+            #   两者处置相反。这和 search.done 里「未回只给数字」是同一类病
+            #   （见 2026-10-23 日报）。
+            _txt = "\n".join(_cap.lines)
+            check("★ 撞预算时点名没学完的站（不是只给个数）",
+                  all(h in _txt for h in hosts),
+                  _txt[-240:] or "（这条日志压根没打）")
         finally:
+            _lg.removeHandler(_cap)
             (D._learn_budget, D.registry.should_try_learn, D.fetch_text,
              D.sitelearn.learn_site) = saved
 
