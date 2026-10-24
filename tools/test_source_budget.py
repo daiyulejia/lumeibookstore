@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import app.sources.wikisource as WS  # noqa: E402
+import app.sources.wyshu as WY  # noqa: E402
 
 ok_n = 0
 fail_n = 0
@@ -175,6 +176,89 @@ def main() -> int:
         # 还原模块级 get_client（否则后面的测试会用到假 client）
         import importlib
         importlib.reload(WS)
+
+    # ------------------------------------------------------------------
+    # wyshu：第二条「没有自带墙钟上限」的源（2026-10-24 复盘补齐）
+    # ------------------------------------------------------------------
+    # 病灶：索引过期时串行抓 8 个分类页、索引没命中时再串行试 8 个拼音 URL，
+    # 两段都没有任何上限。**别的源也没出结果时引擎不会早收手**，
+    # 于是一个卡住的 wyshu 就能把整轮搜索拖满 20s，到点仍是 0 条。
+    #
+    #   线上实测（2026-10-24）：搜《我们猫猫不能听这些》
+    #     01:0x  耗时ms=20040 候选=0 未回=wyshu      ← 0 条
+    #     同一本 耗时ms=7840  候选=1（1 本可读）      ← 5 分钟后
+    #   同一本书两次结果相反，差的就是"wyshu 这轮回没回来"。
+    print("\n—— ⑥ wyshu 建索引：到点不再发请求（不是发完再判） ——")
+    _old_cache = WY.CACHE_FILE
+    tmp_cache = ROOT / "cache" / "_test_wyshu_index.json"
+    WY.CACHE_FILE = tmp_cache                  # type: ignore[assignment]
+    if tmp_cache.exists():
+        tmp_cache.unlink()
+    calls = []
+
+    def _slow_fetch(url, **kw):
+        calls.append(url)
+        time.sleep(0.20)
+        # 一个含书籍链接的分类页（能让 _build_index 真的收到书）
+        return '<a href="/ys/ceshi/">测试书(某人所著小说)_小说在线阅读</a>'
+
+    _old_fetch = WY.fetch_text
+    WY.fetch_text = _slow_fetch                # type: ignore[assignment]
+    try:
+        src4 = WY.WyshuSource()
+        src4.SEARCH_BUDGET = 0.35
+        books, complete = src4._build_index(deadline=time.time() + 0.35)
+        check("★ 预算用完之后**不再发下一次请求**", len(calls) <= 3,
+              f"calls={len(calls)}（8 个分类全发说明上限没生效）")
+        check("预算用完 → 明确报「没抓完」（不许当成抓全了）",
+              complete is False, f"complete={complete}")
+        check("已经抓到的书要留下（不是白干）", len(books) >= 1, str(list(books)[:3]))
+
+        print("\n—— ⑦ 没抓完**不许写缓存**（残缺索引缓存 24h 比不缓存更坏） ——")
+        # 把残缺索引写进缓存，之后每次搜索都在残缺索引里查，缺的书永久查不到，
+        # 而且缓存命中是最快路径 —— 最不可能被怀疑的一条。
+        src4._load_index(deadline=time.time() + 0.35)
+        check("★ 被预算截断时不落盘", not tmp_cache.exists(),
+              f"{tmp_cache} 存在 = 残缺索引被缓存了")
+
+        print("\n—— ⑧ 预算充足时走完整路径（别把好路径也掐死） ——")
+        calls.clear()
+        books2, complete2 = src4._build_index(deadline=time.time() + 30.0)
+        check("★ 8 个分类全都抓（不受上限影响）", len(calls) == len(WY.CATEGORIES),
+              f"calls={len(calls)} 分类数={len(WY.CATEGORIES)}")
+        check("抓全了就报 complete=True", complete2 is True)
+        check("抓全了才落盘", src4._load_index(deadline=time.time() + 30.0)
+              and tmp_cache.exists(), str(tmp_cache))
+
+        print("\n—— ⑨ 拼音兜底也要认 deadline（它才是第二段 8 次请求） ——")
+        calls.clear()
+        got = src4._search_by_pinyin("微微一笑很倾城", deadline=time.time() - 1)
+        check("★ deadline 已过 → 一个分类都不试", calls == [],
+              f"calls={len(calls)} —— 到点还试，等于 8 次请求照发")
+        check("返回空而不是瞎编一个结果", got == [], str(got)[:80])
+
+        print("\n—— ⑩ 索引一本都没抓到必须**说出来**（静默空 = 熔断器永远学不到） ——")
+        def _boom_fetch(url, **kw):
+            raise TimeoutError("_ssl.c:990: The handshake operation timed out")
+
+        WY.fetch_text = _boom_fetch            # type: ignore[assignment]
+        if tmp_cache.exists():
+            tmp_cache.unlink()
+        src5 = WY.WyshuSource()
+        src5.take_error()
+        src5._load_index(deadline=time.time() + 5.0)
+        err = src5.take_error()
+        check("★ 索引为空时把错误记下来了（否则引擎当成「答话了、没这本书」）",
+              bool(err) and "索引为空" in err, repr(err))
+        check("空索引不落盘", not tmp_cache.exists())
+    finally:
+        WY.fetch_text = _old_fetch             # type: ignore[assignment]
+        WY.CACHE_FILE = _old_cache             # type: ignore[assignment]
+        try:
+            if tmp_cache.exists():
+                tmp_cache.unlink()
+        except Exception:  # noqa: BLE001
+            pass
 
     print(f"\n{'='*60}\n通过 {ok_n} / 失败 {fail_n}\n")
     return 0 if fail_n == 0 else 1

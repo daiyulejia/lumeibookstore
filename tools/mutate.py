@@ -103,6 +103,11 @@ HEALTH_PY = ROOT / "app" / "sourcehealth.py"
 # 源自己的墙钟上限（tools/test_source_budget.py）
 WIKI = ROOT / "app" / "sources" / "wikisource.py"
 BUDGET_SRC_TEST = ROOT / "tools" / "test_source_budget.py"
+# wyshu 是第二条「没有自带上限」的源 —— 建索引 8 次 + 拼音兜底 8 次
+# 串行无上限，卡住时能把整轮搜索拖满 20s（见 tools/test_source_budget.py ⑥~⑩）
+WYSHU = ROOT / "app" / "sources" / "wyshu.py"
+# 收手判据不许被噪声骗（tools/test_search_recall.py）
+RECALL_TEST = ROOT / "tools" / "test_search_recall.py"
 # 自有来源（学到的模板 → 真的能搜出书）
 REGISTRY_SOURCE = ROOT / "app" / "sources" / "registry_source.py"
 FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
@@ -859,11 +864,17 @@ MUTATIONS: list[Mutation] = [
              '                    _mark(src.name, "hang")',
              "                pass",
              BUDGET_TEST),
+    # ⚠ 2026-10-24 换靶：这条原来是打在 test_engine_budget 的场景 A 上。
+    #   给收手加了「到 SEARCH_MIN_WAIT 就醒来重判」之后，场景 A 不再靠撞满
+    #   墙钟收手（命中条件满足了就立刻走），于是 `hit_deadline=True 且有结果`
+    #   这个组合在那边消失了 —— 突变实施后测试仍全绿 = 断言失去牙。
+    #   现在在 tools/test_search_recall.py 场景③ 里重建了这个组合
+    #   （撞满 0.7s 软截止、kept=12、tight=0），靶点改指过去。
     Mutation("源账", "「卡满」判据退回成 hit_deadline（有结果也报卡满）",
              ENGINE,
              '        "卡满": "是" if (stats.get("hit_deadline") and not stats.get("kept")) else "否",',
              '        "卡满": "是" if stats.get("hit_deadline") else "否",',
-             BUDGET_TEST),
+             RECALL_TEST),
     Mutation("源账", "学站撞预算只报个数（不知道是哪几个站没学）",
              DISCOVERY,
              '                    len(todo) - finished, ", ".join(left_hosts) or "-")',
@@ -874,6 +885,77 @@ MUTATIONS: list[Mutation] = [
              '                        ", ".join(left_hosts) or "-")',
              '                        "-")',
              REGSRC_TEST),
+
+    # ------- 召回：收手判据不许被噪声骗（2026-10-24） -------
+    # 线上真机复现：搜《兄弟》扇出 1.76s 收手、候选 4 条全是「嘿兄弟/兄弟盟」，
+    # 而 kunnu8 恰好在 1.76s 带着正主《兄弟》回来 —— 被弃。
+    # 用户看到"4 条候选、没一本是那本书"= 搜不到，日志里 `候选=4` 却像成功。
+    Mutation("召回", "收手不再要求「有确切命中」（噪声满屏就收手，正主被弃）",
+             ENGINE,
+             "                    _tight_ok = tight_streamed > 0",
+             "                    _tight_ok = True",
+             RECALL_TEST),
+    Mutation("召回", "收手条件①②③永久关掉（一律等满软截止，召回回来了但慢 4.5s）",
+             ENGINE,
+             "                    _tight_ok = tight_streamed > 0",
+             "                    _tight_ok = False",
+             RECALL_TEST),
+    Mutation("召回", "确切命中从不计数（等于那道门永远关着）",
+             ENGINE,
+             "                            if it.tight:\n"
+             "                                tight_streamed += 1",
+             "                            pass",
+             RECALL_TEST),
+    Mutation("召回", "stats 把「推给前端的条数」冒充成确切命中数（口径说谎）",
+             ENGINE,
+             '                "tight_hits": tight_streamed,',
+             '                "tight_hits": streamed,',
+             RECALL_TEST),
+    Mutation("召回", "收手日志里的确切条数写错（复盘时看不出是 0 条确切还是 13 条）",
+             ENGINE,
+             "                            len(raw), streamed, tight_streamed, elapsed,",
+             "                            len(raw), streamed, streamed, elapsed,",
+             RECALL_TEST),
+    Mutation("召回", "收手判断没有唤醒机制（条件满足了也要等到下一个源回来）",
+             ENGINE,
+             "                wake = min(ceiling, SEARCH_MIN_WAIT) if elapsed < SEARCH_MIN_WAIT else ceiling",
+             "                wake = ceiling",
+             RECALL_TEST),
+    Mutation("召回", "「醒来重判」被当成「等到底了」（0.1s 就收手并喂熔断器）",
+             ENGINE,
+             "                    if time.time() - t_search < ceiling - 0.02:\n"
+             "                        continue",
+             "                    if False:\n"
+             "                        continue",
+             RECALL_TEST),
+
+    # ------- 源墙钟：wyshu 是「第二个没有上限的源」（2026-10-24） -------
+    # 线上实测搜《我们猫猫不能听这些》：01:0x 耗时 20040ms 候选=0 未回=wyshu，
+    # 5 分钟后同一本 7840ms 候选=1。差的就是 wyshu 这轮回没回来。
+    Mutation("源墙钟", "wyshu 建索引到点照发下一次请求（8 个分类串行无上限）",
+             WYSHU,
+             "            if deadline is not None and time.time() >= deadline:\n"
+             "                complete = False",
+             "            if False:\n"
+             "                complete = False",
+             BUDGET_SRC_TEST),
+    Mutation("源墙钟", "拼音兜底不认 deadline（第二段还是 8 次请求）",
+             WYSHU,
+             "            if deadline is not None and time.time() >= deadline:\n"
+             "                logger.info(\"拼音兜底到点收手",
+             "            if False:\n"
+             "                logger.info(\"拼音兜底到点收手",
+             BUDGET_SRC_TEST),
+    Mutation("源墙钟", "残缺索引也写缓存（缺口被固化 24 小时，而且最难被怀疑）",
+             WYSHU,
+             "        if books and complete:",
+             "        if books:",
+             BUDGET_SRC_TEST),
+    Mutation("源墙钟", "索引为空也静默返回（熔断器永远学不到，每轮还在付时间）",
+             WYSHU,
+             '            self.note_error(RuntimeError("索引为空：分类页全部抓取失败"))',
+             "            pass",
+             BUDGET_SRC_TEST),
 
     # ------- 学站吞吐：单站成本必须与预算同量级 -------
     # 线上实测：120 秒预算只学完 0~1 个站（还剩 23 个），因为抓首页没走

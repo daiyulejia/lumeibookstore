@@ -490,6 +490,12 @@ def main() -> int:
         check("A5 日志字段把名字打出来了（未回里能读到是谁）",
               "ledger_hang" in _led["未回"] and "ledger_403" in _led["挂"],
               str(_led))
+        # ⚠ 2026-10-24：收手加了「到 SEARCH_MIN_WAIT 就醒来重判」+「没确切命中
+        #   就等到软截止」之后，**有确切命中的轮子不再靠撞满墙钟收手**，
+        #   于是这个场景里 hit_deadline 已经是 False —— 这条断言本身仍然成立
+        #   （有结果就必须报「否」），但它不再是 `hit_deadline 且 kept` 的样本。
+        #   那个组合现在由 tools/test_search_recall.py 场景③ 顶住
+        #   （撞满 0.7s、kept=12、tight=0），反证的靶点也改指那边了。
         check("A6 ★ 有结果的那轮不许报「卡满」（判据是 kept 不是耗时）",
               _led["卡满"] == "否" and stA.get("kept", 0) > 0,
               f"卡满={_led['卡满']} kept={stA.get('kept')} —— "

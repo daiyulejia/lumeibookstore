@@ -443,6 +443,12 @@ class Engine:
         # raw 里可能全是噪声（实测搜「诡秘之主」raw=20 条但去噪后 0 条），
         # 那种情况下用户界面上依然是空的，用软截止收手等于骗自己。
         streamed = 0
+        # 「其中有多少条是**确切命中**」（title 基本等于搜索词，见
+        # relevance.tightness）。streamed 只说明"过了相关性门槛"，
+        # 门槛是宽的：搜《兄弟》时「嘿兄弟」「兄弟盟」「盛唐兄弟」全都过。
+        # 真正决定"用户这次搜到了没有"的是这个数，所以它必须单独计数 ——
+        # 见下面收手判据和 search.done 的 `确切=`。
+        tight_streamed = 0
 
         # ---- 并行联网兜底 ----
         # 本地全灭时不必"等满 20s 硬上限再串行联网"——可以本地继续等、
@@ -593,17 +599,46 @@ class Engine:
                     log_event(logger, "search.web.preempt",
                               关键词=keyword, 已等=f"{elapsed:.1f}s")
                 if elapsed >= SEARCH_MIN_WAIT and streamed:
+                    # ---- 「够用了」到底该以什么为判据？ ----
+                    # ⚠ 2026-10-24 复盘出来的一个大洞：①②③ 原来看的是
+                    #   「候选条数够」/「答的源够多」，两者都对**噪声**敏感 ——
+                    #   自有来源（registry）一个源随手就能吐 40 条沾边结果，
+                    #   于是 1.5s 就判定"够了"，把还没答话的慢源和它的
+                    #   **独有正主**一起扔掉，而且不报任何错。
+                    #
+                    #   线上实测（真机复现，同一台线上服务）：
+                    #     搜《兄弟》  扇出 1.76s 收手、候选 4 条，全是
+                    #                「嘿兄弟/兄弟盟/兄弟恩仇/盛唐兄弟」；
+                    #                而 kunnu8 恰好在 1.76s 回来，带着正主
+                    #                https://www.kunnu8.com/xiongdi/ —— 被弃。
+                    #     搜《围城》  同上，kunnu8 的正主《围城》被弃，
+                    #                留下「迷雾围城/围城日记/数字围城」。
+                    #   用户看到的是"4 条候选、没有一本是那本书"，
+                    #   体验上等于搜不到；可日报里 `候选=4` 看着是成功的 ——
+                    #   这就是这个洞能活这么久的原因（判据看不见它）。
+                    #
+                    #   所以真正的"够用" = **至少有一条确切命中**。
+                    #   一条都没有时，宁可按软截止再等一会儿（那是这个设计的
+                    #   上界，不是新增的上界），也不拿噪声冒充结果。
+                    #   ⚠ 软截止那条④必须**无条件**保留：它是唯一的兜底上界，
+                    #     否则"永远没有确切命中的书"会把总预算吃穿。
+                    _tight_ok = tight_streamed > 0
                     if (
-                        len(raw) >= SEARCH_ENOUGH
-                        or answered_ratio >= SEARCH_ANSWERED_RATIO
-                        or (enough_answered and elapsed >= SEARCH_GRACE)
+                        (_tight_ok and len(raw) >= SEARCH_ENOUGH)
+                        or (_tight_ok and answered_ratio >= SEARCH_ANSWERED_RATIO)
+                        or (_tight_ok and enough_answered and elapsed >= SEARCH_GRACE)
                         or elapsed >= SEARCH_SOFT_DEADLINE
                     ):
+                        # 收手原因必须写清楚：`确切=0` 的收手只可能是撞软截止，
+                        # 而"有确切命中、攒够条数"是正常提速 —— 两者在耗时上
+                        # 分不出来，在处置上（该补源 / 该不管）完全相反。
                         logger.info(
-                            "搜索收手：已返回 %d/%d 个源（%.0f%%）、原始 %d 条/推给前端 %d 条、"
-                            "耗时 %.1fs，放弃 %d 个还没回来的慢源（%s）",
+                            "搜索收手：已返回 %d/%d 个源（%.0f%%）、原始 %d 条/"
+                            "推给前端 %d 条（其中确切 %d 条）、耗时 %.1fs，"
+                            "放弃 %d 个还没回来的慢源（%s）",
                             done_count, total, answered_ratio * 100,
-                            len(raw), streamed, elapsed, len(pending),
+                            len(raw), streamed, tight_streamed, elapsed,
+                            len(pending),
                             ", ".join(_pend_names()) or "-")
                         break
                 # 有结果了 → 最多等到软截止；还没结果 → 放宽到硬上限再等。
@@ -613,7 +648,17 @@ class Engine:
                 # ⚠ 判据是 streamed（真推给前端过）而不是 len(raw) —— raw 可能
                 #   全是噪声，那种情况下用户看到的还是空，不能算「有结果」。
                 ceiling = SEARCH_SOFT_DEADLINE if streamed else SEARCH_HARD_DEADLINE
-                wait = max(0.05, ceiling - elapsed)
+                # ⚠ 还没到 SEARCH_MIN_WAIT 时，最多只等到那个点就得醒来重判一次。
+                #   不这么写的话，一旦「已完成的源」在 1.5s 前就被消费完，
+                #   这一轮会**一直阻塞到下一个源回来**（或撞满 ceiling）——
+                #   哪怕 1.5s 时收手条件早就满足了。
+                #   实测（2026-10-24 写召回测试时暴露）：噪声源 0.01s 到、
+                #   正主 0.02s 到，剩下一个永不回来的源把收手硬生生拖到 3.0s，
+                #   而该收手的时刻是 0.05s（测试里 MIN_WAIT 被压到 0.05）。
+                #   线上的对应代价是：收手条件满足后还要多等最多
+                #   (ceiling - SEARCH_MIN_WAIT) ≈ 4.5s。
+                wake = min(ceiling, SEARCH_MIN_WAIT) if elapsed < SEARCH_MIN_WAIT else ceiling
+                wait = max(0.05, wake - elapsed)
                 # ⚠⚠ 这里必须**逐个取**，不能 `list(as_completed(...))`。
                 # 踩过大坑：`list(as_completed(pending, timeout=wait))` 不是
                 # 「回一个处理一个」，它会**阻塞到所有 fut 都完成或超时**，
@@ -641,9 +686,18 @@ class Engine:
                                 done_count, total)
                     break
                 if not batch:
-                    # 没有任何源在这段窗口内返回 → 到头了
-                    #
-                    # ⚠ 这一条 break 有**语义**：它意味着「我们尽力等了，还是没等到」。
+                    # 没有任何源在这段窗口内返回。
+                    # ⚠ 必须区分两种"空"：
+                    #   ① 这段 wait 只是**醒来重判**的定时器（wait < ceiling）——
+                    #      回顶部重新算收手条件就行，**不能**当成"等到底了"。
+                    #      踩过：加了「到 SEARCH_MIN_WAIT 就醒来重判」之后，
+                    #      0.05s 那次醒来被当成撞满墙钟，于是 0.1s 就收手，
+                    #      把马上要回来的正主判成"未回"并喂给熔断器。
+                    #   ② 真的等满了本轮 ceiling —— 这才叫"我们尽力了"。
+                    if time.time() - t_search < ceiling - 0.02:
+                        continue
+                    # ---- ② 的语义 ----
+                    # 这一条 break 有**语义**：它意味着「我们尽力等了，还是没等到」。
                     #   下面的联网兜底就是靠它判断的，所以必须显式记下来 ——
                     #   不能指望调用方自己拿 done_count 去比。
                     #   （踩过：线上搜「欢迎进入梦魇直播间」时 7 个源里有 2 个
@@ -681,6 +735,12 @@ class Engine:
                         # 全部源，那个「提速」改动等于没写，还不报错。
                         for it in items:
                             it.score = score_result(it, keyword)
+                            # score_result 顺手把 tightness 挂上来了（见
+                            # relevance.score_result），所以这里读 it.tight 是免费的。
+                            # 确切口径**不受 STREAM_FLOOR 影响**：它回答的是
+                            # "池子里到底有没有这本书"，而不是"推没推给前端"。
+                            if it.tight:
+                                tight_streamed += 1
                             if it.score >= STREAM_FLOOR:
                                 streamed += 1
                                 if on_result:
@@ -930,6 +990,12 @@ class Engine:
             stats.update({
                 "raw": len(raw),
                 "kept": len(results),
+                # 「候选里有几条是**这本书**」（确切命中）。
+                # ⚠ 只有 `候选=` 是不够的：`候选=4` 既可能是"有正主 + 3 条同类"，
+                #   也可能是"4 条全是『嘿兄弟/兄弟盟』" —— 用户感受完全相反
+                #   （搜到了 / 搜不到），而旧日志里两者一模一样。
+                #   这个数就是让日报能区分它们的最小埋点。
+                "tight_hits": tight_streamed,
                 "filtered": max(0, len(raw) - len(results)),
                 "available": sum(1 for r in results if r.available),
                 "readable": sum(1 for r in results if r.readable),

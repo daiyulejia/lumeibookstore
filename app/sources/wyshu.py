@@ -37,6 +37,25 @@ CACHE_FILE = Path(__file__).resolve().parent.parent.parent / "cache" / "wyshu_in
 CACHE_TTL = 24 * 3600        # 索引缓存 24 小时
 TOC_TTL = 600                # 目录缓存 10 分钟
 
+# 搜索的墙钟上限（秒）。**这是 2026-10-24 复盘补的，和第 ① 个 186s 事故同源。**
+#
+# 病灶：这个源的搜索有两条「串行打 N 个页面」的路径，都没有任何时间上限 ——
+#   ① 索引过期时 `_build_index()` 串行抓 8 个分类页（缓存 TTL 24h，所以
+#      每天第一次搜索必然走这条）；
+#   ② 索引里没命中时 `_search_by_pinyin()` 再串行试 8 个分类的拼音 URL。
+# 两条加起来最坏 16 次请求。引擎的扇出硬上限是 20s，而**当别的源也没出结果时
+# （streamed=0）引擎不会早收手**，于是一个卡住的 wyshu 就能把整轮搜索拖满 20s，
+# 到点仍是 0 条 —— 用户看到的是"搜不到"，日志里只有 `未回=wyshu`。
+#
+# 线上实测（2026-10-24 01:0x）：搜《我们猫猫不能听这些》
+#   耗时ms=20040 候选=0 成书=0 可读=0 答=4/5 未回=wyshu
+#   同一本书 5 分钟前的一次：耗时ms=7840 候选=1（1 本可读）
+# ——同一本书两次结果相反，差的就是"wyshu 这轮回没回来"。
+#
+# 6s 的取值沿用 wikisource（同样的取舍：够它抓完正常情况下的两三页，
+# 又不会比整轮预算更长寿）。判据不看耗时，只看"到点还发不发下一次请求"。
+SEARCH_BUDGET = 6.0
+
 # 正文垃圾行
 JUNK = re.compile(
     r"无忧书城|www\.wyshu\.com|请记住本站|求收藏|求推荐"
@@ -55,12 +74,19 @@ class WyshuSource(Source):
     homepage = SITE + "/"
     engine = "custom"
 
+    # 搜索墙钟上限。挂成类属性（而不是只留在模块级）是为了能被测试/特殊场景
+    # 按实例覆盖 —— 与 wikisource 的做法一致。
+    SEARCH_BUDGET = SEARCH_BUDGET
+
     # ---------- 搜索（本地索引） ----------
     def search(self, keyword: str) -> list[BookResult]:
         keyword = keyword.strip()
         if not keyword:
             return []
-        index = self._load_index()
+        # 整轮（建索引 + 拼音兜底）共用一个 deadline —— 两段各自限额是不够的，
+        # 8 + 8 = 16 次请求照样能突破 6s。见 SEARCH_BUDGET 的注释。
+        deadline = time.time() + self.SEARCH_BUDGET
+        index = self._load_index(deadline=deadline)
         kw = keyword.replace("《", "").replace("》", "").replace(" ", "").lower()
 
         hits: list[BookResult] = []
@@ -82,9 +108,10 @@ class WyshuSource(Source):
             return hits[:30]
 
         # 索引没有 → 试拼音直拼兜底
-        return self._search_by_pinyin(keyword)
+        return self._search_by_pinyin(keyword, deadline=deadline)
 
-    def _search_by_pinyin(self, keyword: str) -> list[BookResult]:
+    def _search_by_pinyin(self, keyword: str,
+                          deadline: float | None = None) -> list[BookResult]:
         """用拼音猜 URL（微微一笑很倾城 → weiweiyixiaohenqingcheng）。
 
         这是「书不在本地索引里」时的兜底方案 —— 只要站点有这本书、且 slug
@@ -103,7 +130,15 @@ class WyshuSource(Source):
         if not slug:
             return []
 
+        tried = 0
         for cat in CATEGORIES:
+            # 到点就不发下一次 —— 这是"每秒都在烧配额"和"整轮搜索被一个源拖死"
+            # 之间的那条线。**必须真的不发**，不能发完再看时间。
+            if deadline is not None and time.time() >= deadline:
+                logger.info("拼音兜底到点收手：已试 %d/%d 个分类（预算 %.0fs）",
+                            tried, len(CATEGORIES), self.SEARCH_BUDGET)
+                break
+            tried += 1
             url = f"{SITE}/{cat}/{slug}/"
             try:
                 html = fetch_text(url)
@@ -118,7 +153,7 @@ class WyshuSource(Source):
         return []
 
     # ---------- 索引构建与缓存 ----------
-    def _load_index(self) -> dict[str, dict]:
+    def _load_index(self, deadline: float | None = None) -> dict[str, dict]:
         # 读缓存
         if CACHE_FILE.exists():
             try:
@@ -129,8 +164,13 @@ class WyshuSource(Source):
             except Exception:  # noqa: BLE001
                 pass
         # 重建
-        books = self._build_index()
-        if books:
+        books, complete = self._build_index(deadline=deadline)
+        # ⚠ 只有**抓完全部分类**才写缓存。
+        #   被预算截断时写下去，等于把一份残缺索引缓存 24 小时 ——
+        #   之后每一次搜索都在残缺索引里查，缺的书永久查不到，
+        #   而且没有任何报错（缓存命中是最快路径，反而最不可能被怀疑）。
+        #   宁可这一轮没缓存、下一轮再抓一次。
+        if books and complete:
             try:
                 CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
                 CACHE_FILE.write_text(
@@ -139,6 +179,11 @@ class WyshuSource(Source):
                 )
             except Exception:  # noqa: BLE001
                 pass
+        elif not books:
+            # 一本都没抓到 = 这个源这一轮等于不存在。**必须说出来** ——
+            # 静默返回 [] 会被引擎记成"答话了、只是没这本书"（note_ok），
+            # 熔断器永远学不到，于是每轮搜索都还在为它付时间。
+            self.note_error(RuntimeError("索引为空：分类页全部抓取失败"))
         return books
 
     @staticmethod
@@ -178,11 +223,24 @@ class WyshuSource(Source):
         title = re.sub(r"(全文阅读|在线阅读|最新章节|免费阅读|无弹窗)$", "", title.strip())
         return title.strip(), author
 
-    def _build_index(self) -> dict[str, dict]:
-        """爬所有分类页，建立 书名 -> {url, author} 索引。"""
+    def _build_index(self, deadline: float | None = None) -> tuple[dict[str, dict], bool]:
+        """爬所有分类页，建立 书名 -> {url, author} 索引。
+
+        返回 `(索引, 是否抓完全部分类)`。第二个值决定**能不能写缓存** ——
+        被预算截断时抓到的只是残缺索引，缓存它等于把缺口固化 24 小时
+        （见 _load_index 里的注释）。
+        """
         books: dict[str, dict] = {}
         seen_urls: set[str] = set()
-        for cat in CATEGORIES:
+        complete = True
+        for _i, cat in enumerate(CATEGORIES):
+            # 到点立刻停：**不发**这一次请求，而不是发完再判。
+            if deadline is not None and time.time() >= deadline:
+                complete = False
+                logger.info("索引构建到点收手：已抓 %d/%d 个分类、%d 本"
+                            "（预算 %.0fs，本轮不写缓存）",
+                            _i, len(CATEGORIES), len(books), self.SEARCH_BUDGET)
+                break
             try:
                 html = fetch_text(f"{SITE}/{cat}/")
             except Exception as e:  # noqa: BLE001
@@ -199,8 +257,9 @@ class WyshuSource(Source):
                     continue
                 seen_urls.add(url)
                 books[title] = {"url": url, "author": author}
-        logger.info("wyshu 索引构建完成：%d 本", len(books))
-        return books
+        if complete:
+            logger.info("wyshu 索引构建完成：%d 本", len(books))
+        return books, complete
 
     # ---------- 目录 ----------
     def get_chapters(self, result: BookResult) -> list[Chapter]:

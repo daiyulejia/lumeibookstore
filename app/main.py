@@ -994,6 +994,10 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                     logger.exception("history.add_search 异常（已忽略）")
                 log_event(logger, "search.done", 书名=kw, 候选=len(results),
                           成书=len(books),
+                          # 「候选里几条是**这本书**」。没有它，`候选=4` 分不清
+                          # "有正主"和"4 条全是撞词噪声"—— 2026-10-24 复盘
+                          # 就是这个盲区让《兄弟》《围城》的正主被静默丢掉。
+                          确切=int(stats.get("tight_hits", 0)),
                           可读=sum(1 for r in results if r.available),
                           联网发现=stats.get("discovered", 0),
                           # 这一轮是不是被"客户端断开"打断收手的。
@@ -1019,6 +1023,9 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                     "type": "done",
                     "count": len(books),
                     "candidates": len(results),
+                    # 「候选里几条是确切命中」——与 `candidates` 并排给出，
+                    # 免得每一次要判"到底搜到没有"都得翻 stats 的完整结构。
+                    "tight": int(stats.get("tight_hits", 0)),
                     "available": sum(1 for r in results if r.available),
                     "ms": stats.get("ms", 0),
                     "discovered": stats.get("discovered", 0),
