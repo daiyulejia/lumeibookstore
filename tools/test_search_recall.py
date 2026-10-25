@@ -49,6 +49,7 @@ sys.path.insert(0, str(ROOT))
 import app.engine as E  # noqa: E402
 from app.models import BookResult  # noqa: E402
 from app.sourcehealth import HEALTH  # noqa: E402
+from app.sources import DISCOVER_SOURCE  # noqa: E402
 from app.sources.base import Source  # noqa: E402
 
 ok_n = 0
@@ -153,6 +154,38 @@ class _HangForever(Source):
     def search(self, keyword):
         time.sleep(type(self).sleep_s)
         return []
+
+    def get_chapters(self, url): return []
+    def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+
+class _EmptyLocal(Source):
+    """本地一条都没有 —— 逼出联网兜底。"""
+
+    name = "recall_empty"
+    display = "本地空源"
+    priority = 1
+    enabled = True
+
+    def search(self, keyword): return []
+    def get_chapters(self, url): return []
+    def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+
+class _WebTight(Source):
+    """联网兜底源（lazy）。**只有它知道这本书在哪** —— 线上最常见的那种救场。"""
+
+    name = DISCOVER_SOURCE
+    display = "联网发现"
+    priority = 99
+    enabled = True
+    lazy = True
+    calls = 0
+
+    def search(self, keyword):
+        type(self).calls += 1
+        return [BookResult(title=keyword, url="http://web/1", source=self.name,
+                           source_display=self.display, author="某人")]
 
     def get_chapters(self, url): return []
     def fetch(self, *a, **k): raise AssertionError("不该走到这")
@@ -301,6 +334,38 @@ def main() -> int:
               and stC.get("tight_hits") == 0,
               f"有正主那轮 tight_hits={stD.get('tight_hits')} 实得={_n_tight}；"
               f"纯噪声那轮 tight_hits={stC.get('tight_hits')}")
+
+        # ------------------------------------------------------------
+        print("\n—— ⑤ 联网兜底救回的正主，也必须算进「确切」（2026-10-25 病灶） ——")
+        # 线上实测（搜《我们猫猫不能听这些》）：
+        #     done:     候选=1 成书=1 可读=1 确切=0
+        #     books[0]: title=我们猫猫不能听这些 tight=true tightness=1.0
+        # 「候选=1、确切=0」在算术上就是矛盾的 —— 因为 `确切` 当时取的是
+        # 扇出阶段的累加值 `tight_streamed`，而**联网兜底交回来的条目
+        # 压根不经过那个循环**，所以最惊险的那条救场路径永远报 0。
+        # 这条测试专门走「本地全空 → 联网救回」：扇出确切必须是 0，
+        # 最终确切必须是 1，两者一起才能证明口径是算出来的、不是常量。
+        HEALTH.reset()
+        _WebTight.calls = 0
+        stE: dict = {}
+        resE = E.Engine(sources=[_EmptyLocal, _WebTight]).search(
+            KW, stats=stE, discover=True, probe=False, sample=False)
+        check("前置：联网兜底真的被叫起来了（否则这轮什么都没测到）",
+              _WebTight.calls == 1, f"calls={_WebTight.calls}")
+        check("联网救回的那本确实是确切命中", any(r.tight for r in resE),
+              str([(r.title, round(r.tightness, 2)) for r in resE][:3]))
+        check("前置：扇出阶段确实一条确切都没有（差值只可能来自联网）",
+              stE.get("tight_streamed") == 0,
+              f"tight_streamed={stE.get('tight_streamed')}")
+        check("★ 确切命中数必须数**最终结果集**，不能只数扇出阶段"
+              "（旧实现这里恒为 0，于是「救回来了」被记成「零正主」）",
+              stE.get("tight_hits") == 1,
+              f"tight_hits={stE.get('tight_hits')} 结果="
+              f"{[(r.title, r.tight) for r in resE][:3]}")
+        check("★ 口径对账：确切 <= 候选，且确切=0 ⟺ 结果里没有一本是这本书",
+              stE.get("tight_hits") == sum(1 for r in resE if r.tight)
+              and stE.get("tight_hits") <= stE.get("kept", 0),
+              f"确切={stE.get('tight_hits')} 候选={stE.get('kept')}")
     finally:
         lg.removeHandler(h)
         lg.setLevel(old_level)

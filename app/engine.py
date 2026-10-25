@@ -228,13 +228,21 @@ def source_ledger(stats: dict) -> dict:
 
     现在四格互斥、都带名字，加起来必须等于总数：
 
-        答=真的答了话   挂=返回了但挂了   未回=到点没回来   到点=是否撞满墙钟
+        答=真的答了话   挂=返回了但挂了   未回=到点没回来   熔断=该搜没搜   到点=是否撞满墙钟
 
     `未回` 尤其重要：线上真机 10 次搜索里有 9 次 `未回=1~2`，
     而那些源只是慢、并没有死。没有名字就永远查不出"到底是谁在拖"。
+
+    `熔断` 是 2026-10-25 补的第五格。原来被熔断跳过的源**根本不进账**：
+    分母是过滤后的源数，于是"全部目标源都在熔断"算出来是 `答=0/0`——
+    一个加得起来、却完全没有信息量的账（线上 10-24 09:04:59 的
+    《红楼梦》《剑来》就是这行，耗时 2ms、候选 0，复盘时只能靠人肉
+    反推"是不是熔断了"）。它们必须单独占一格并带名字，
+    否则"没这本书"和"这个源这个月就没通过"永远长得一模一样。
     """
     names_fail = list(stats.get("failed_returned_sources") or [])
     names_unret = list(stats.get("unreturned_sources") or [])
+    names_brk = list(stats.get("breaker_sources") or [])
 
     def _pack(n: int, names: list[str]) -> str:
         return f"{n}" + (f"({','.join(names)})" if names else "")
@@ -243,6 +251,7 @@ def source_ledger(stats: dict) -> dict:
         "答": f"{stats.get('sources_answered', 0)}/{stats.get('sources_total', 0)}",
         "挂": _pack(stats.get("sources_failed", 0), names_fail),
         "未回": _pack(stats.get("sources_unreturned", 0), names_unret),
+        "熔断": _pack(stats.get("sources_breaker", 0), names_brk),
         # ⚠ 判「是不是慢到没结果」不能用 `耗时ms>=20000`：耗时是环境量，
         #   机器一忙就漂，同一本书能差 5 倍。这个布尔量只取决于机制。
         #
@@ -407,10 +416,27 @@ class Engine:
         # 熔断之后它们连请求都不发，剩下的源更快答完，收手判定也更准。
         # ⚠ 只跳过"连续挂过"的源；空结果不算挂（见 app/sourcehealth.py）。
         skipped = [s.name for s in targets if not HEALTH.allows(s.name)]
+        # 「指定了、但压根没有这个源」—— 和熔断是两件事，后果却一样：
+        # 一个请求都不发，2 毫秒后返回 0 条。以前连一行日志都没有。
+        missing: list[str] = []
+        if only:
+            _have = {s.name for s in self._sources}
+            missing = sorted(n for n in (w.strip() for w in only) if n and n not in _have)
+            if missing:
+                logger.info("指定来源不存在，已忽略：%s（现有源里没有这些名字）",
+                            ", ".join(missing))
         if skipped:
             targets = [s for s in targets if s.name not in skipped]
             logger.info("跳过 %d 个熔断中的源（%s），剩 %d 个照常扇出",
                         len(skipped), ", ".join(skipped), len(targets))
+            if not targets:
+                # 全灭：这不是"没有这本书"，是**一个请求都没发出去**。
+                # ⚠ 这种 0 条在 `search.done` 里和"搜遍了都没有"长得一模一样
+                #   （答=0/0、耗时ms=2），复盘时会被当成书库缺口去补源。
+                #   线上真出现过（2026-10-24 09:04:59《红楼梦》《剑来》），
+                #   当时靠人肉反推"是不是熔断了"，所以这里必须说出来。
+                logger.info("本轮一个源都没能搜：目标源全部在熔断中（%s）——"
+                            "结果为空不代表没有这本书", ", ".join(skipped))
 
         raw: list[BookResult] = []
         # 这一轮**挂了**的源名（抛异常 / 自己吞了异常 / 墙钟到点仍不返回）。
@@ -898,6 +924,9 @@ class Engine:
             need_web = exhausted
         # 并行已经跑过就别再串行跑一次（web_extra 已在 raw 里，rank 时合并了）
         already_web = web_thread is not None
+        # 「本地全灭、本该联网，但总预算已经用完了」——**必须记下来**：
+        # 否则"联网也没找到"和"联网压根没跑"在日志里一模一样。
+        web_skipped_budget = False
         if discover and need_web and not already_web:
             web = self._find_source(DISCOVER_SOURCE)
             # 联网兜底也是**串行**加在后面的，同样得看总预算 ——
@@ -929,24 +958,21 @@ class Engine:
                     results = rank(results + extra, keyword)
                     results = self.refine(results, keyword)
             elif web is not None:
-                logger.info("跳过联网兜底：总预算已用完（已耗 %.1fs）",
-                            time.time() - t_start)
-                extra = self._discover(web, keyword, on_result, on_progress,
-                                       search_kw=search_kws, should_stop=_stop)
-                if extra:
-                    if probe:
-                        # 联网换来的候选必须探测 —— 它的价值就在于"本地没有、
-                        # 远端有"，不验一下等于把不知道能不能读的东西端上去。
-                        self.probe_all(
-                            extra, on_verified=on_verified, top=len(extra),
-                            should_stop=_stop,
-                            budget=budget_slice(t_start, PROBE_BUDGET,
-                                                DISCOVER_TOTAL_BUDGET))
-                    results = rank(results + extra, keyword)
-                    results = self.refine(results, keyword)
-            elif web is not None:
-                logger.info("跳过联网兜底：总预算已用完（已耗 %.1fs）",
-                            time.time() - t_start)
+                # ⚠ 2026-10-25 修：这里原来写的是「记一句『跳过联网兜底：总预算
+                #   已用完』**然后照样把兜底跑完**」，后面还跟着一段一模一样的
+                #   死分支（`elif web is not None`，永远到不了）。两个后果：
+                #     · 日志撒谎 —— 它说"跳过"，实际又跑了 3~10 秒；
+                #     · 契约破防 —— `over_budget` 是按 DISCOVER_TOTAL_BUDGET(32s)
+                #       算的，这里真跑起来就成了"对外承诺 32 秒、实际 42 秒"，
+                #       而且不报错、不断言。
+                #   收手可以，但不许**沉默地收手**、更不许**说反话**：
+                #   真的不跑了，并把这件事记进 stats（`web_skipped_budget`），
+                #   让日报能看见「这一轮本地全灭而且联网没跑」。
+                web_skipped_budget = True
+                logger.info(
+                    "跳过联网兜底：总预算 %.0fs 已用完（已耗 %.1fs）—— 本轮不联网，"
+                    "本地结果照常返回",
+                    DISCOVER_TOTAL_BUDGET, time.time() - t_start)
         elif discover and need_web and already_web:
             # 并行已发起、本地仍无结果 → 给 web_extra 探测 + 重排
             # （上面 raw 已 extend，这里 results=rank(raw) 已包含 web_extra）
@@ -981,12 +1007,15 @@ class Engine:
             _unret_names = sorted(n for n, v in _snap.items() if v == "hang")
             _skip_names = sorted(n for n, v in _snap.items() if v == "skip")
             _accounted = _ok_n + len(_fail_names) + len(_unret_names) + len(_skip_names)
-            if _accounted != len(targets):
+            # 应搜 = 真的扇出出去的 + 熔断被跳过的（后者也是"该搜而没搜"）
+            _expect = len(targets) + len(skipped)
+            if _accounted + len(skipped) != _expect:
                 # 账对不上就当场说，别让日报拿着一个加不起来的数字下结论
                 logger.info(
-                    "源账对不上：扇出 %d 个源、记账 %d 个（答=%d 挂=%d 未回=%d 未跑=%d）",
-                    len(targets), _accounted, _ok_n, len(_fail_names),
-                    len(_unret_names), len(_skip_names))
+                    "源账对不上：应搜 %d 个源（扇出 %d + 熔断 %d），记账 %d 个"
+                    "（答=%d 挂=%d 未回=%d 未跑=%d）",
+                    _expect, len(targets), len(skipped), _accounted + len(skipped),
+                    _ok_n, len(_fail_names), len(_unret_names), len(_skip_names))
             stats.update({
                 "raw": len(raw),
                 "kept": len(results),
@@ -995,7 +1024,29 @@ class Engine:
                 #   也可能是"4 条全是『嘿兄弟/兄弟盟』" —— 用户感受完全相反
                 #   （搜到了 / 搜不到），而旧日志里两者一模一样。
                 #   这个数就是让日报能区分它们的最小埋点。
-                "tight_hits": tight_streamed,
+                #
+                # ⚠ 2026-10-25 复盘修：这个数必须**从最终结果集里数**，不能拿
+                #   扇出阶段的累加值（`tight_streamed`）冒充。扇出阶段的计数
+                #   只覆盖「本地源交回来的条目」，而**联网兜底救回的正主
+                #   压根不经过那个循环** —— 于是最惊险、最需要复盘的那条路径
+                #   反而永远报 `确切=0`。
+                #
+                #   线上实测（搜《我们猫猫不能听这些》）：
+                #       done: 候选=1 成书=1 可读=1 确切=0
+                #       books[0]: 我们猫猫不能听这些 / tightness=1.0 / tight=true
+                #                             ↑ 同一份数据里自称不确切
+                #   一行日志里「候选=1、确切=0」在算术上就不成立 ——
+                #   可它每天都在被当成"这本书没有正主"的证据。
+                #
+                #   所以口径定死：**确切 = 最终结果里 tight 的条数**，
+                #   和 `候选`（len(results)）数的是同一个集合，两者必须能对账：
+                #       确切 <= 候选，且 确切=0 ⟺ 结果里没有任何一本是这本书
+                #   收手判据要的是另一个数（"到现在为止到了几条正主"），
+                #   它继续用 `tight_streamed`，放在单独的键里，别混。
+                "tight_hits": sum(1 for r in results if r.tight),
+                # 「扇出阶段累计到几条正主」—— 只给收手判据和复盘对照用。
+                # 它小于 tight_hits 时，差值就是**联网兜底/晚回来的源贡献的**。
+                "tight_streamed": tight_streamed,
                 "filtered": max(0, len(raw) - len(results)),
                 "available": sum(1 for r in results if r.available),
                 "readable": sum(1 for r in results if r.readable),
@@ -1004,7 +1055,14 @@ class Engine:
                 #   原来是 done_count，把"返回了 403 的源"也算进去 ——
                 #   于是 `答=3` 可能是"2 个有内容 + 1 个 403"，读者无从分辨。
                 "sources_answered": _ok_n,
-                "sources_total": len(targets),
+                # ⚠ 分母含**熔断被跳过**的源：它们是"该搜而没搜"，不是"没有"。
+                #   2026-10-25 修。不含的话，「全部目标源都在熔断里」会算成
+                #   `答=0/0` —— 一个看起来干净、实际一个请求都没发的账。
+                #   线上真出现过：10-24 09:04:59《红楼梦》《剑来》 耗时ms=2
+                #   答=0/0 候选=0，复盘时无法与"搜遍了都没有"区分。
+                "sources_total": len(targets) + len(skipped),
+                "sources_breaker": len(skipped),
+                "breaker_sources": sorted(skipped),
                 # 返回了但挂了的（403 / 握手超时 / 吞异常）—— 与"未回"互斥
                 "sources_failed": len(_fail_names),
                 "failed_returned_sources": _fail_names,
@@ -1035,6 +1093,9 @@ class Engine:
                 "budget_s": _allow_s,
                 "over_budget": (time.time() - t_start) > _allow_s,
                 "discovered": sum(1 for r in results if r.source == DISCOVER_SOURCE),
+                # 本地全灭、本该联网，但总预算已经用完 → 没有联网。
+                # 与「联网了但没找到」是两件处置相反的事，必须分开记。
+                "web_skipped_budget": bool(web_skipped_budget),
                 # 断开收手是否真的触发了（供真机测试断言）。
                 # ⚠ 用它而不是"耗时是不是更短"来验证收手 —— 耗时受源站快慢
                 #   影响，波动能有 5 倍（实测 2.3s ~ 25.6s），

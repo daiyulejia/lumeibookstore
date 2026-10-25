@@ -885,6 +885,30 @@ MUTATIONS: list[Mutation] = [
              '                        ", ".join(left_hosts) or "-")',
              '                        "-")',
              REGSRC_TEST),
+    # ------- 源账补格：「该搜而没搜」必须单独占一格（2026-10-25） -------
+    # 线上 10-24 09:04:59《红楼梦》《剑来》：`答=0/0 候选=0 耗时ms=2`。
+    # 一个请求都没发出去，却和"搜遍了都没有"长得一模一样。
+    Mutation("源账", "熔断跳过的源不进账（全灭时又退回「答=0/0」的假干净）",
+             ENGINE,
+             '        "熔断": _pack(stats.get("sources_breaker", 0), names_brk),',
+             '        "熔断": _pack(0, []),',
+             BUDGET_TEST),
+    Mutation("源账", "分母不含熔断跳过的源（应搜 1 个被写成 0 个）",
+             ENGINE,
+             '                "sources_total": len(targets) + len(skipped),',
+             '                "sources_total": len(targets),',
+             BUDGET_TEST),
+    Mutation("源账", "全灭时不吭声（沉默地返回 0 条）",
+             ENGINE,
+             "                logger.info(\"本轮一个源都没能搜：目标源全部在熔断中（%s）——\"\n"
+             "                            \"结果为空不代表没有这本书\", \", \".join(skipped))",
+             "                pass",
+             BUDGET_TEST),
+    Mutation("源账", "联网兜底没跑却不记账（「没联网」和「联网没找到」混为一谈）",
+             ENGINE,
+             "                web_skipped_budget = True",
+             "                web_skipped_budget = False",
+             BUDGET_TEST),
 
     # ------- 召回：收手判据不许被噪声骗（2026-10-24） -------
     # 线上真机复现：搜《兄弟》扇出 1.76s 收手、候选 4 条全是「嘿兄弟/兄弟盟」，
@@ -906,10 +930,15 @@ MUTATIONS: list[Mutation] = [
              "                                tight_streamed += 1",
              "                            pass",
              RECALL_TEST),
-    Mutation("召回", "stats 把「推给前端的条数」冒充成确切命中数（口径说谎）",
+    # ⚠ 2026-10-25 换靶：`tight_hits` 的口径从「扇出阶段累加值」改成
+    #   「最终结果集里 tight 的条数」，旧靶点（`"tight_hits": tight_streamed,`）
+    #   已经不存在。新靶点直接**复原今天这个 bug 本身**：
+    #   把最终结果集换成扇出的累加值 → 联网兜底救回的正主又被记成 0。
+    #   牙在 test_search_recall.py 场景⑤（本地全空、只有联网那条正主）。
+    Mutation("召回", "确切只数扇出阶段（联网兜底救回的正主被记成 0 条）",
              ENGINE,
+             '                "tight_hits": sum(1 for r in results if r.tight),',
              '                "tight_hits": tight_streamed,',
-             '                "tight_hits": streamed,',
              RECALL_TEST),
     Mutation("召回", "收手日志里的确切条数写错（复盘时看不出是 0 条确切还是 13 条）",
              ENGINE,

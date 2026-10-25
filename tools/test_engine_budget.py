@@ -519,6 +519,92 @@ def main() -> int:
               stB.get("sources_failed") == 0
               and stB.get("sources_answered") == 1,
               f"挂={stB.get('sources_failed')} 答={stB.get('sources_answered')}")
+
+        # ---- 场景 C：目标源**全在熔断里** → 账必须说出「熔断=N(名字)」 ----
+        # 线上真事（2026-10-24 09:04:59）：连点两次「只在这个源里搜」，
+        # 第一轮该源 403 被熔断，第二轮直接 `答=0/0 候选=0 耗时ms=2` ——
+        # 一个请求都没发出去，可这行和"搜遍了都没有"长得一模一样。
+        # 今天要钉的是：**"该搜而没搜"必须单独占一格并带名字**。
+        _H.reset()
+        # 把 ledger_403 连续挂两次 → 熔断（OPEN_AFTER=2）
+        _H.note_fail("ledger_403", "HTTP 403")
+        _H.note_fail("ledger_403", "HTTP 403")
+        check("C0 前置：ledger_403 确实处于熔断中（否则下面两条是空转）",
+              _H.is_open("ledger_403"), f"open={_H.open_sources()}")
+        stC: dict = {}
+        _capC, _lgC, _oldC = _cap()
+        try:
+            resC = E.Engine(sources=[_Bad403]).search(
+                "账目丙", stats=stC, discover=False, probe=False, sample=False)
+        finally:
+            _uncap(_capC, _lgC, _oldC)
+        _ledC = E.source_ledger(stC)
+        check("C1 ★ 全在熔断时，账里能读到「熔断=1(ledger_403)」而不是 0/0",
+              resC == [] and _ledC["熔断"] == "1(ledger_403)",
+              f"熔断={_ledC['熔断']} 答={_ledC['答']} 结果={resC}")
+        check("C2 ★ 分母含被跳过的源（应搜 1 个，不是 0 个）",
+              stC.get("sources_total") == 1 and stC.get("sources_answered") == 0,
+              f"总共={stC.get('sources_total')} 答={stC.get('sources_answered')} —— "
+              "分母是 0 的话，这行账加得起来但什么信息都没有")
+        check("C3 五格仍然加得起来：答+挂+未回+熔断 == 应搜",
+              (stC.get("sources_answered", 0) + stC.get("sources_failed", 0)
+               + stC.get("sources_unreturned", 0)
+               + stC.get("sources_breaker", 0)) == stC.get("sources_total"),
+              f"{_ledC}")
+        check("C4 日志必须明说「一个源都没能搜」，不许沉默地返回 0 条",
+              "全部在熔断中" in _capC.text(),
+              _capC.text()[-300:] or "(没抓到日志)")
+
+        # ---- 场景 D：总预算用完时，联网兜底**真的不跑**且如实说出来 ----
+        # 病灶（2026-10-25 复盘时读到）：这段原先是
+        #     elif web is not None:
+        #         logger.info("跳过联网兜底：总预算已用完")
+        #         extra = self._discover(...)      ← 说跳过，然后又跑了
+        #     elif web is not None:                ← 死分支，永远到不了
+        # 后果有两个，都不报错：① 日志撒谎；② `over_budget` 按 32s 算，
+        # 这里真跑起来就是"承诺 32 秒、实际 42 秒"。
+        # 判据不看耗时，只看**联网源有没有被调用**。
+        from app.sources import DISCOVER_SOURCE as _DS
+
+        class _WebSrc(Source):
+            name = _DS
+            display = "联网发现"
+            priority = 99
+            enabled = True
+            lazy = True
+            calls = 0
+
+            def search(self, keyword):
+                type(self).calls += 1
+                return [BookResult(title=keyword, url="http://web/x",
+                                   source=self.name, source_display=self.display)]
+
+            def get_chapters(self, url): return []
+            def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+        _old_db = E.DISCOVER_TOTAL_BUDGET
+        _H.reset()
+        _WebSrc.calls = 0
+        E.DISCOVER_TOTAL_BUDGET = 0.0      # 预算一上来就没了 → wb <= 0
+        stD: dict = {}
+        _capD, _lgD, _oldD = _cap()
+        try:
+            resD = E.Engine(sources=[_Empty, _WebSrc]).search(
+                "账目丁", stats=stD, discover=True, probe=False, sample=False)
+        finally:
+            _uncap(_capD, _lgD, _oldD)
+            E.DISCOVER_TOTAL_BUDGET = _old_db
+        check("D1 ★ 预算用完时联网兜底真的没跑（不许「说跳过、实际照跑」）",
+              _WebSrc.calls == 0,
+              f"联网源被调用 {_WebSrc.calls} 次 —— 说跳过就必须真的跳过")
+        check("D2 ★ 跳过这件事要进 stats（否则「没联网」和「联网没找到」一样）",
+              stD.get("web_skipped_budget") is True,
+              f"web_skipped_budget={stD.get('web_skipped_budget')}")
+        check("D3 日志说的是「本轮不联网」，不是含糊的「跳过」",
+              "本轮不联网" in _capD.text(),
+              _capD.text()[-300:] or "(没抓到日志)")
+        check("D4 结果仍然是空（这条场景本来就没有书，别把断言写成「有结果」）",
+              resD == [], str(resD))
     finally:
         _H.reset()
         (E.SEARCH_HARD_DEADLINE, E.SEARCH_MIN_WAIT, E.SEARCH_SOFT_DEADLINE,
