@@ -459,6 +459,75 @@ def main() -> int:
     check("没给 path 就不写盘（副作用为零）", sorted(p.name for p in tmpdir.iterdir())
           == ["sourcehealth.json"])
 
+    # ------------------------------------------------------------------
+    print("\n—— 冷掉的账：冷却到期后，退避还得接着算（2026-10-26）——")
+    # 为什么单独一组：`_save`/`_ensure_loaded` 原来只认「仍在冷却中」的条目，
+    #   于是冷却**到期那一刻**条目既不落盘、也不再读回 —— `streak` 每次重启
+    #   归 1，`BACKOFF`（15m→30m→60m→…）永远涨不上去，退避代码写了却从没生效。
+    #   线上证据（三天、同一台机器，每次 ship 之后都倒退）：
+    #     10-23 09:06 熔断 15 分钟 → 10-23 10:06 又 15 分钟
+    #     10-24 09:04 熔断 30 分钟 → 10-24 09:51 退回 15 分钟
+    #     10-25 09:07 熔断 30 分钟 → 10-25 09:50 退回 15 分钟（09:48:26 重启过）
+    #   代价：死源每小时被放回名单试 4 次，每次都让一次真实搜索陪它等满 6 秒。
+    from app.sourcehealth import FORGET_AFTER
+
+    # (a) 真走一遍落盘/读回：到期 → 存盘 → 重启 → 再挂，必须接着上一轮退避
+    hp5 = tmpdir / "cold-roundtrip.json"
+    h9 = SourceHealth(path=hp5)
+    trip_once(h9, "coldA")                       # 第 1 轮：15 分钟，落盘
+    with h9._lock:                               # noqa: SLF001
+        h9._st["coldA"]["until"] = time.time() - 1      # noqa: SLF001  时间到了
+    h9.allows("coldA")                           # 半开：until 归 0
+    h9._save()                                   # 模拟"到点之后有人写了盘"
+    raw9 = _json.loads(hp5.read_text(encoding="utf-8"))
+    check("★ 冷掉的条目仍然留在盘上（until=0）",
+          "coldA" in raw9 and float(raw9["coldA"]["until"]) == 0.0,
+          f"盘上只有 {sorted(raw9)} —— 只写「仍在冷却」的版本会把它整条丢掉")
+    h10 = SourceHealth(path=hp5)                 # ← 重启
+    check("冷掉的条目不许进内存账本（否则诊断面板冒出幽灵记录）",
+          "coldA" not in h10.snapshot(), str(h10.snapshot()))
+    d9 = h10.note_fail("coldA", TimeoutError("t"))
+    check(f"★ 重启后接着上一轮退避（第 2 轮应 {COOLDOWN[KIND_NET] * 2:.0f}s，"
+          f"实际 {d9:.0f}s）", abs(d9 - COOLDOWN[KIND_NET] * 2) < 1,
+          "只写「仍在冷却」的版本会退回 900s —— 退避等于没写")
+
+    # (b) 手写一份「已经挂到第 3 轮、且冷却早过了」的盘，验半开试探也没丢
+    hp6 = tmpdir / "cold-deep.json"
+    past = time.time() - 120
+    hp6.write_text(_json.dumps({
+        "deep": {"fails": 0, "until": past, "kind": KIND_NET, "why": "TimeoutError: t",
+                 "streak": 2, "cd": COOLDOWN[KIND_NET] * 2, "at": past},
+        "ancient": {"fails": 0, "until": past, "kind": KIND_NET, "why": "x",
+                    "streak": 5, "cd": 28800.0,
+                    "at": time.time() - FORGET_AFTER - 60},
+    }, ensure_ascii=False), encoding="utf-8")
+    h11 = SourceHealth(path=hp6)
+    check("过期条目照样放行（失败史 ≠ 熔断中）", h11.allows("deep"))
+    d10 = h11.note_fail("deep", TimeoutError("t"))
+    check(f"★ 一次失败就重新熔断（半开试探没丢）且接着第 3 轮（{d10:.0f}s）",
+          abs(d10 - COOLDOWN[KIND_NET] * 4) < 1,
+          f"实际 {d10:.0f}s；攒够两次才熔断或退回 900s 都算没接上")
+    check("★ 熔断后立刻生效（不是「挂了一次但仍放行」）", not h11.allows("deep"))
+    d11 = h11.note_fail("ancient", TimeoutError("t"))
+    check("七天前的死因不该决定今天的冷却（彻底忘掉，从头攒）", abs(d11) < 1,
+          f"实际 {d11:.0f}s —— 记得太牢会把修好的站按 8 小时拉黑")
+
+    # (c) 反向：一答话就得把失败史一起清掉（抖动型的源不能被一路按封顶）
+    hp7 = tmpdir / "cold-flap.json"
+    hp7.write_text(_json.dumps({"flap": {
+        "fails": 0, "until": past, "kind": KIND_NET, "why": "w",
+        "streak": 4, "cd": 7200.0, "at": past}}, ensure_ascii=False),
+        encoding="utf-8")
+    h12 = SourceHealth(path=hp7)
+    h12.allows("flap")
+    h12.note_ok("flap")
+    check("答话一次后盘上不留残影（失败史已清）",
+          "flap" not in _json.loads(hp7.read_text(encoding="utf-8")))
+    d12 = trip_once(h12, "flap")
+    check(f"★ 答话一次就把失败史清掉（再挂回到 {COOLDOWN[KIND_NET]:.0f}s，不是封顶）",
+          abs(d12 - COOLDOWN[KIND_NET]) < 1, f"实际 {d12:.0f}s")
+
+
     # 引擎那行日志必须用**真实**时长：原来写死「熔断 15 分钟」，
     # 加了退避之后那句话会开始撒谎（第二次是 30 分钟）。
     eng_src = (ROOT / "app" / "engine.py").read_text(encoding="utf-8")

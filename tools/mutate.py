@@ -1521,6 +1521,65 @@ MUTATIONS: list[Mutation] = [
              '        if not (site.get("search_tpl") or "").strip():\n            continue',
              '        if False:\n            continue',
              REGISTRY_TEST),
+
+    # ---------------- 两字书名的确切命中不许放宽（2026-10-26 真机复盘）------
+    # ⚠ 线上实测：搜《兄弟》，「嘿兄弟」「兄弟盟」都被判 tightness=1.0
+    #   （容差写作 `max(1, len(kw)//3)`，两字书名也留了"多一个字"的余地）。
+    #   两条都不是余华那本，却因为这判据成了"确切命中" → `rank()` 只留它们
+    #   （其余候选全丢）、`engine` 的收手门也被喂饱 → 1.7s 收手，正主被弃，
+    #   而 `search.done` 上写着 `确切=2` 看着像成功。不报错，只骗人。
+    Mutation("tight", "两字书名的容差退回「至少 1 字」（嘿兄弟/兄弟盟冒充正主）",
+             RELEVANCE,
+             "    allow = 0 if len(kw) <= 2 else max(1, len(kw) // 3)",
+             "    allow = max(1, len(kw) // 3)",
+             REL_TEST),
+    Mutation("tight", "两字书名也要吃「至少 1 字」的容差（同一个洞换个写法）",
+             RELEVANCE,
+             "    allow = 0 if len(kw) <= 2 else max(1, len(kw) // 3)",
+             "    allow = max(0, len(kw) // 3) or 1",
+             REL_TEST),
+    Mutation("tight", "确切命中不看长度、只要包含就算（连《三体诗》都成《三体》）",
+             RELEVANCE,
+             "    if extra <= allow:\n        return 1.0",
+             "    if True:\n        return 1.0",
+             REL_TEST),
+
+    # ---------------- 冷掉的账也要记得（2026-10-26 复盘）------
+    # ⚠ 线上实测（三天，每次 ship 之后都倒退）：
+    #     10-23 09:06 熔断 15 分钟 → 10:06 又 15 分钟
+    #     10-24 09:04 熔断 30 分钟 → 09:51 退回 15 分钟
+    #     10-25 09:07 熔断 30 分钟 → 09:50 退回 15 分钟（09:48:26 重启过）
+    #   根因：落盘/读回都只认「仍在冷却中」的条目，冷却**到期那一刻**条目
+    #   连 `streak` 一起消失 → 退避（15m→30m→60m…）永远涨不上去，
+    #   死源每小时被放回名单试 4 次，每次都让一次真实搜索陪它等满 6 秒。
+    #   两条突变分别打「写」和「读」两侧 —— 只修一侧 = 半修。
+    Mutation("cold", "落盘只写仍在冷却的条目（到期即整条丢，streak 跟着没）",
+             HEALTH_PY,
+             "                    if int(v.get(\"streak\") or 0) <= 0:\n                        continue",
+             "                    if True:\n                        continue",
+             HEALTH_TEST),
+    Mutation("cold", "读回时把到期的条目彻底忘掉（重启后从 15 分钟重新开始）",
+             HEALTH_PY,
+             "                    if streak > 0 and (now - at) <= FORGET_AFTER:",
+             "                    if False:",
+             HEALTH_TEST),
+    Mutation("cold", "重挂时不接上一轮的 streak（半开试探也一并丢掉）",
+             HEALTH_PY,
+             "                     \"trial\": bool(mem), \"at\": 0.0,\n"
+             "                     \"streak\": int((mem or {}).get(\"streak\") or 0),",
+             "                     \"trial\": False, \"at\": 0.0,\n"
+             "                     \"streak\": 0,",
+             HEALTH_TEST),
+    Mutation("cold", "答话只清账本、不清失败史（修好的站下次一挂就按封顶 8 小时）",
+             HEALTH_PY,
+             "            if self._memory.pop(name, None) is not None:\n                had = True",
+             "            if False:\n                had = True",
+             HEALTH_TEST),
+    Mutation("cold", "失败史永不过期（一周前的死因决定今天的冷却）",
+             HEALTH_PY,
+             "                    if streak > 0 and (now - at) <= FORGET_AFTER:",
+             "                    if streak > 0:",
+             HEALTH_TEST),
 ]
 
 
