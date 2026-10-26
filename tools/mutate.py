@@ -870,10 +870,28 @@ MUTATIONS: list[Mutation] = [
     #   这个组合在那边消失了 —— 突变实施后测试仍全绿 = 断言失去牙。
     #   现在在 tools/test_search_recall.py 场景③ 里重建了这个组合
     #   （撞满 0.7s 软截止、kept=12、tight=0），靶点改指过去。
-    Mutation("源账", "「卡满」判据退回成 hit_deadline（有结果也报卡满）",
+    #   ⚠ 2026-10-26 换靶 + 加靶：判据从 `kept` 改成 `pushed`（弱匹配带会
+    #   出现 kept>0 而 pushed=0），原来的靶点字符串已经不存在，改成挂在
+    #   续行上；另外补两条，分别反证「退回 kept」和「用 kept 冒充 pushed」。
+    Mutation("源账", "「卡满」判据退回成只看 hit_deadline（有结果也报卡满）",
              ENGINE,
-             '        "卡满": "是" if (stats.get("hit_deadline") and not stats.get("kept")) else "否",',
-             '        "卡满": "是" if stats.get("hit_deadline") else "否",',
+             '                          and not stats.get("pushed")) else "否",',
+             '                          ) else "否",',
+             RECALL_TEST),
+    Mutation("源账", "「卡满」判据退回 kept（弱匹配带上空等满墙钟也被报成「否」）",
+             ENGINE,
+             '                          and not stats.get("pushed")) else "否",',
+             '                          and not stats.get("kept")) else "否",',
+             RECALL_TEST),
+    Mutation("源账", "推送数用最终候选数冒充（空等满墙钟那一类从此看不见）",
+             ENGINE,
+             '                "pushed": streamed,',
+             '                "pushed": len(results),',
+             RECALL_TEST),
+    Mutation("源账", "收手日志退回两态「仍无结果」（原始候选摆在眼前也这么说）",
+             ENGINE,
+             '                         (f"原始 {len(raw)} 条但没有一条够推送门槛"',
+             '                         ("仍无结果"',
              RECALL_TEST),
     Mutation("源账", "学站撞预算只报个数（不知道是哪几个站没学）",
              DISCOVERY,

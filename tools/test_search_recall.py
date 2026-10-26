@@ -47,6 +47,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import app.engine as E  # noqa: E402
+from app import relevance as R  # noqa: E402
 from app.models import BookResult  # noqa: E402
 from app.sourcehealth import HEALTH  # noqa: E402
 from app.sources import DISCOVER_SOURCE  # noqa: E402
@@ -84,6 +85,9 @@ class _Cap(logging.Handler):
 
 
 KW = "道诡异仙"
+# 「弱匹配」的样本：分落在 [28, 45) —— 会被 rank 留下、但够不上推送门槛。
+WEAK_TITLE = "诡仙录"
+WEAK_AUTHOR = "某人"
 # 这些标题**包含**关键词、打分也过门槛（STREAM_FLOOR=45），
 # 但 tightness=0（多出来的那截太长，见 relevance.tightness 的注释）——
 # 正是线上把「候选=4」伪装成"搜到了"的那类东西。
@@ -154,6 +158,27 @@ class _HangForever(Source):
     def search(self, keyword):
         time.sleep(type(self).sleep_s)
         return []
+
+    def get_chapters(self, url): return []
+    def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+
+class _WeakOnly(Source):
+    """只给一条「弱匹配」：能被 rank 留下（>=28 分），但够不上推送门槛（<45）。
+
+    `诡仙录` 对关键词 `道诡异仙` 就是这个位置 —— 四个字里命中后半截，
+    分数落在 30 出头。它**不是**这本书，但也不至于被当成垃圾扔掉，
+    于是形成那条真实存在的缝：最后列表里有它、过程中一条都不推。
+    """
+
+    name = "recall_weak"
+    display = "只给弱匹配"
+    priority = 5
+    enabled = True
+
+    def search(self, keyword):
+        return [BookResult(title=WEAK_TITLE, url="http://weak/1", source=self.name,
+                           source_display=self.display, author=WEAK_AUTHOR)]
 
     def get_chapters(self, url): return []
     def fetch(self, *a, **k): raise AssertionError("不该走到这")
@@ -306,19 +331,22 @@ def main() -> int:
         check("这一轮确切命中数为 0（口径没算错）",
               stC.get("tight_hits") == 0 and not any(r.tight for r in resC),
               f"tight_hits={stC.get('tight_hits')}")
-        # ---- 「卡满」判据用的是 kept，不是耗时 ----
-        # 这个场景是「撞满墙钟 + 有结果」的**唯一**现役样本：
+        # ---- 「卡满」判据用的是 pushed（真的推给用户过），不是耗时 ----
+        # 这个场景是「撞满墙钟 + 有推送」的**唯一**现役样本：
         # 2026-10-24 给收手加了"到 SEARCH_MIN_WAIT 就醒来重判"之后，
         # 有确切命中的那些轮子不再靠撞满墙钟收手，于是这个组合只在这里出现。
-        # 判据要卡死在 `hit_deadline 且 kept`，不能退回只看 `hit_deadline` ——
+        # 判据要卡死在 `hit_deadline 且 pushed`，不能退回只看 `hit_deadline` ——
         # 那会把"结果有了、只是还想再等等"的正常提速误报成"慢到没结果"。
+        # ⚠ 2026-10-26：这里原来是 `kept`，改成 `pushed`。差额见场景⑥ ——
+        #   弱匹配带上 kept>0 而 pushed=0，用 kept 判会把"空等满墙钟"漏掉。
         check("这一轮确实撞满了墙钟（否则下面那条判据是空转）",
               stC.get("hit_deadline") is True,
               f"hit_deadline={stC.get('hit_deadline')} 耗时={elC:.2f}s")
-        check("★ 撞满墙钟但**有**结果 → 不许报「卡满」（判据是 kept，不是耗时）",
-              E.source_ledger(stC)["卡满"] == "否" and stC.get("kept", 0) > 0,
-              f"卡满={E.source_ledger(stC)['卡满']} kept={stC.get('kept')} "
-              f"hit_deadline={stC.get('hit_deadline')}")
+        check("★ 撞满墙钟但**推过**结果 → 不许报「卡满」"
+              "（判据是 pushed，不是耗时）",
+              E.source_ledger(stC)["卡满"] == "否" and stC.get("pushed", 0) > 0,
+              f"卡满={E.source_ledger(stC)['卡满']} pushed={stC.get('pushed')} "
+              f"kept={stC.get('kept')} hit_deadline={stC.get('hit_deadline')}")
 
         # ------------------------------------------------------------
         print("\n—— ④ 确切命中数必须是**量出来的**，不是常量 ——")
@@ -366,6 +394,50 @@ def main() -> int:
               stE.get("tight_hits") == sum(1 for r in resE if r.tight)
               and stE.get("tight_hits") <= stE.get("kept", 0),
               f"确切={stE.get('tight_hits')} 候选={stE.get('kept')}")
+
+        # ------------------------------------------------------------
+        print("\n—— ⑥ 弱匹配带：kept>0、但全程一条都没推给用户（欠账①） ——")
+        # 缝在哪里：推送门槛 STREAM_FLOOR=45，而 rank 的显示门槛在 best<70 时
+        # 只有 28 —— 于是 28~45 分的候选「最后列表里有、过程中一条都不推」。
+        # 旧 `卡满` 判据看的是 `kept`，这种轮子会报「否」：
+        #   用户对着「正在从 N 个来源里找」空等满整个墙钟，
+        #   而日报里它和「有结果、只是收手时还有源没回来」长得一模一样。
+        # ⚠ 这里**不判耗时**：判据是账（pushed=0 + hit_deadline）与文案，
+        #   机器再忙也不会让 `pushed` 从 0 变 1。
+        _s_weak = R.score(BookResult(title=WEAK_TITLE, url="http://weak/1",
+                                     source="recall_weak", source_display="只给弱匹配",
+                                     author=WEAK_AUTHOR), KW)
+        check("前置：弱样本的分落在「会被留下、但不够推送」的带子里"
+              f"（28 <= {_s_weak:.1f} < {E.STREAM_FLOOR:.0f}）",
+              28.0 <= _s_weak < E.STREAM_FLOOR,
+              f"分={_s_weak:.1f} —— 不在这条带子里的话，本组测的不是那个缝")
+        _o_hard = E.SEARCH_HARD_DEADLINE
+        E.SEARCH_HARD_DEADLINE = 0.6
+        HEALTH.reset()
+        capF = _Cap()
+        lg.addHandler(capF)
+        stF: dict = {}
+        resF = E.Engine(sources=[_WeakOnly, _HangForever]).search(
+            KW, stats=stF, discover=False, probe=False, sample=False)
+        lg.removeHandler(capF)
+        E.SEARCH_HARD_DEADLINE = _o_hard
+        check("前置：候选确实被留下了，且确实撞满了墙钟"
+              "（否则下面两条是空转）",
+              stF.get("kept", 0) >= 1 and stF.get("hit_deadline") is True,
+              f"候选={stF.get('kept')} hit_deadline={stF.get('hit_deadline')} "
+              f"结果={[r.title for r in resF][:3]}")
+        check("★ 整轮一条都没推给前端（pushed=0）—— 这就是「空等」的定义",
+              stF.get("pushed") == 0,
+              f"pushed={stF.get('pushed')} —— 若 >0 说明弱样本过了推送门槛，"
+              "本组测的就不是那条缝了")
+        check("★ 撞满墙钟 + 一条都没推 → 「卡满」必须是「是」"
+              "（旧口径看 kept，会误报「否」）",
+              E.source_ledger(stF)["卡满"] == "是",
+              f"卡满={E.source_ledger(stF)['卡满']} 候选={stF.get('kept')} "
+              f"pushed={stF.get('pushed')}")
+        check("★ 收手日志不许说「仍无结果」——原始候选就摆在眼前",
+              "仍无结果" not in capF.text() and "够推送门槛" in capF.text(),
+              capF.text()[-260:] or "（没抓到收手日志，说明这条判据空转）")
     finally:
         lg.removeHandler(h)
         lg.setLevel(old_level)
