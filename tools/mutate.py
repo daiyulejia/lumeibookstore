@@ -1459,19 +1459,30 @@ MUTATIONS: list[Mutation] = [
              HEALTH_TEST),
     Mutation("backoff", "熔断状态不落盘（每次重启都忘光，重启后第一搜又陪坏源等满一轮）",
              HEALTH_PY,
-             "    def _save(self) -> None:\n"
-             "        \"\"\"把**仍在冷却中**的条目写盘（原子替换）。失败不抛。\"\"\"\n"
+             # ⚠ 锚点别挂在 docstring 上：2026-10-26 改了 `_save` 的说明文字，
+             #   旧靶点（连 docstring 一起匹配）当场脱节 —— 而 ship 的静态自检
+             #   会因此把「有 7 个突变脱节」报成基线红。靶点要挂在**会变的行为**
+             #   上（这里：`_save` 的前两行守卫 + 紧接着的第一句实现）。
              "        if not self._path:\n"
-             "            return",
-             "    def _save(self) -> None:\n"
-             "        \"\"\"把**仍在冷却中**的条目写盘（原子替换）。失败不抛。\"\"\"\n"
+             "            return\n"
+             "        now = time.time()\n"
+             "        with self._lock:\n"
+             "            data: dict[str, Any] = {}",
              "        if True:\n"
-             "            return",
+             "            return\n"
+             "        now = time.time()\n"
+             "        with self._lock:\n"
+             "            data: dict[str, Any] = {}",
              HEALTH_TEST),
     Mutation("backoff", "读回落盘时不校验到期（旧文件里的过期条目被塞进内存账本）",
              HEALTH_PY,
-             "                if until <= now:",
-             "                if until <= 0:",
+             # ⚠ 必须带上下一行的注释来定位：2026-10-26 起 `if until <= now:`
+             #   在读回（`_ensure_loaded`）和落盘（`_save`）各有一处，
+             #   只写那一行会**多处命中**，反证就会改错地方（test_ship_chain 会红）。
+             "                if until <= now:\n"
+             "                    # 「丢」不等于「忘」：",
+             "                if until <= 0:\n"
+             "                    # 「丢」不等于「忘」：",
              HEALTH_TEST),
 
     # ---------------- 超时 ≠ 站点挂了（tools/test_registry_source.py）----------------
