@@ -154,10 +154,89 @@ class FakeWeb:
         return [BookResult(title=KW, author="桑沃", source=self.name,
                            url="http://web/1")]
 
+    # 联网换来的候选**也会被探测**（`probe=True` 时走 probe_all）——
+    # 早先这些假源没有 probe 接口，于是"本地全灭 → 联网 → 探测"这条
+    # 真实路径在任何测试里都没被跑过，第一条真机 bug 才发现。
+    def probe(self, r):
+        return {"ok": True, "chapters": 5, "ms": 1, "note": ""}
 
-def run_case(sources, discover=True, stats=None, should_stop=None):
+    def probe_limit(self):
+        return 4
+
+    def note_probe(self, ms):
+        pass
+
+
+class DeadSrc:
+    """搜得到书名、但**打不开目录**的源 —— 线上 registry 的原样复制。
+
+    2026-10-27 线上实测（《我的阿勒泰》）：
+      `候选=1 成书=1 确切=1 可读=0 联网发现=0 耗时ms=2041`
+      唯一候选是 https://www.bqg5555.cc/xs/268912/，探测回「这个地址不是
+      目录页（没解析到章节列表）」，可用=false、0 章。
+
+    它的可怕之处在于**它是确切命中**（tightness=1.0、score=100）：
+    收手门被它喂饱（1.5s 就收），`hit_deadline` 永远是 False、
+    `done_count` 也追不上 total → `exhausted` 永远是 False →
+    「有结果但一条可读都没有」那条联网分支一次都进不去。
+    """
+    name = "dead"
+    display = "死链源"
+    priority = 4
+    lazy = False
+    enabled = True
+
+    def set_log(self, cb):
+        pass
+
+    def search(self, kw):
+        return [BookResult(title=KW, author="桑沃", source=self.name,
+                           url="http://dead/1")]
+
+    def probe(self, r):
+        return {"ok": False, "chapters": 0, "ms": 1,
+                "note": "这个地址不是目录页（没解析到章节列表）"}
+
+    def probe_limit(self):
+        return 4
+
+    def note_probe(self, ms):
+        pass
+
+
+class AliveSrc:
+    """和 DeadSrc 一模一样，但**打得开** —— 反向断言用。
+
+    没有它，「全部不可读就联网」这条判据可以被改写成「有结果就联网」
+    而测试照样绿：那会让每一次搜索都白多花 3~10 秒。
+    """
+    name = "alive"
+    display = "能读的源"
+    priority = 4
+    lazy = False
+    enabled = True
+
+    def set_log(self, cb):
+        pass
+
+    def search(self, kw):
+        return [BookResult(title=KW, author="桑沃", source=self.name,
+                           url="http://alive/1")]
+
+    def probe(self, r):
+        return {"ok": True, "chapters": 40, "ms": 1, "note": ""}
+
+    def probe_limit(self):
+        return 4
+
+    def note_probe(self, ms):
+        pass
+
+
+def run_case(sources, discover=True, stats=None, should_stop=None,
+             probe=False, sample=False):
     eng = E.Engine(sources=sources)
-    return eng.search(KW, probe=False, sample=False, discover=discover,
+    return eng.search(KW, probe=probe, sample=sample, discover=discover,
                       stats=stats, should_stop=should_stop)
 
 
@@ -363,6 +442,71 @@ def _run() -> int:
         ok("断开落在「扇出之后、联网之前」，联网兜底被拦下（不白烧一次对外搜索）")
     else:
         bad(f"断开后仍然联网搜了 {web4.calls} 次 —— 这一段的收手检查没接上")
+
+    # --------------------------------------------------------------
+    section("7. 有结果但**一条可读的都没有** → 必须联网（哪怕没撞满墙钟）")
+    # 2026-10-27《我的阿勒泰》线上原样：
+    #   `候选=1 成书=1 确切=1 可读=0 联网发现=0 耗时ms=2041`
+    #   唯一候选是 bqg5555 的 /xs/268912/，探测回「这个地址不是目录页」。
+    #   它是**确切命中**（100 分、tightness=1.0），于是收手门 1.5s 就被喂饱 →
+    #   hit_deadline=False、done_count 追不上 total → exhausted=False →
+    #   「有结果但没有一条可读 → 出去找」这条分支**一次都进不去**。
+    #   用户拿到一张点不开的卡片，引擎自己以为"本地有结果"。
+    web5 = FakeWeb()
+    st10: dict = {}
+    res10 = run_case([DeadSrc(), HangSrc(), web5], discover=True, stats=st10,
+                     probe=True)
+    if web5.calls >= 1:
+        ok(f"本地只有死链时联网兜底被触发（web 被调 {web5.calls} 次）")
+    else:
+        bad("本地交不出任何可读结果，联网兜底却没跑 —— 用户只会看到一张点不开的卡片")
+    if st10.get("web_skip") == "":
+        ok("stats.web_skip 为空串 = 真的联网了（埋点与事实一致）")
+    else:
+        bad(f"联网其实跑了，web_skip={st10.get('web_skip')!r} —— 埋点在说反话")
+    if st10.get("hit_deadline") is False:
+        ok("这一轮确实是**提前收手**（不是撞满墙钟）—— 正是原来漏掉的那种情形")
+    else:
+        bad("构造失败：这一轮撞满了墙钟，测不到「提前收手也要联网」")
+    if res10:
+        ok(f"最终仍返回 {len(res10)} 条（联网结果并进原结果，不丢）")
+    else:
+        bad("最终 0 条 —— 联网后反而把原有候选丢了")
+
+    # 反向断言：本地有**能读**的结果时，一条都不许联网。
+    # 少了这条，上面那条判据可以被改写成「有结果就联网」（每搜一次
+    # 白多花 3~10 秒）而测试照样全绿。
+    web6 = FakeWeb()
+    st11: dict = {}
+    run_case([AliveSrc(), web6], discover=True, stats=st11, probe=True)
+    if web6.calls == 0:
+        ok("本地有可读结果 → 没联网（没有为了「更全」白烧一次对外搜索）")
+    else:
+        bad(f"本地明明有一条可读的，却联网了 {web6.calls} 次 —— 兜底变成了常规路径")
+    if st11.get("web_skip") == "not_needed":
+        ok("web_skip=not_needed（「不需要」与「没找到」在日志里分得开）")
+    else:
+        bad(f"web_skip={st11.get('web_skip')!r}，应为 not_needed")
+
+    # 反向断言 ②：关掉探测时 available 全是 None（= 没验过），
+    # 不能照字面判成「全打不开」 —— 否则每一次 probe=0 的搜索都会去联网。
+    web7 = FakeWeb()
+    st12: dict = {}
+    run_case([DeadSrc(), web7], discover=True, stats=st12, probe=False)
+    if web7.calls == 0:
+        ok("probe=0（未验证）时不联网 —— 没有把「没验过」当成「打不开」")
+    else:
+        bad(f"probe=0 却联网了 {web7.calls} 次 —— 把「未验证」判成了「全打不开」")
+
+    # 反向断言 ③：该联网但调用方关了 discover → 原因必须如实记成 disabled。
+    web8 = FakeWeb()
+    st13: dict = {}
+    run_case([DeadSrc(), HangSrc(), web8], discover=False, stats=st13, probe=True)
+    if web8.calls == 0 and st13.get("web_skip") == "disabled":
+        ok("discover=False 时不联网，且 web_skip=disabled（不冒充「没找到」）")
+    else:
+        bad(f"discover=False 时 web 被调 {web8.calls} 次、"
+            f"web_skip={st13.get('web_skip')!r} —— 应为 0 次 + disabled")
 
     print("\n" + "=" * 62)
     print(f"通过 {ok_n} · 失败 {bad_n}")

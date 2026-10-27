@@ -1006,6 +1006,11 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           推送=int(stats.get("pushed", 0)),
                           可读=sum(1 for r in results if r.available),
                           联网发现=stats.get("discovered", 0),
+                          # `联网发现=0` 同时对应四件处置完全不同的事（跑了没找到 /
+                          # 并行已跑 / 预算没了 / 压根不需要）。2026-10-27《我的阿勒泰》
+                          # 就是被这个歧义盖住的：本地只有一条点不开的候选，日志却
+                          # 只写"联网发现=0"，看不出联网根本没被调用。
+                          联网=stats.get("web_skip") or "跑",
                           # 这一轮是不是被"客户端断开"打断收手的。
                           # 打出来给断连止损测试当**确定性判据** ——
                           # 它不像耗时那样随源站快慢漂移（实测漂 5 倍），

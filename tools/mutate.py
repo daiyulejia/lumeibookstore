@@ -928,6 +928,26 @@ MUTATIONS: list[Mutation] = [
              "                web_skipped_budget = False",
              BUDGET_TEST),
 
+    # ------- 联网兜底的门：有结果但一条可读都没有（2026-10-27） -------
+    # 线上原样（《我的阿勒泰》）：`候选=1 成书=1 确切=1 可读=0 联网发现=0`。
+    # 唯一候选是确切命中（100 分）但是个死链，收手门 1.5s 就被它喂饱 →
+    # exhausted 恒假 → 「本地交不出能读的 → 出去找」这条分支一次都进不去。
+    Mutation("联网门", "把「全不可读」这一类的门票退回 exhausted（死链挡住联网兜底）",
+             ENGINE,
+             "            and not any(r.available for r in results))",
+             "            and False)",
+             FALLBACK_TEST),
+    Mutation("联网门", "「有没有验过」不认 probe（probe=0 时把未验证当成全打不开）",
+             ENGINE,
+             "            bool(results) and bool(probe)",
+             "            bool(results)",
+             FALLBACK_TEST),
+    Mutation("联网门", "该联网却没跑时不记原因（web_skip 恒空 → 与「跑过」同形）",
+             ENGINE,
+             '        web_skip = "not_needed" if not need_web else ""',
+             '        web_skip = ""',
+             FALLBACK_TEST),
+
     # ------- 召回：收手判据不许被噪声骗（2026-10-24） -------
     # 线上真机复现：搜《兄弟》扇出 1.76s 收手、候选 4 条全是「嘿兄弟/兄弟盟」，
     # 而 kunnu8 恰好在 1.76s 带着正主《兄弟》回来 —— 被弃。

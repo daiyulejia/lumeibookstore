@@ -945,13 +945,44 @@ class Engine:
         # 本来也不会走到联网分支。
         exhausted = (done_count >= len(futs)) or hit_deadline
         need_web = (not results) and exhausted
-        if results and probe and not any(r.available for r in results):
-            need_web = exhausted
+        # ---- 「有结果、但一条可读的都没有」这一类的门票**不能**是 exhausted ----
+        # 2026-10-27 线上实测（《我的阿勒泰》）：
+        #   search.done 候选=1 成书=1 确切=1 可读=0 联网发现=0 耗时ms=2041
+        #   唯一候选是 registry 的 https://www.bqg5555.cc/xs/268912/，探测回
+        #   「这个地址不是目录页（没解析到章节列表）」→ 可用=false、0 章。
+        #   它偏偏是**确切命中**（tightness=1.0、score=100），于是收手门在 1.5s
+        #   就被喂饱：hit_deadline=False、done_count 4 < 5 → exhausted=False →
+        #   这条分支（原本就是为"搜到的全打不开"写的）**一次都进不去**。
+        #   用户拿到一张点不开的卡片，而引擎以为自己"本地有结果"。
+        #
+        # 为什么这一类的门票可以低于 `exhausted`：
+        #   `exhausted` 回答的是"我们等够了没有"，它针对**零结果** ——
+        #   那种情况下没回来的慢源还可能翻盘，所以必须等满。
+        #   而走到这一行时扇出**已经结束**：没回来的源结果本轮一律不会再用
+        #   （上面 finally 已记账 + shutdown）。也就是说"提前收手"和
+        #   "撞满墙钟"对本地可读产出没有区别 —— 两种情况下本地都交不出
+        #   能读的东西，联网是唯一剩下的路。拿 `exhausted` 当门票，等于用
+        #   "等够了没"去回答"本地还能不能救"，问错了问题。
+        #
+        # 只在 `probe` 开着时成立：关掉探测时 available 全是 None（没验过），
+        # 照字面判会把每一次搜索都当成"全打不开"。
+        need_web = need_web or (
+            bool(results) and bool(probe)
+            and not any(r.available for r in results))
         # 并行已经跑过就别再串行跑一次（web_extra 已在 raw 里，rank 时合并了）
         already_web = web_thread is not None
         # 「本地全灭、本该联网，但总预算已经用完了」——**必须记下来**：
         # 否则"联网也没找到"和"联网压根没跑"在日志里一模一样。
         web_skipped_budget = False
+        # ---- 「这轮为什么没联网」也要留字段 ----
+        # 线上 `联网发现=0` 同时对应四件处置完全不同的事：
+        #   not_needed 本地有能读的结果（好事，不必联网）
+        #   preempt    并行那路已经跑过（不是没跑）
+        #   budget     该跑，预算没了
+        #   disabled   调用方关掉了 discover
+        # 2026-10-27《我的阿勒泰》就是被"not_needed"的假象盖住的：
+        # 它本地交不出任何可读结果，日志里却只有一句 `联网发现=0`。
+        web_skip = "not_needed" if not need_web else ""
         if discover and need_web and not already_web:
             web = self._find_source(DISCOVER_SOURCE)
             # 联网兜底也是**串行**加在后面的，同样得看总预算 ——
@@ -994,13 +1025,18 @@ class Engine:
                 #   真的不跑了，并把这件事记进 stats（`web_skipped_budget`），
                 #   让日报能看见「这一轮本地全灭而且联网没跑」。
                 web_skipped_budget = True
+                web_skip = "budget"
                 logger.info(
                     "跳过联网兜底：总预算 %.0fs 已用完（已耗 %.1fs）—— 本轮不联网，"
                     "本地结果照常返回",
                     DISCOVER_TOTAL_BUDGET, time.time() - t_start)
+            elif web is None:
+                # 该联网、预算也有，但装配里压根没有联网来源 —— 这不是"没找到"。
+                web_skip = "no_source"
         elif discover and need_web and already_web:
             # 并行已发起、本地仍无结果 → 给 web_extra 探测 + 重排
             # （上面 raw 已 extend，这里 results=rank(raw) 已包含 web_extra）
+            web_skip = "preempt"
             if results and probe:
                 self.probe_all(
                     results, on_verified=on_verified, top=probe_top,
@@ -1008,6 +1044,11 @@ class Engine:
                     budget=budget_slice(t_start, PROBE_BUDGET,
                                         DISCOVER_TOTAL_BUDGET))
                 results = self.refine(results, keyword)
+        elif need_web:
+            # 该联网、但调用方把 discover 关了 —— 记清楚原因。
+            # 不记的话，它和"联网了但没找到"在 search.done 里一模一样，
+            # 复盘时会去查搜索引擎，而真正的原因是一个开关。
+            web_skip = "disabled"
 
         if sample and results:
             sb = budget_slice(t_start, SAMPLE_BUDGET)
@@ -1134,6 +1175,9 @@ class Engine:
                 # 本地全灭、本该联网，但总预算已经用完 → 没有联网。
                 # 与「联网了但没找到」是两件处置相反的事，必须分开记。
                 "web_skipped_budget": bool(web_skipped_budget),
+                # 这轮**为什么**没联网（""=真的跑了）。见上面 web_skip 的注释：
+                # not_needed / preempt / budget / no_source / disabled。
+                "web_skip": web_skip,
                 # 断开收手是否真的触发了（供真机测试断言）。
                 # ⚠ 用它而不是"耗时是不是更短"来验证收手 —— 耗时受源站快慢
                 #   影响，波动能有 5 倍（实测 2.3s ~ 25.6s），
