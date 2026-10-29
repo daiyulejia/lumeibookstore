@@ -778,7 +778,8 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
         return True
 
 
-def note_search_result(host: str, *, hits: int, raw: int) -> None:
+def note_search_result(host: str, *, hits: int, raw: int,
+                       empty_page: bool = False) -> None:
     """记一次「拿关键词去这个站搜」的**真实产出**（只由 `_search_one` 调）。
 
     参数是两个不同层次的数量，**不能合成一个**：
@@ -793,6 +794,19 @@ def note_search_result(host: str, *, hits: int, raw: int) -> None:
       表现是 15 个「可搜源」里 7 个对任何关键词都 0 条，而库里看不出来区别。
       分开之后 `search_shape`（②）才有资格当「这站算不算可搜源」的判据，
       `search_miss`（①）**永远不参与**任何淘汰 —— "没这本书"不是站的错。
+
+    ⚠ `empty_page`（2026-10-29 补，线上实证）：`raw == 0` 还有**第三种**情况 ——
+      页面确实是搜索页（它回了"没有找到 xx"这种空结果页），只是这本书它没有。
+      空结果页里一条书链接都没有，于是 `raw == 0`，于是被算成"打开的不是搜索页"，
+      连记 3 次 → **模板被作废**。线上当天实测：夜间刚学到的 8 个源
+      （hbsjob / m.kudushu / gashuw / itiandixs / jcxs / mingchaonaxieshier /
+      xizids / xuanhuanbiquge）在一次复盘探针里全部 `shape=3`、模板清空 ——
+      **22 个可搜源掉到 14 个**，而它们唯一的"错"是被拿去搜了几本冷门书。
+      用户搜冷门书就会触发同一件事：搜三本冷门书，源池少三分之一。
+      所以 `empty_page=True` 时按 `search_miss` 记账、**绝不碰 `search_shape`**。
+      判据在 `registry_source._looks_like_empty_result()`（页面里有没有空态文案 /
+      有没有回显这次的关键词），"我判不出来"一律当 `search_shape` 不动 ——
+      宁可留一个坏模板（只是白打一次请求），也别把好模板作废（召回直接消失）。
 
     另一个方向也要清账：**只要搜出过东西，`search_shape` 就归零**。
     站点会临时拦爬虫、会偶发 403，一次两次形态失败不该累积成死刑；
@@ -810,7 +824,7 @@ def note_search_result(host: str, *, hits: int, raw: int) -> None:
             cur["search_hit"] = int(cur.get("search_hit") or 0) + 1
             cur["search_shape"] = 0
             cur["search_last"] = _now()
-        elif raw <= 0:
+        elif raw <= 0 and not empty_page:
             cur["search_shape"] = int(cur.get("search_shape") or 0) + 1
         else:
             cur["search_miss"] = int(cur.get("search_miss") or 0) + 1

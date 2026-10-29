@@ -1629,6 +1629,41 @@ MUTATIONS: list[Mutation] = [
              "    return long_terms",
              REGSRC_TEST),
 
+    # ---------------- 空结果页 ≠ 模板坏了（2026-10-29 复盘）------
+    # 线上实测：夜间刚学到的 8 个源在一次复盘探针里**全部** shape=3、模板被清空
+    # （可搜源 22 → 14）。它们唯一的"错"是被拿去搜了几本冷门书 ——
+    # 站上没这本书时搜索页回的是「没有找到 xx」空结果页，里一条书链接都没有，
+    # 于是 raw=0，于是被算成"打开的不是搜索页"，连记 3 次就作废模板。
+    # 用户搜三本冷门书 = 源池少三分之一，而且全程不报错。
+    # 这组要证明的是：① 空结果页不再被算形态失败；② 真的"不是搜索页"仍然会死；
+    # ③ 两条证据（空态文案 / 关键词回显）各自都真的接上了。
+    Mutation("空结果页", "空结果页照旧算「不是搜索页」（8 个源一天内被自己判死）",
+             REGSRC,
+             "        empty_page = (not items) and _looks_like_empty_result(html, keyword)",
+             "        empty_page = False",
+             REGSRC_TEST),
+    Mutation("空结果页", "判出来了却不告诉记账（等于没判）",
+             REGSRC,
+             "        registry.note_search_result(host, hits=len(out), raw=len(items),\n"
+             "                                    empty_page=empty_page)",
+             "        registry.note_search_result(host, hits=len(out), raw=len(items))",
+             REGSRC_TEST),
+    Mutation("空结果页", "记账函数不认 empty_page（raw=0 一律记形态失败）",
+             REGISTRY,
+             "        elif raw <= 0 and not empty_page:",
+             "        elif raw <= 0:",
+             REGISTRY_TEST),
+    Mutation("空结果页", "只认空态文案，不认关键词回显（POST 站的空结果页全判死）",
+             REGSRC,
+             "    return bool(kw) and kw in _norm(html[:20000])",
+             "    return False",
+             REGSRC_TEST),
+    Mutation("空结果页", "只认关键词回显，不认空态文案",
+             REGSRC,
+             "    if any(m in low for m in _EMPTY_MARKERS):",
+             "    if False:",
+             REGSRC_TEST),
+
     # ---------------- 冷掉的账也要记得（2026-10-26 复盘）------
     # ⚠ 线上实测（三天，每次 ship 之后都倒退）：
     #     10-23 09:06 熔断 15 分钟 → 10:06 又 15 分钟

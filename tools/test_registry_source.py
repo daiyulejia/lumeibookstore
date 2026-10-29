@@ -492,6 +492,96 @@ def main() -> int:
     check("kw_terms 一个词都留不下时回落原词（不能返回空表＝悄悄关掉过滤）",
           _kt("活") == ["活"], str(_kt("活")))
 
+    print("\n── 12. 空结果页 ≠ 模板坏了（2026-10-29 线上主线）──")
+    # 线上实测：夜间刚学到的 8 个源（hbsjob / m.kudushu / gashuw / itiandixs /
+    # jcxs / mingchaonaxieshier / xizids / xuanhuanbiquge）在一次复盘探针里
+    # **全部** shape=3、模板被清空 —— 22 个可搜源掉到 14 个。
+    # 它们唯一的"错"是被拿去搜了几本冷门书：站上没这本书时，搜索页回的是
+    # 「没有找到 xx」这种**空结果页**，里面一条书链接都没有 → raw=0 →
+    # 被算成"打开的不是搜索页" → 连记 3 次作废模板。
+    # 用户搜三本冷门书就触发同一件事：源池少三分之一，而且全程不报错。
+    #
+    # ⚠ 这条判据必须走**真的 `_search_one`**（不是直接调 note_search_result）：
+    #   要证明的是「页面长什么样」这一维真的被接上去了。只测记账函数的话，
+    #   把 `empty_page=` 那个实参删掉，测试照样绿。
+    empty_res = ("<html><head><title>搜索_不存在的书_某某小说网</title></head>"
+                 "<body><div class='search'><input value='不存在的书'>"
+                 "<p>抱歉，没有找到相关的小说，换个关键词试试</p></div></body></html>")
+    home_like = ("<html><head><title>某某小说网 - 最新章节</title></head>"
+                 "<body><ul><li>最新更新</li><li>排行榜</li>"
+                 "<li>分类：玄幻 都市 历史</li></ul></body></html>")
+    # 另一类空结果页：**没有**「没有找到」这种文案，但把关键词回显在搜索框/标题里
+    # （说明请求真的被当成一次搜索处理了）。这两条证据是"或"的关系，
+    # 各写一个用例，缺一个就会有判据被删掉而测试照绿。
+    echo_only = ("<html><head><title>站内搜索</title></head>"
+                 "<body><form><input name='s' value='不存在的书'></form>"
+                 "<div>换个词试试吧</div></body></html>")
+    # 第三条用例：只有空态文案、**不回显**关键词（有的站就是不回显）。
+    # ⚠ 这条不能省：上面 `empty_res` 同时满足两个证据，删掉任何一条判据
+    #   测试都照绿 —— 反证实测过，那一维就是"没牙"的。
+    marker_only = ("<html><head><title>站内搜索</title></head>"
+                   "<body><p>抱歉，没有找到相关的小说。</p></body></html>")
+
+    def empty_fetch(url, **kw):
+        host = url.split("/")[2]
+        if host.startswith("emptyres"):
+            return (empty_res, url)
+        if host.startswith("echoonly"):
+            return (echo_only, url)
+        if host.startswith("markeronly"):
+            return (marker_only, url)
+        return (home_like, url)
+
+    for _h in ("emptyres.com", "echoonly.com", "markeronly.com", "homelike.com"):
+        R.note_site(_h, ok=True, search_tpl="/?s={kw}")
+    R.flush()
+    RS.fetch_text = empty_fetch
+    try:
+        _one = RS.RegistrySource()._search_one
+        for _ in range(R.SEARCH_SHAPE_MAX + 2):
+            _one("emptyres.com", {"search_tpl": "/?s={kw}"}, "不存在的书")
+        _emp = R.known_site("emptyres.com")
+        for _ in range(R.SEARCH_SHAPE_MAX + 2):
+            _one("echoonly.com", {"search_tpl": "/?s={kw}"}, "不存在的书")
+        _echo = R.known_site("echoonly.com")
+        for _ in range(R.SEARCH_SHAPE_MAX + 2):
+            _one("markeronly.com", {"search_tpl": "/?s={kw}"}, "不存在的书")
+        _mark = R.known_site("markeronly.com")
+    finally:
+        RS.fetch_text = real_fetch
+
+    check("★ 空结果页记 search_miss、不记 search_shape",
+          int(_emp.get("search_miss") or 0) == R.SEARCH_SHAPE_MAX + 2
+          and int(_emp.get("search_shape") or 0) == 0,
+          f"miss={_emp.get('search_miss')} shape={_emp.get('search_shape')}")
+    check("★ 连搜 5 次冷门书，模板照样活着（这不是模板的错）",
+          bool((_emp.get("search_tpl") or "").strip()),
+          repr(_emp.get("search_tpl")))
+    check("★ 只回显关键词的空结果页也算搜索页（第二条证据单独成立）",
+          int(_echo.get("search_shape") or 0) == 0
+          and bool((_echo.get("search_tpl") or "").strip()),
+          f"shape={_echo.get('search_shape')} tpl={_echo.get('search_tpl')!r}")
+    check("★ 只有空态文案、不回显关键词的空结果页也算搜索页（第一条证据单独成立）",
+          int(_mark.get("search_shape") or 0) == 0
+          and bool((_mark.get("search_tpl") or "").strip()),
+          f"shape={_mark.get('search_shape')} tpl={_mark.get('search_tpl')!r}")
+
+    # 反向：真的"打开的不是搜索页"（没有空态文案、也不回显关键词）照样要死
+    RS.fetch_text = empty_fetch
+    try:
+        _one = RS.RegistrySource()._search_one
+        for _ in range(R.SEARCH_SHAPE_MAX):
+            _one("homelike.com", {"search_tpl": "/?s={kw}"}, "不存在的书")
+        _home = R.known_site("homelike.com")
+    finally:
+        RS.fetch_text = real_fetch
+
+    check("★ 不是搜索页（无空态文案/不回显关键词）照样攒满作废",
+          _home.get("search_tpl") == "", repr(_home.get("search_tpl")))
+    check("它的形态失败账记满了（排查时看得见）",
+          int(_home.get("search_shape") or 0) == R.SEARCH_SHAPE_MAX,
+          str(_home.get("search_shape")))
+
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")
     print("=" * 62)

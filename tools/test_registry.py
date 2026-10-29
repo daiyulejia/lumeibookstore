@@ -704,6 +704,44 @@ def main() -> int:
               R.known_site("reborn.example.com").get("search_tpl") == "",
               str(R.known_site("reborn.example.com").get("search_tpl")))
 
+        # ⑥ 空结果页：`raw == 0` 但**页面就是搜索页**（"没有找到《xx》"）
+        #    这是「站里没这本书」的第二种形态，绝不能算模板坏了。
+        #    2026-10-29 线上实测（本条是当天的主线）：
+        #      夜间刚学到的 8 个源（hbsjob / m.kudushu / gashuw / itiandixs /
+        #      jcxs / mingchaonaxieshier / xizids / xuanhuanbiquge）在一次
+        #      复盘探针里**全部** shape=3、模板被清空 —— 22 个可搜源掉到 14 个。
+        #      它们唯一的"错"是被拿去搜了几本冷门书：空结果页里一条书链接
+        #      都没有 → raw=0 → 被算成"打开的不是搜索页" → 连记 3 次作废。
+        #      用户搜三本冷门书就会触发同一件事：源池少三分之一，而且不报错。
+        _mk("empty.example.com")
+        for _ in range(R.SEARCH_SHAPE_MAX + 3):
+            R.note_search_result("empty.example.com", hits=0, raw=0,
+                                 empty_page=True)
+        emp = R.known_site("empty.example.com")
+        check("★ 空结果页记 search_miss，不记 search_shape",
+              int(emp.get("search_miss") or 0) == R.SEARCH_SHAPE_MAX + 3
+              and int(emp.get("search_shape") or 0) == 0, str(emp))
+        check("★ 连搜 6 次空结果页，模板照样活着（这不是模板的错）",
+              bool((emp.get("search_tpl") or "").strip()),
+              repr(emp.get("search_tpl")))
+        check("空结果页的站仍然算可搜源", R.is_searchable(emp), str(emp))
+
+        # 但 `empty_page` 不是"永远不作废"的挡箭牌：真正的"不是搜索页"
+        # （没有空态文案、也不回显关键词）照样要能攒到作废。
+        _mk("mixed.example.com")
+        for _ in range(4):
+            R.note_search_result("mixed.example.com", hits=0, raw=0,
+                                 empty_page=True)
+        mid = R.known_site("mixed.example.com")
+        check("前提：4 次空结果页之后形态失败账还是 0",
+              int(mid.get("search_shape") or 0) == 0, str(mid))
+        for _ in range(R.SEARCH_SHAPE_MAX):
+            R.note_search_result("mixed.example.com", hits=0, raw=0,
+                                 empty_page=False)
+        check("★ 真的「不是搜索页」照样攒满作废（empty_page 不许当免死金牌）",
+              R.known_site("mixed.example.com").get("search_tpl") == "",
+              repr(R.known_site("mixed.example.com").get("search_tpl")))
+
         print("—— 上面这些必须真落了盘（不只是内存） ——")
         R.flush()
         dsk = disk()["sites"]

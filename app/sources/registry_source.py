@@ -304,23 +304,34 @@ class RegistrySource(Source):
             logger.debug("自有来源 %s：%d 条候选不含《%s》，已丢弃",
                          host, dropped_offkw, kw_key)
 
+        # 一条书链接都抽不到时，先问一句"这是不是**空结果页**"（2026-10-29）。
+        # 空结果页（"没有找到《xx》"）也是搜索页 —— 它只是没有这本书。
+        # 不区分的话，搜几本冷门书就会把模板连记 3 次形态失败并作废：
+        # 线上实测一天之内 8 个刚学到的源被自己判死，可搜源 22 → 14。
+        empty_page = (not items) and _looks_like_empty_result(html, keyword)
+
         if out:
             registry.note_site(host, ok=True)
         elif items:
             # 结果页里**有**书链接，但过滤（导航词/长度）后一条不剩 ——
             # 多半是这个模板「能开但搜不出这本书」。记 empty，不删模板。
             registry.note_site(host, ok=False, why=registry.FAIL_EMPTY)
+        elif empty_page:
+            # 搜索页正常，只是站里没有这本书（页面写着"没有找到…"）。
+            # 记 empty，**绝不记 shape** —— 那会让它 3 次之后被作废。
+            registry.note_site(host, ok=False, why=registry.FAIL_EMPTY)
         else:
-            # ⚠ 一条书链接都抽不到 —— 这和「站里没这本书」是**两件事**。
-            #   线上实测（2026-10-22）：15 个可搜源里 7 个是这样的，
-            #   而且是确定性的：POST 落回"搜索_首页"（参数名不对）、
+            # ⚠ 一条书链接都抽不到、且不像空结果页 —— 这和「站里没这本书」
+            #   是**两件事**。线上实测（2026-10-22）：15 个可搜源里 7 个是
+            #   这样的，而且是确定性的：POST 落回"搜索_首页"（参数名不对）、
             #   前端渲染的 SPA、把 `?s=` 吞掉回首页、403 拦爬虫……
             #   记成 empty 的话库里看不出区别，"可搜源 15 个"永远是虚的。
             #   所以单独记 shape，并由 `note_search_result()` 连记 3 次就
             #   作废模板、让它重学。
             registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)
         # 无论成败都把「这次真实产出」记一笔：hits 与 raw 必须分开（见函数注释）
-        registry.note_search_result(host, hits=len(out), raw=len(items))
+        registry.note_search_result(host, hits=len(out), raw=len(items),
+                                    empty_page=empty_page)
         return out
 
     @classmethod
@@ -637,6 +648,44 @@ def _clean_author(a: str) -> str:
     if _BAD_TITLE.match(a) or re.search(r"分类|状态|字数|更新|点击|章节|首页|排行", a):
         return ""
     return a
+
+
+# 「这次搜索一条结果都没有」的两种来源，文案长这样（**全是小写比对**）。
+# 只收真正表示"搜索没有结果"的句子，不收「抱歉」「暂无」这种在正常页面上
+# 也会出现的词 —— 误判的代价是"少作废一个模板"（白打一次请求），
+# 但反过来误判的代价是"好模板被作废"（这个站的召回直接消失），不对称。
+_EMPTY_MARKERS = (
+    "没有找到", "未找到", "找不到", "没有搜到", "未搜到", "搜索不到",
+    "没有相关", "无相关", "没有匹配", "无匹配", "没有符合",
+    "搜索结果为空", "没有结果", "无结果", "暂无结果", "没有搜索到",
+    "no results", "no result", "not found", "0 条结果", "共 0 条",
+)
+
+
+def _looks_like_empty_result(html: str, keyword: str = "") -> bool:
+    """这页是**搜索页给出的空结果**，还是**根本不是搜索页**？
+
+    只回答这一个问题。用于 `registry.note_search_result(empty_page=)`：
+    抽到 0 条书链接时，"站里没这本书"和"模板打开的不是搜索页"必须分开记 ——
+    前者不该参与任何淘汰，后者才是模板坏了。混在一起记的后果是硬的：
+    2026-10-29 线上一天之内 8 个源被自己判死（可搜源 22 → 14），
+    而它们唯一的"错"是被拿去搜了几本冷门书。
+
+    两个证据（任一成立即判"是搜索页"）：
+      ① 页面里写了"没有找到 / 未找到 / 无结果"这类空态文案；
+      ② 页面回显了这次的关键词（`搜索_三体` / `<input value="三体">`）——
+         说明请求真的被当成一次搜索处理了。
+     都没有 → **判"不是搜索页"**（宁可留一个坏模板，也别作废好模板：
+     坏模板只是白打一次请求，被作废的模板是召回直接少一个站）。
+    """
+    if not html:
+        return False
+    low = html.lower()
+    if any(m in low for m in _EMPTY_MARKERS):
+        return True
+    kw = _norm(keyword or "")
+    # 只在页面前 20KB 里找 —— 文案和搜索框都在头部，正文 50 万字没必要扫。
+    return bool(kw) and kw in _norm(html[:20000])
 
 
 def _mentions(terms: list[str], title: str, author: str = "") -> bool:
