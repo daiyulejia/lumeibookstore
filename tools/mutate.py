@@ -1593,6 +1593,42 @@ MUTATIONS: list[Mutation] = [
              "    if True:\n        return 1.0",
              REL_TEST),
 
+    # ---------------- 假搜源：轮换列表要能在**源头**被挡住（2026-10-28 复盘）------
+    # ⚠ 线上实测：`www.31xss.com` / `www.dushu.co` / `www.kepub.net` /
+    #   `www.taishuaile.com` / `www.taiminc.com` 五站（14 个可搜源里的 5 个）的
+    #   "搜索页"每次吐一批**不同的**无关书（搜「三体」回《全能大佬是团宠》）。
+    #   控制实验比的是"换个词结果集变不变"，轮换列表每轮都变 → **恒判真**
+    #   → 判假撤不掉（试过补「标题相关性」判假，实测会误杀 biqusa 这种真站，
+    #   已否决）。所以改在源头：`RegistrySource._search_one` 里，标题和作者
+    #   连一个搜索词都没有的条目**不许当候选**。
+    #   这组突变要证明的是：这条过滤**真的有牙**（关掉它假站就灌回来），
+    #   而且三个反向陷阱都钉住了（整串比对 / 只看标题 / 单字不回落）。
+    Mutation("假搜源", "源头过滤关掉（假站 6 条无关书重新变成候选）",
+             REGSRC,
+             "            if terms and not _mentions(terms, title, author):",
+             "            if False:",
+             REGSRC_TEST),
+    Mutation("假搜源", "作者命中不算数（搜作者名时全站清零）",
+             REGSRC,
+             "    return bool(na) and any(t in na for t in terms)",
+             "    return False",
+             REGSRC_TEST),
+    Mutation("假搜源", "按**整串**关键词比对（搜「余华 活着」全站清零）",
+             REGSRC,
+             "        terms = kw_terms(kw_key)",
+             "        terms = [_norm(kw_key)]",
+             REGSRC_TEST),
+    Mutation("假搜源", "不把「含关键词的」排在前面（正主被 PER_SITE 截掉）",
+             REGSRC,
+             "                (keyed if any(t in nt for t in terms) else rest).append(x)",
+             "                (keyed if False else rest).append(x)",
+             REGSRC_TEST),
+    Mutation("假搜源", "单字词不回落（搜单字书名时过滤把一切都清掉）",
+             RELEVANCE,
+             "    return long_terms or terms",
+             "    return long_terms",
+             REGSRC_TEST),
+
     # ---------------- 冷掉的账也要记得（2026-10-26 复盘）------
     # ⚠ 线上实测（三天，每次 ship 之后都倒退）：
     #     10-23 09:06 熔断 15 分钟 → 10:06 又 15 分钟

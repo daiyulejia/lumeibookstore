@@ -457,6 +457,30 @@ def _split_terms(keyword: str) -> list[str]:
     return parts
 
 
+def kw_terms(keyword: str, *, min_len: int = 2) -> list[str]:
+    """关键词归一化后的**词表**，给「这条结果在不在本次搜索范围里」这类源头过滤用。
+
+    和 `_split_terms` 的区别：这个回了归一化（繁转简/去标点/去 SEO 尾巴），
+    并且**丢掉太短的词**。
+
+    为什么要丢短词（2026-10-28）：过滤是拿词去 `in` 题目比对的，单字词
+    （「余华 活」里的「活」）会把任何一本书都算命中 —— 过滤器当场失效。
+    `min_len=2` 只是把「必然误中」那一档去掉，两字书名（《兄弟》）照样过。
+
+    ⚠ 一个词都留不下时**回落原始词**，不返回空表 —— 空表在上层意味着
+    「不做过滤」，那是另一种静默失效（宁可多问一次题，也别把过滤关掉）。
+
+    为什么必须按词而不是按整串（同一批实测）：搜「余华 活着」时整串归一化成
+    `余华活着`，任何书名里都不会有这四个字连在一起 → 每个站都被清空，
+    而这个搜法是界面上明写着推荐的。`score_multi` 本来就是按词算分的，
+    过滤要和它用同一套词。
+    """
+    raw = _split_terms(keyword)
+    terms = [t for t in (normalize(x) for x in raw) if t]
+    long_terms = [t for t in terms if len(t) >= min_len]
+    return long_terms or terms
+
+
 def score_multi(result: BookResult, keyword: str) -> float:
     """多词关键词的打分：逐词算，再按「命中几个词」加权。
 

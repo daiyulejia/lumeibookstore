@@ -69,7 +69,7 @@ SEARCH_PAGE = """<!doctype html><html><head><title>搜索_喵</title></head><bod
   <p>作者：<a href="/author/12/">咸鱼露</a> · <a href="/html/489/489427/749.html">第119章 喵喵最新章节试读</a></p></li>
 <li><h3><a href="/html/502/502231/">某本很长的书名全书读起来</a></h3>
   <p>作者：<a href="/author/30/">隔壁老王</a> · <a href="/html/502/502231/1203.html">第240章 再一次见面</a></p></li>
-<li><h3><a href="/html/661/661009/">第三本书</a></h3>
+<li><h3><a href="/html/661/661009/">第三本喵书</a></h3>
   <p>作者：<a href="/author/77/">无名氏</a> · <a href="/html/661/661009/88.html">第17章 尾声</a></p></li>
 <li><h3><a href="/html/489/489427/">我们猫猫不能听这些</a></h3>
   <p>重复出现的一条（同 href 同书名）</p></li>
@@ -400,6 +400,97 @@ def main() -> int:
           "喵喵正主" in titles, str(titles))
     check(f"候选仍然只回 {RS.PER_SITE} 条（不放开上限）",
           len(got10) <= RS.PER_SITE, str(len(got10)))
+
+    print("\n── 11. 轮换列表型假站：不含关键词的条目一条都不许当候选 ──")
+    # 2026-10-28 线上复盘（本条的主线）：
+    #   14 个可搜源里 5 个（www.31xss.com / www.dushu.co / www.kepub.net /
+    #   www.taishuaile.com / www.taiminc.com）的"搜索页"**不认参数**，照常吐
+    #   一页「最新更新」，而且**每次都换一批**：
+    #     搜「三体」    → 《全能大佬是团宠》《林轩逆剑狂神》
+    #     搜「素食者」  → 《前男友变成鬼之后》《总裁老公超给力》
+    #   因为每批都不一样，控制实验（比"换个词结果集变不变"）恒判"真"，
+    #   撤不掉；它们的 `search_hit` 涨到 200+，按 ok 排序还排在最前面。
+    #   实测《素食者》一次搜索 40 条候选里 24 条来自它们 —— 用户点开是**别的书**。
+    #   判据：标题/作者里连一个搜索词都没有的条目，不许进候选池。
+    #
+    # ⚠ 这条判据的三个反向陷阱，下面每一条都有专门断言（写的时候都踩过）：
+    #   ① 按**整串**比对 → 搜「余华 活着」时 `余华活着` 谁都不含，全站清零；
+    #   ② 只看标题 → 作者搜索（书名里当然没有作者名）全站清零；
+    #   ③ 不做繁转简 → 搜「三體」时站上《三体》被判成不相关。
+    fake_rot = ("<html><body>"
+                + "".join(f"<a href='/html/90{i}/90{i}12/'>{t}</a>"
+                          for i, t in enumerate(
+                              ["前男友变成鬼之后", "全能大佬是团宠", "林轩逆剑狂神",
+                               "骆驼祥子", "总裁老公超给力", "熟诱"], 1))
+                + "</body></html>")
+    real_mixed = ("<html><body>"
+                  "<li><h3><a href='/html/100/100001/'>素食者</a></h3></li>"
+                  "<li><h3><a href='/html/100/100002/'>总裁老公超给力</a></h3></li>"
+                  "<li><h3><a href='/html/100/100003/'>前男友变成鬼之后</a></h3></li>"
+                  "</body></html>")
+    multi_page = ("<html><body>"
+                  "<a href='/html/110/110001/'>活着</a>"
+                  "<a href='/html/110/110002/'>许三观卖血记</a>"
+                  "</body></html>")
+    author_page = ("<html><body><li><h3><a href='/html/120/120001/'>我们猫猫不能听这些"
+                   "</a></h3><p>作者：咸鱼露</p></li></body></html>")
+    trad_page = ("<html><body><a href='/html/130/130001/'>三体（全集）</a>"
+                 "<a href='/html/130/130002/'>江南三月三</a></body></html>")
+
+    def offkw_fetch(url, **kw):
+        host = url.split("/")[2]
+        if host.startswith("fake"):
+            return (fake_rot, url)
+        if host.startswith("multi"):
+            return (multi_page, url)
+        if host.startswith("author"):
+            return (author_page, url)
+        if host.startswith("trad"):
+            return (trad_page, url)
+        return (real_mixed, url)
+
+    for _h in ("fake.com", "mixed.com", "multi.com", "author.com", "trad.com"):
+        R.note_site(_h, ok=True, search_tpl="/?s={kw}")
+    R.flush()
+    RS.fetch_text = offkw_fetch
+    try:
+        _one = RS.RegistrySource()._search_one
+        got_fake = _one("fake.com", {"search_tpl": "/?s={kw}"}, "三体")
+        got_mixed = _one("mixed.com", {"search_tpl": "/?s={kw}"}, "素食者")
+        got_multi = _one("multi.com", {"search_tpl": "/?s={kw}"}, "余华 活着")
+        got_author = _one("author.com", {"search_tpl": "/?s={kw}"}, "咸鱼露")
+        got_trad = _one("trad.com", {"search_tpl": "/?s={kw}"}, "三體")
+    finally:
+        RS.fetch_text = real_fetch
+
+    check("★ 假站吐 6 条无关书 → 一条候选都不许进（用户点开是别的书）",
+          got_fake == [], str([r.title for r in got_fake]))
+    fk = R.known_site("fake.com")
+    check("★ 假站这笔记成 search_miss 而不是 search_hit"
+          "（否则它按 ok 排序永远排最前面）",
+          int(fk.get("search_hit") or 0) == 0 and int(fk.get("search_miss") or 0) == 1,
+          str(fk))
+    check("真命中留着、无关的同页结果丢掉",
+          [r.title for r in got_mixed] == ["素食者"],
+          str([r.title for r in got_mixed]))
+    check("★ 多词关键词「余华 活着」不许被整串比对清零（只认『活着』也留）",
+          [r.title for r in got_multi] == ["活着"],
+          str([r.title for r in got_multi]))
+    check("★ 作者命中要留（书名里当然没有作者名）",
+          [r.title for r in got_author] == ["我们猫猫不能听这些"],
+          str([r.title for r in got_author]))
+    check("★ 繁体关键词「三體」要认得简体《三体》",
+          [r.title for r in got_trad] == ["三体（全集）"],
+          str([r.title for r in got_trad]))
+
+    # 判据本身的单测：词表要按词拆、要丢单字、一个都不剩时回落原词
+    from app.relevance import kw_terms as _kt
+    check("kw_terms 按词拆（「余华 活着」→ 两个词）", _kt("余华 活着") == ["余华", "活着"],
+          str(_kt("余华 活着")))
+    check("kw_terms 丢单字（否则单字会把任何书都算命中）",
+          _kt("余华 活") == ["余华"], str(_kt("余华 活")))
+    check("kw_terms 一个词都留不下时回落原词（不能返回空表＝悄悄关掉过滤）",
+          _kt("活") == ["活"], str(_kt("活")))
 
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")

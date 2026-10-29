@@ -46,6 +46,9 @@ from urllib.parse import urljoin, urlparse
 
 from .. import registry, sitelearn, webfetch
 from ..models import Book, BookResult, Chapter
+# 「这一条结果是不是在说这本书」只有 `normalize` 认得全（繁转简/去标点/
+# 剥 SEO 尾巴）。用裸 `in` 比对会把「三體」「《三体》（全集）」判成不匹配。
+from ..relevance import kw_terms, normalize as _norm
 from ..utils import (classify_fetch_error, fast_mode, fetch_text, host_of,
                      normalize_title)
 from .base import Source, tidy_content
@@ -250,25 +253,56 @@ class RegistrySource(Source):
         #   全取走，正主一条都没进候选池。排序阶段再准也救不回来。
         #   所以先按「标题里有没有这个词」稳定排序，再截断：
         #   只是把站点给的顺序**换了个更有效的顺序**，不多发一个请求。
+        #   ⚠ 按**词**而不是按整串：搜「余华 活着」时整串归一化成
+        #     `余华活着`，没有哪本书的书名含这四个字（见 `kw_terms`）。
         kw_key = (keyword or "").strip()
-        if kw_key:
-            keyed = [x for x in items if kw_key in x[0]]
-            rest = [x for x in items if kw_key not in x[0]]
+        terms = kw_terms(kw_key)
+        if terms:
+            keyed, rest = [], []
+            for x in items:
+                nt = _norm(x[0])
+                (keyed if any(t in nt for t in terms) else rest).append(x)
             items = keyed + rest
         out: list[BookResult] = []
+        dropped_offkw = 0
         for title, href in items[:PER_SITE]:
             if not title or _BAD_TITLE.match(title):
                 continue
             if len(title) < 2 or len(title) > 60:
                 continue
+            author = _author_near(html, title, base)
+            # ⚠ **不含搜索词的条目一律不许当候选**（2026-10-28 线上复盘）。
+            #   线上 5 个站（31xss / dushu / kepub / taishuaile / taiminc，
+            #   占 14 个可搜源的 36%）的"搜索页"根本不认参数，照常吐一页
+            #   「最新更新/推荐位」，而且**每次都换一批**：搜「三体」回
+            #   《全能大佬是团宠》，搜「素食者」回《前男友变成鬼之后》。
+            #   每次 URL 都不一样，所以控制实验（比结果集变不变）恒判"真"，
+            #   撤不掉（试过补「标题相关性」判假，会误杀 biqusa 这种真站，
+            #   已否决 —— 见 `sitelearn.judge_by_control` 的注释）。
+            #   后果不是"多几条噪声"这么轻：《素食者》那次 40 条候选里 24 条
+            #   来自它们，用户点开是**别的书**，而且它们的 `search_hit` 涨到
+            #   200+，按 ok 排序反而排在最前面、每次搜索先问它们。
+            #   "是不是这份搜索的结果"在源头就判得出来（标题/作者里有没有
+            #   这个词），不该丢给下游相关性排序去猜。
+            #   ⚠ 作者也要一起看：搜作者名时书名里当然没有作者名。
+            if terms and not _mentions(terms, title, author):
+                dropped_offkw += 1
+                continue
             out.append(BookResult(
                 title=title,
                 # 顺手把列表页上的作者带上 —— 作者搜索全靠它，见 _author_near
-                author=_author_near(html, title, base),
+                author=author,
                 source=self.name,
                 url=href,
                 source_display=self.display,
             ))
+        if dropped_offkw:
+            # 只留 debug：真站遇到自己没有的书时天天都会走到这里（回一页
+            # 推荐位），打成 INFO 会把日志淹掉。真正的问题（一整个站都在被丢）
+            # 会从 `search_miss` 与 `search_hit` 的比值上看出来：改造之后
+            # 假站不再涨 `search_hit`，只涨 `search_miss`。
+            logger.debug("自有来源 %s：%d 条候选不含《%s》，已丢弃",
+                         host, dropped_offkw, kw_key)
 
         if out:
             registry.note_site(host, ok=True)
@@ -603,6 +637,24 @@ def _clean_author(a: str) -> str:
     if _BAD_TITLE.match(a) or re.search(r"分类|状态|字数|更新|点击|章节|首页|排行", a):
         return ""
     return a
+
+
+def _mentions(terms: list[str], title: str, author: str = "") -> bool:
+    """这条候选有没有**提到**搜索词里的任何一个词（标题或作者）。
+
+    这是「源头的过滤」唯一的判据：只回答"它跟这次搜索有没有关系"，
+    不回答"它是不是正主"（那是 `relevance.score/tightness` 的事）。
+    所以这里**任一词命中即留**，宁可多留 —— 多留的由下游打分淘汰，
+    少留的就再也回不来了（召回掉了没人看得见）。
+
+    `terms` 由 `relevance.kw_terms` 给（已归一化、已丢单字词），
+    传空表时调用方不该调到这里。
+    """
+    nt = _norm(title)
+    if any(t in nt for t in terms):
+        return True
+    na = _norm(author or "")
+    return bool(na) and any(t in na for t in terms)
 
 
 def _extract_book_links(html: str, base_url: str) -> list[tuple[str, str]]:
