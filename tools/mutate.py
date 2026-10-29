@@ -1398,19 +1398,17 @@ MUTATIONS: list[Mutation] = [
     #   （POST 落回「搜索_首页」/ 前端渲染 SPA / 吞掉 `?s=` 回首页 / 403），
     #   而界面照报 15 个 —— 数字是虚的，每次搜索还白占一个并发名额。
     #   这一组破坏的就是「如实记账 → 连记到顶 → 作废模板重学」这条链。
-    Mutation("srchdead", "`_search_one` 把「一条链接都没抽到」也记成 empty（和「没这本书」混了）",
+    Mutation("srchdead", "把所有「抽不到链接」的页面都当空结果页（坏模板永远不作废、永不重学）",
              REGISTRY_SOURCE,
-             "            registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)\n"
-             "        # 无论成败都把「这次真实产出」记一笔：hits 与 raw 必须分开（见函数注释）\n"
-             "        registry.note_search_result(host, hits=len(out), raw=len(items))",
-             "            registry.note_site(host, ok=False, why=registry.FAIL_EMPTY)\n"
-             "        # 无论成败都把「这次真实产出」记一笔：hits 与 raw 必须分开（见函数注释）\n"
-             "        registry.note_search_result(host, hits=len(out), raw=len(items))",
+             "        empty_page = (not items) and _looks_like_empty_result(html, keyword)",
+             "        empty_page = (not items)",
              REGSRC_TEST),
     Mutation("srchdead", "raw=0 也记成 miss（形态失败永远攒不满 → 不作废、永不重学）",
              REGISTRY,
-             "        elif raw <= 0:\n            cur[\"search_shape\"] = int(cur.get(\"search_shape\") or 0) + 1",
-             "        elif raw <= 0:\n            cur[\"search_miss\"] = int(cur.get(\"search_miss\") or 0) + 1",
+             "        elif raw <= 0 and not empty_page:\n"
+             "            cur[\"search_shape\"] = int(cur.get(\"search_shape\") or 0) + 1",
+             "        elif raw <= 0 and not empty_page:\n"
+             "            cur[\"search_miss\"] = int(cur.get(\"search_miss\") or 0) + 1",
              REGISTRY_TEST),
     Mutation("srchdead", "攒到顶也留着坏模板（只清 search_ver，每晚白查、永远不重学）",
              REGISTRY,
