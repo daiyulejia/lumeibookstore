@@ -444,6 +444,69 @@ def main() -> int:
         _restore()
         HEALTH.reset()
 
+    print("\n── G. 「源池=A→B」：这次搜索顺手废掉了几个源 ──")
+    # 2026-10-30 线上主线：连搜三本冷门书（乡土中国/素食者/我的阿勒泰），
+    # 8 个站的搜索模板被 `registry.note_search_result` 的 search_shape 连击
+    # 当场作废，可搜源 22 → 15，而当天的 `search.done` 里只有「候选=0」——
+    # 源池缩水一个字都没写。这个字段量的就是这个差值。
+    #
+    # ① 正向：字段必须真的出现在 stats 里、并且长得像 `N→M`；
+    # ② 反向：这一轮一个源都没被废，两个数必须相等（否则差值永远是假的）；
+    # ③ 反向：取不到数时打 `?`，**不许**打成 `0→0`（那会被读成"源池空了"）。
+    class _PoolProbe(Source):
+        name = "pool_probe"
+        display = "池探针"
+        priority = 1
+        enabled = True
+
+        def search(self, keyword):
+            return [BookResult(title=keyword, url="http://pool/1",
+                               source=self.name, source_display=self.display)]
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    # ⚠ 这一组**必须自带数据**，不能靠环境里的 registry：
+    #   本机 `cache/registry.json` 的 searchable 是 0，于是 `0→0` 两头天然相等 ——
+    #   "差值不许凭空空出现" 那条断言会**恒真**（反证实测：把 `_pool0` 抄成 0
+    #   照样全绿，一条都抓不到）。所以先造一份只有 2 个可搜源的临时库。
+    stP: dict = {}
+    _real_pool = -1
+    import importlib
+    import os
+    import tempfile
+    from pathlib import Path as _P
+    _tmpdir = tempfile.mkdtemp(prefix="pooltest_")
+    _old_env = os.environ.get("NOVEL_REGISTRY")
+    os.environ["NOVEL_REGISTRY"] = str(_P(_tmpdir) / "registry.json")
+    from app import registry as _R
+    importlib.reload(_R)          # 让 _DB 重新指向临时库
+    for _h in ("poola.example", "poolb.example"):
+        _R.note_site(_h, ok=True, search_tpl="/?s={kw}")
+    _R.flush()
+    _real_pool = len(_R.searchable_sites())
+    try:
+        E.Engine([_PoolProbe()]).search(KW, stats=stP, probe=False,
+                                        discover=False, sample=False)
+    except Exception as e:  # noqa: BLE001
+        check("池探针这一轮跑完了（跑不完下面全是空转）", False, repr(e))
+    finally:
+        if _old_env is None:
+            os.environ.pop("NOVEL_REGISTRY", None)
+        else:
+            os.environ["NOVEL_REGISTRY"] = _old_env
+        importlib.reload(_R)
+    check("前置：临时库里有 2 个可搜源（否则下面两条是空转）",
+          _real_pool == 2, f"可搜源={_real_pool}")
+    note = stP.get("pool_note") or ""
+    check("★ 搜完必须留下「源池=A→B」（否则源池缩水永远看不见）",
+          bool(__import__("re").match(r"^\d+→\d+$", note)), f"源池={note!r}")
+    check("★ 两头都等于真实可搜源数（这一轮没废源，差值不许凭空出现）",
+          note == f"{_real_pool}→{_real_pool}",
+          f"源池={note!r} 真实={_real_pool}")
+    check("★ 取不到源池时打「?」，不许补 0（0→0 会被读成源池空了）",
+          E._pool_note(-1) == "?", f"_pool_note(-1)={E._pool_note(-1)!r}")
+
     print("\n" + "=" * 62)
     if fail_n == 0:
         print(f"通过 {ok_n} · 失败 0\n✓ 全部通过")

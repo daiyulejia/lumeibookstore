@@ -582,6 +582,20 @@ def main() -> int:
           int(_home.get("search_shape") or 0) == R.SEARCH_SHAPE_MAX,
           str(_home.get("search_shape")))
 
+    # ---- 「可搜源池」这个数本身（2026-10-30 补埋点 `源池=22→15` 的靶子）----
+    # `search.done` 里那个 `源池=A→B` 的差值，量的就是 `searchable_sites()` 的
+    # 变化。所以这里必须钉两件事，否则那个字段是**假埋点**：
+    #   ① 冷门书搜完之后，空结果页的站**还在池里**（差值为 0）；
+    #   ② 真坏模板作废之后，它**必须从池里消失**（差值才可能非 0）。
+    # 少了①，改动一下就把冷门书重新算成死刑，而日志里"源池 22→22"看着毫无异常。
+    _pool = R.searchable_sites()
+    _alive = [h for h in ("emptyres.com", "echoonly.com", "markeronly.com")
+              if h in _pool]
+    check("★ 冷门书之后，空结果页的站仍在可搜源池里（否则「源池=」恒为 22→22）",
+          len(_alive) == 3, f"还在池里的={_alive}")
+    check("★ 真坏模板被作废后从可搜源池里消失（源池差值才有意义）",
+          "homelike.com" not in _pool, f"池里={sorted(_pool)}")
+
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")
     print("=" * 62)

@@ -1029,6 +1029,16 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           #   只有数字的话，"到底谁在拖"永远查不出来（见
                           #   app/engine.py::source_ledger 的注释）。
                           **source_ledger(stats),
+                          # ---- 「这次搜索顺手废掉了几个源」 ----
+                          # 可搜源池会**被搜索本身吃掉**：某站连续 3 次抽不到书链接
+                          # 就把它的搜索模板作废（`registry.note_search_result`）。
+                          # 线上实测（2026-10-30 09:21）：连搜三本冷门书
+                          # （乡土中国/素食者/我的阿勒泰），**8 个站当场被作废**、
+                          # 可搜源 22 → 15，而那天 search.done 里只有「候选=0」，
+                          # 源池缩水这件事在日志里一个字都没有。
+                          # 打 `源池=22→15` 之后，一眼就能看出"这次搜索的代价"。
+                          # 取不到时打 `?`，不补 0 —— 0 会被读成"源池空了"。
+                          源池=stats.get("pool_note") or "?",
                           耗时ms=int((time.perf_counter() - _t0) * 1000))
                 push({
                     "type": "done",

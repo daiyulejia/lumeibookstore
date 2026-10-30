@@ -1662,6 +1662,30 @@ MUTATIONS: list[Mutation] = [
              "    if False:",
              REGSRC_TEST),
 
+    # ---------------- 「源池=A→B」：这次搜索顺手废掉了几个源（2026-10-30）------
+    # 线上实测（10-30 09:21）：连搜三本冷门书，8 个站的搜索模板当场作废、
+    # 可搜源 22 → 15，而当天 `search.done` 里只有「候选=0」—— 源池缩水
+    # 一个字都没写，靠事后 diff registry.json 才发现。
+    # 这组钉的是「这个字段真的会说话」：三条突变分别打字段缺失、差值造假、
+    # 以及"取不到就补 0"（`0→0` 会被读成源池空了，是另一种说谎）。
+    Mutation("源池", "stats 里不写 pool_note（源池缩水再次看不见）",
+             ENGINE,
+             '                "pool_note": _pool_note(_pool0),',
+             '                "pool_note": None,',
+             RECALL_TEST),
+    Mutation("源池", "开搜前那个数抄成 0（差值恒为非 0，看着像每次都废了站）",
+             ENGINE,
+             "            _pool0 = len(_reg.searchable_sites())",
+             "            _pool0 = 0",
+             RECALL_TEST),
+    Mutation("源池", "取不到源池时补 0（0→0 会被读成源池空了）",
+             ENGINE,
+             "    if not isinstance(pool_before, int) or pool_before < 0:\n"
+             '        return "?"',
+             "    if not isinstance(pool_before, int) or pool_before < 0:\n"
+             '        return "0→0"',
+             RECALL_TEST),
+
     # ---------------- 冷掉的账也要记得（2026-10-26 复盘）------
     # ⚠ 线上实测（三天，每次 ship 之后都倒退）：
     #     10-23 09:06 熔断 15 分钟 → 10:06 又 15 分钟

@@ -275,6 +275,30 @@ def source_ledger(stats: dict) -> dict:
     }
 
 
+def _pool_note(pool_before: int) -> str:
+    """把「开搜时可搜源 → 收尾时可搜源」摊成 `22→15`。
+
+    差值就是**这次搜索顺手废掉的搜索模板数**：某个站连续 3 次抽不到书链接，
+    `registry.note_search_result` 就把它的 `search_tpl` 清空、退出可搜池。
+
+    2026-10-30 09:21 的线上实例（就是它催生了这个字段）：连搜《乡土中国》
+    《素食者》《我的阿勒泰》三本冷门书，8 个站的模板当场被作废、可搜源
+    22 → 15，而当天的 `search.done` 里只有「候选=0」—— 源池缩水这件事
+    在日志里**一个字都没有**，是靠事后 diff registry.json 才发现的。
+
+    ⚠ 取不到就打 `?`，**不补 0**：`0→0` 会被读成"源池空了"，那是另一件事
+      （和 10-25「答=0/0 看起来干净、其实零信息」是同一类坑）。
+    """
+    if not isinstance(pool_before, int) or pool_before < 0:
+        return "?"
+    try:
+        from . import registry as _reg
+        after = len(_reg.searchable_sites())
+    except Exception:  # noqa: BLE001
+        return "?"
+    return f"{pool_before}→{after}"
+
+
 class Engine:
     """管理所有来源，提供搜索、探测、书架、阅读与下载。"""
 
@@ -414,6 +438,21 @@ class Engine:
         search_kws = _ties if _ties else [keyword]
 
         t_start = time.time()
+        # ---- 「可搜源池」开搜前数一遍（2026-10-30 补的埋点）----
+        # 为什么要这个数：源池会**被搜索本身吃掉**。`registry_source._search_one`
+        # 抽不到书链接时会记一次 `search_shape`，连记 3 次就把模板作废、站退出
+        # 可搜池（`registry.note_search_result`）。线上实测（2026-10-30 09:21）：
+        # 三本冷门书（乡土中国/素食者/我的阿勒泰）连着搜一遍，**8 个站的模板
+        # 当场被作废**，可搜源 22 → 15，而 `search.done` 里只有「候选=0」——
+        # 源池缩水这件事在日志里一个字都没有，是靠事后翻 registry.json 才发现的。
+        # 所以把「开搜时几个」写进 stats，`search.done` 里和收尾数拼成 `源池=22→15`：
+        # 一次搜索有没有顺手废掉几个源，一眼就能看出来。
+        # ⚠ 取不到就给 -1（"不知道"），**不许**用 0 冒充 —— 0 会被读成"源池空了"。
+        try:
+            from . import registry as _reg
+            _pool0 = len(_reg.searchable_sites())
+        except Exception:  # noqa: BLE001
+            _pool0 = -1
         # 「懒惰来源」（联网发现）不参与常规扇出 —— 它一次要跑两个搜索引擎
         # 外加十几个站点的核实，每搜一次都捎上它，所有搜索都会慢一截。
         targets = [s for s in self._sources if not getattr(s, "lazy", False)]
@@ -1130,6 +1169,13 @@ class Engine:
                 "available": sum(1 for r in results if r.available),
                 "readable": sum(1 for r in results if r.readable),
                 "sources_queried": len(targets),
+                # 开搜时的「可搜源」个数（-1 = 没取到）。收尾时再数一遍，
+                # `pool_note` 就是 `22→15` —— 差值 = **这次搜索顺手废掉的
+                # 搜索模板数**（冷门书把没搜出过东西的站连记 3 次形态失败就
+                # 作废，见 `registry.note_search_result`）。
+                # 2026-10-30 前这个差值只能靠人肉 diff registry.json 才发现。
+                "pool_before": _pool0,
+                "pool_note": _pool_note(_pool0),
                 # ⚠ 语义收窄（2026-10-23）：只数**真的答了话**的源。
                 #   原来是 done_count，把"返回了 403 的源"也算进去 ——
                 #   于是 `答=3` 可能是"2 个有内容 + 1 个 403"，读者无从分辨。
