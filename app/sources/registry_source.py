@@ -309,6 +309,20 @@ class RegistrySource(Source):
         # 不区分的话，搜几本冷门书就会把模板连记 3 次形态失败并作废：
         # 线上实测一天之内 8 个刚学到的源被自己判死，可搜源 22 → 14。
         empty_page = (not items) and _looks_like_empty_result(html, keyword)
+        # 再问一句「是不是**我们打太快被限速了**」（2026-10-30）。
+        # 杰奇 CMS 全线对同一 IP 限速 30 秒一次，超了回的是
+        # 「错误原因：对不起，两次搜索的间隔时间不得少于 30 秒」——
+        # 这页一条书链接都没有，长得跟「不是搜索页」一模一样，于是连搜三本书
+        # 就把这个站判死。线上实证（10-30 09:55）：`www.jcxs.cc` 重学回来，
+        # 又被 3 次冷门书搜索当场判死第二次（源池 15→14）。
+        # ⚠ 限速页要**什么都不记**：既不是「站里没这本书」（别涨 search_miss，
+        #   那会让复盘以为这站覆盖窄），更不是「模板坏了」（别涨 search_shape、
+        #   更别作废模板 —— 它是活的，只是嫌我们太快）。
+        #   和空结果页同时成立时**让空结果页优先**：那笔账（miss）是有信息的。
+        if (not items) and (not empty_page) and _looks_like_busy_page(html):
+            logger.debug("自有来源 %s 疑似限速页（关键词=%s），本次不记账",
+                         host, keyword)
+            return []
 
         if out:
             registry.note_site(host, ok=True)
@@ -660,6 +674,39 @@ _EMPTY_MARKERS = (
     "搜索结果为空", "没有结果", "无结果", "暂无结果", "没有搜索到",
     "no results", "no result", "not found", "0 条结果", "共 0 条",
 )
+
+# 「你打太快了」的页面 —— **既不是"没这本书"，也不是"模板坏了"**（2026-10-30）。
+# 线上实证（10-30 09:55，修复上线后复跑同一批冷门书）：
+#   杰奇 CMS 的站（`/modules/article/search.php?searchkey=`）对同一 IP 限速
+#   **30 秒一次**，超了就回一页
+#       「错误原因：对不起，两次搜索的间隔时间不得少于 30 秒」
+#   这页里一条书链接都没有（raw=0）、没有空态文案、也不回显关键词 ——
+#   于是被 `_looks_like_empty_result` 判成"不是搜索页"，连记 3 次就把模板废了。
+#   也就是说：**用户连搜三本书 → 这家站被自己判死**。10-30 当天
+#   `www.jcxs.cc` 重学回来之后，又被 3 次冷门书搜索当场判死第二次（源池 15→14）。
+# 判断代价不对称（和 `_looks_like_empty_result` 同一条理由）：
+#   误判成"限速" → 只是少作废一个坏模板（白打一次请求）；
+#   误判成"模板坏了" → 好模板被清空，这个站的召回直接消失。
+_BUSY_MARKERS = (
+    "间隔时间", "两次搜索", "请稍后", "稍后再试", "秒后重试", "秒后再",
+    "访问过于频繁", "请求过于频繁", "操作过于频繁", "搜索过于频繁",
+    "搜索太频繁", "不要频繁", "请勿频繁", "频繁访问",
+    "too many requests", "rate limit", "slow down",
+)
+
+
+def _looks_like_busy_page(html: str) -> bool:
+    """这页是「你请求太快，被限速了」吗？
+
+    只回答这一个问题，**只用来"什么都不记"**（见 `_search_one` 里的用法）：
+    限速页说明这个站是活的、模板可能也是好的，只是我们打得太密 ——
+    它既不该记 `search_miss`（会让复盘以为这站覆盖窄），
+    更不该记 `search_shape`（那会把模板作废）。
+    """
+    if not html:
+        return False
+    low = html.lower()
+    return any(m in low for m in _BUSY_MARKERS)
 
 
 def _looks_like_empty_result(html: str, keyword: str = "") -> bool:

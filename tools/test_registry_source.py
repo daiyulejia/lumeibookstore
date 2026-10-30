@@ -596,6 +596,43 @@ def main() -> int:
     check("★ 真坏模板被作废后从可搜源池里消失（源池差值才有意义）",
           "homelike.com" not in _pool, f"池里={sorted(_pool)}")
 
+    # ---- 13. 限速页 ≠ 缺书 ≠ 模板坏了（2026-10-30 线上主线）----
+    # 线上实证：杰奇 CMS（`/modules/article/search.php`）对同一 IP 限速 30 秒，
+    # 超了回一页「错误原因：对不起，两次搜索的间隔时间不得少于 30 秒」。
+    # 这页一条书链接都没有、没有空态文案、也不回显关键词 —— 长得和"不是搜索页"
+    # 一模一样，于是**用户连搜三本书就把这个站判死**。
+    # 10-30 09:55 实测：`www.jcxs.cc` 重学回来之后，又被 3 次冷门书搜索
+    # 判死第二次（search.done 里 `源池=15→14` 就是它掉的那一个）。
+    busy_page = ("<html><head><title>出现错误！</title></head><body>"
+                 "<div class='content'>错误原因：对不起，两次搜索的间隔时间"
+                 "不得少于 30 秒<br>请返回并修正</div></body></html>")
+
+    def busy_fetch(url, **kw):
+        return (busy_page, url)
+
+    R.note_site("busy.example.com", ok=True, search_tpl="/?s={kw}")
+    R.flush()
+    RS.fetch_text = busy_fetch
+    try:
+        _one = RS.RegistrySource()._search_one
+        for _ in range(R.SEARCH_SHAPE_MAX + 3):
+            _one("busy.example.com", {"search_tpl": "/?s={kw}"}, "不存在的书")
+        _busy = R.known_site("busy.example.com")
+    finally:
+        RS.fetch_text = real_fetch
+
+    check("★ 限速页不攒形态失败（连搜 8 次也不许把模板判死）",
+          int(_busy.get("search_shape") or 0) == 0
+          and bool((_busy.get("search_tpl") or "").strip()),
+          f"shape={_busy.get('search_shape')} tpl={_busy.get('search_tpl')!r}")
+    check("★ 限速页连 search_miss 都不许涨（它不代表这个站覆盖窄）",
+          int(_busy.get("search_miss") or 0) == 0
+          and int(_busy.get("search_hit") or 0) == 0,
+          f"miss={_busy.get('search_miss')} hit={_busy.get('search_hit')}")
+    check("★ 限速站仍在可搜源池里（源池不该因为它掉）",
+          "busy.example.com" in R.searchable_sites(),
+          f"池里={sorted(R.searchable_sites())}")
+
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")
     print("=" * 62)
