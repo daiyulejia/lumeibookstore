@@ -148,7 +148,10 @@ def main() -> int:
     # 超预算时必然是「0/3 核完、还剩 3 个没核」。
     gate = threading.Event()          # 永不 set：让 _verify 永远不返回
 
-    def _hang_verify(cand, keyword):
+    # ⚠ 2026-10-31：`_verify()` 多了第三个参数（核实账本 tally）。
+    #   替身必须跟着签名走 —— 不跟的话它会在 0.3s 内以 TypeError
+    #   「核完」,超预算分支永远进不去,而测试会错报成"日志没说清"。
+    def _hang_verify(cand, keyword, tally=None):
         gate.wait(30)
         return None
 
@@ -184,7 +187,7 @@ def main() -> int:
     done_gate = threading.Event()
     calls = {"n": 0}
 
-    def _one_done_two_hang(cand, keyword):
+    def _one_done_two_hang(cand, keyword, tally=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return None          # 第一个立刻核完（失败也算核完）

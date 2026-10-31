@@ -108,6 +108,9 @@ BUDGET_SRC_TEST = ROOT / "tools" / "test_source_budget.py"
 WYSHU = ROOT / "app" / "sources" / "wyshu.py"
 # 收手判据不许被噪声骗（tools/test_search_recall.py）
 RECALL_TEST = ROOT / "tools" / "test_search_recall.py"
+# 目录识别：slug 章节 id / 散文集目录（tools/test_toc_anchor.py）
+TOC_ANCHOR_TEST = ROOT / "tools" / "test_toc_anchor.py"
+DISCOVERY = ROOT / "app" / "discovery.py"
 # 自有来源（学到的模板 → 真的能搜出书）
 REGISTRY_SOURCE = ROOT / "app" / "sources" / "registry_source.py"
 FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
@@ -927,6 +930,38 @@ MUTATIONS: list[Mutation] = [
              "                web_skipped_budget = True",
              "                web_skipped_budget = False",
              BUDGET_TEST),
+
+    # ------- 目录识别：slug 章节 id / 散文集目录（2026-10-31） -------
+    # 线上原样（《我的阿勒泰》）：`候选=1 确切=1 可读=0`，联网说「站点都打不开」。
+    # 真相是 cn.shubaoc.com 是**真的书页**，40 章目录，
+    # 但章节 id 是 base32（`1u0ri`）→ 模板被拆成 42 份 → 0 章；
+    # 而目录标题不叫「第N章」→ 就算归对了模板也只给 0.35 分。
+    # 三本书（乡土中国 / 素食者 / 我的阿勒泰）全是这一类。
+    Mutation("目录锚点", "模板退回只认 \\d+（slug 站 42 章拆成 42 个单条组）",
+             WEB,
+             'return p.netloc + "/".join(_norm_seg(s) for s in p.path.split("/"))',
+             'return p.netloc + re.sub(r"\\d+", "#", p.path)',
+             TOC_ANCHOR_TEST),
+    Mutation("目录锚点", "toc_quality 不认页面目录区标记（散文集目录永远 0.35）",
+             WEB,
+             '    anchored = sum(1 for c in head if c.get("_anchor"))',
+             "    anchored = 0.0",
+             TOC_ANCHOR_TEST),
+    Mutation("目录锚点", "排序不再优先「挂在这本书下」（猜你喜欢顶掉真目录）",
+             WEB,
+             "    cands.sort(key=lambda c: (c[2] == hint, c[4] >= 0.8, c[0] >= 0.55, c[0], c[1]),",
+             "    cands.sort(key=lambda c: (c[2] == hint, c[0] >= 0.55, c[0], c[1]),",
+             TOC_ANCHOR_TEST),
+    Mutation("目录锚点", "「不是目录」不记账（核实 5 个、日志只有 2 条失败）",
+             DISCOVERY,
+             '        _bump(tally, "not_toc", host)',
+             "        pass",
+             TOC_ANCHOR_TEST),
+    Mutation("目录锚点", "「不是目录」的日志降成 debug（线上 INFO 级别下静默消失）",
+             DISCOVERY,
+             '        logger.info("候选不是目录 %s: kind=%s 标题=《%s》 %s",',
+             '        logger.debug("候选不是目录 %s: kind=%s 标题=《%s》 %s",',
+             TOC_ANCHOR_TEST),
 
     # ------- 联网兜底的门：有结果但一条可读都没有（2026-10-27） -------
     # 线上原样（《我的阿勒泰》）：`候选=1 成书=1 确切=1 可读=0 联网发现=0`。

@@ -275,6 +275,39 @@ def source_ledger(stats: dict) -> dict:
     }
 
 
+def web_ledger(tally: Optional[dict]) -> dict:
+    """把「联网核实」这一轮的账摊成 search.done 里的一格，**每个都点名**。
+
+    为什么需要它（2026-10-31 复盘）：
+      线上《乡土中国》那行只写 `联网发现=0`，日志里「核实候选站点 5 个地址」
+      之后跟着两条 `候选核实失败`（99csw 403 / academia 403），另外 3 个
+      **一个字都没有** —— 那 3 个是「页打开了、但不是目录」（leshu8 的书页、
+      央视节目页、一篇新闻）。于是复盘只能看到"两个站挂了"，
+      而真正的事实是"5 个候选里 3 个根本不是书页，2 个被 Cloudflare 拦"。
+      这两种病因的处置完全相反：前者该改搜索词，后者只能等/换源。
+
+    格式：`5→0 失败=2(99csw,academia) 非目录=3(leshu8,tv.cctv,zgxcfx) 未核=0`
+    """
+    if not tally:
+        # 没跑过联网（本地就有）→ 打 `-`，不补 0：`0→0` 会被读成"核了 0 个"
+        return {"联网核": "-"}
+
+    def _pack(names: list[str]) -> str:
+        return f"({','.join(names[:5])})" if names else ""
+
+    ff = list(tally.get("fetch_fail") or [])
+    nt = list(tally.get("not_toc") or [])
+    dead = list(tally.get("skipped_dead") or [])
+    s = (f"{tally.get('cands', 0)}→{len(tally.get('hit') or [])}"
+         f" 失败={len(ff)}{_pack(ff)}"
+         f" 非目录={len(nt)}{_pack(nt)}")
+    if dead:
+        s += f" 死站={len(dead)}{_pack(dead)}"
+    if tally.get("unchecked"):
+        s += f" 未核={tally['unchecked']}"
+    return {"联网核": s}
+
+
 def _pool_note(pool_before: int) -> str:
     """把「开搜时可搜源 → 收尾时可搜源」摊成 `22→15`。
 
@@ -1013,6 +1046,8 @@ class Engine:
         # 「本地全灭、本该联网，但总预算已经用完了」——**必须记下来**：
         # 否则"联网也没找到"和"联网压根没跑"在日志里一模一样。
         web_skipped_budget = False
+        # 联网核实的账本（候选几个、几个失败、几个不是目录）。None = 没跑过。
+        web_tally = None
         # ---- 「这轮为什么没联网」也要留字段 ----
         # 线上 `联网发现=0` 同时对应四件处置完全不同的事：
         #   not_needed 本地有能读的结果（好事，不必联网）
@@ -1041,6 +1076,7 @@ class Engine:
             if web is not None and wb > 0.0:
                 extra = self._discover(web, keyword, on_result, on_progress,
                                        search_kw=search_kws, should_stop=_stop)
+                web_tally = getattr(web, "last_tally", None) or None
                 if extra:
                     if probe:
                         # 联网换来的候选必须探测 —— 它的价值就在于"本地没有、
@@ -1076,6 +1112,10 @@ class Engine:
             # 并行已发起、本地仍无结果 → 给 web_extra 探测 + 重排
             # （上面 raw 已 extend，这里 results=rank(raw) 已包含 web_extra）
             web_skip = "preempt"
+            # 并行那一路的核实账本：线程已在 936 行 join 过，这时读是安全的。
+            # ⚠ 线上三本书（10-30/10-31）走的全是这条 preempt 路径 ——
+            #   只给串行那一路挂账本 = 天天复盘的那批日志一个字都看不到。
+            web_tally = getattr(web, "last_tally", None) or None
             if results and probe:
                 self.probe_all(
                     results, on_verified=on_verified, top=probe_top,
@@ -1224,6 +1264,9 @@ class Engine:
                 # 这轮**为什么**没联网（""=真的跑了）。见上面 web_skip 的注释：
                 # not_needed / preempt / budget / no_source / disabled。
                 "web_skip": web_skip,
+                # 联网核实这一轮的账（候选/命中/失败点名/不是目录点名）。
+                # None = 这轮没跑联网，`web_ledger()` 会把它打成 `-`。
+                "web_verify": web_tally,
                 # 断开收手是否真的触发了（供真机测试断言）。
                 # ⚠ 用它而不是"耗时是不是更短"来验证收手 —— 耗时受源站快慢
                 #   影响，波动能有 5 倍（实测 2.3s ~ 25.6s），

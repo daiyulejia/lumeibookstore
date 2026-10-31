@@ -373,17 +373,56 @@ def _abs_links(html: str, base_url: str) -> list[tuple[str, str]]:
     return out
 
 
+def _is_slug_seg(stem: str) -> bool:
+    """这一段 path 是不是「数字开头、混着字母」的章节 id（`1u0ri`、`1b3k9`）。
+
+    ⚠ 为什么必须认它（2026-10-31 复盘《我的阿勒泰》）：
+      cn.shubaoc.com 用 base32 编码当章节 id，一本 42 章的书地址是
+      `/novel/bpo/1u11f.html`、`/novel/bpo/1u0ri.html`…… 彼此长得毫无关系。
+      旧的 `_template()` 只把 `\\d+` 换成 `#`，于是 42 条章节链接分成了
+      42 个「模板」，每组 1~3 条，全都够不到 `min_items=8` ——
+      整本书 0 章，被判成「没有目录」，联网兜底也说「搜到的站点打不开」。
+      真正的书就在那儿，是我们自己把目录拆碎了。
+    """
+    if len(stem) < 4 or not stem[0].isdigit():
+        return False
+    if not any(c.isalpha() for c in stem):
+        return False
+    return bool(re.fullmatch(r"[0-9A-Za-z_-]+", stem))
+
+
+def _norm_seg(seg: str) -> str:
+    """归一化一段 path：数字/混合 id → `#`，其余原样。"""
+    stem, dot, ext = seg.partition(".")
+    if _is_slug_seg(stem):
+        return "#." + ext if ext else "#"
+    return re.sub(r"\d+", "#", seg)
+
+
 def _template(u: str) -> str:
-    """把 URL 里的数字换成 #，用来判断「是不是同一类链接」。"""
+    """把 URL 里的「会变的那一截」换成 #，用来判断「是不是同一类链接」。"""
     p = urlparse(u)
-    return p.netloc + re.sub(r"\d+", "#", p.path)
+    return p.netloc + "/".join(_norm_seg(s) for s in p.path.split("/"))
 
 
 def _num_columns(urls: list[str]) -> list[list[str]]:
-    """把每个 URL 路径里的数字串按位置切开，返回「列」。"""
+    """把每个 URL 路径里的数字串按位置切开，返回「列」。
+
+    ⚠ slug 段（`1u0ri`）里的数字**不是章节号**，必须排除：
+      否则 `_chapter_keys()` 会把它当成章号，判出「单调/乱序」再按它重排，
+      把一本顺序正确的书排成乱序。排除之后这类 URL 认不出章号，
+      就老老实实保持页面给的顺序（页面顺序本来就是对的）。
+    """
     cols: list[list[str]] = []
     for u in urls:
-        cols.append(re.findall(r"\d+", urlparse(u).path))
+        nums: list[str] = []
+        for seg in urlparse(u).path.split("/"):
+            if not seg:
+                continue
+            if _is_slug_seg(seg.partition(".")[0]):
+                continue
+            nums.extend(re.findall(r"\d+", seg))
+        cols.append(nums)
     return cols
 
 
@@ -437,6 +476,23 @@ _TITLE_TAIL_RE = re.compile(r"(最新章节|最新更新|免费阅读|全文阅�
 _CHAPTER_TOKEN_RE = re.compile(
     r"第\s*[0-9零一二三四五六七八九十百千两]{1,6}\s*[章节回卷篇条]|^\s*\d{1,4}\s*[.、,，:：]")
 
+# 页面自己说「这里是目录」的地方。
+#
+# ⚠ 为什么需要这第三条证据（2026-10-31 复盘）：
+#   `toc_quality()` 只看「URL 里有单调数字列」+「标题带第N章」。
+#   散文集 / 严肃文学根本没有「第N章」—— 《我的阿勒泰》的目录是
+#   「自序 / 第一辑 阿勒泰文字（2007-2009） 我所能带给你们的事物 / 附录 诗一首」，
+#   于是一份 40 条的真目录被判 0.35 分、整本书判成 unknown、可读=0。
+#   而这三本书（乡土中国 / 素食者 / 我的阿勒泰）恰好全是这一类。
+#   页面自己写着「章节列表」，紧接着那一批同模板链接就是目录 —— 这是
+#   比「标题长相」更本质的证据，且它来自页面而不是我们的猜测。
+_TOC_ANCHOR_RE = re.compile(
+    r"(章节目录|全部章节|章节列表|正文目录|目录列表|目录|"
+    r"chapter[-_ ]?list|chapterlist|mulu|catelog|listmain)", re.I)
+# 锚点之后多长一段算「紧接着」。10 万字以内的小说页目录都在这范围内；
+# 再往后就是「猜你喜欢 / 同作者作品」的地盘了。
+_TOC_ANCHOR_WINDOW = 12000
+
 
 # 章节标题里**纯导航词**：抓下来的其实是按钮文案，不是章节名。
 #
@@ -469,22 +525,8 @@ def _is_nav_title(s: str) -> bool:
     return bool(s and _NAV_TITLE_RE.match(s.strip()))
 
 
-def toc_quality(chapters: list[dict]) -> tuple[float, str]:
-    """这一组链接「像不像真的章节目录」。返回 (可信度 0~1, 说明)。
-
-    为什么要判：详情页上「猜你喜欢 / 同作者作品」的链接往往也有几十条，
-    条目数甚至可能比某些短篇的目录还多。只看数量就会选中它 ——
-    实测塔读的详情页就栽在这儿：抓回 1561 条「章节」，第一条叫《药鼎仙途》。
-
-    两个正交的判据：
-      · **URL 里有一列数字是单调的** —— 章节地址必然从第 1 章递增到最后
-      · **标题里带「第N章/节/回/卷」的比例高** —— 章节名的通用长相
-
-    只有单调**不算**证据：「猜你喜欢 / 同作者作品」那一排链接的
-    `/book/1234/`、`/book/1235/` 同样是一路递增的（书 id 本来就是顺序发的）。
-    所以还要求标题里至少**有一条**长得像章节 —— 一个真目录里
-    连一条「第N章」都没有，基本可以断定不是目录。
-    """
+def _toc_quality_head(chapters: list[dict]) -> tuple[float, str]:
+    """`toc_quality()` 的主体（不含 2026-10-31 新加的「页面目录区」证据）。"""
     if not chapters:
         return 0.0, "没有条目"
     n = len(chapters)
@@ -510,6 +552,38 @@ def toc_quality(chapters: list[dict]) -> tuple[float, str]:
     if mono:
         return 0.35, "链接像章节，但标题里一条像章节名的都没有"
     return min(0.3, ratio * 0.4), "看起来不是章节列表"
+
+
+def toc_quality(chapters: list[dict]) -> tuple[float, str]:
+    """这一组链接「像不像真的章节目录」。返回 (可信度 0~1, 说明)。
+
+    为什么要判：详情页上「猜你喜欢 / 同作者作品」的链接往往也有几十条，
+    条目数甚至可能比某些短篇的目录还多。只看数量就会选中它 ——
+    实测塔读的详情页就栽在这儿：抓回 1561 条「章节」，第一条叫《药鼎仙途》。
+
+    两个正交的判据：
+      · **URL 里有一列数字是单调的** —— 章节地址必然从第 1 章递增到最后
+      · **标题里带「第N章/节/回/卷」的比例高** —— 章节名的通用长相
+
+    只有单调**不算**证据：「猜你喜欢 / 同作者作品」那一排链接的
+    `/book/1234/`、`/book/1235/` 同样是一路递增的（书 id 本来就是顺序发的）。
+    所以还要求标题里至少**有一条**长得像章节 —— 一个真目录里
+    连一条「第N章」都没有，基本可以断定不是目录。
+
+    ⚠ 第三条证据（2026-10-31 加）：页面自己写着「章节列表」，而这一批链接
+      就紧跟在那个锚点后面、且都挂在本页这个书名下 —— 由
+      `_looks_like_toc_block()` 判出来，结果写在章节的 `_anchor` 标记上。
+      散文集 / 严肃文学（《我的阿勒泰》《乡土中国》《素食者》）的目录
+      根本不叫「第N章」，前两条判据会把一份 40 条的真目录判成 0.35。
+    """
+    q, why = _toc_quality_head(chapters)
+    if q >= 0.55 or not chapters:
+        return q, why
+    head = chapters[:200]
+    anchored = sum(1 for c in head if c.get("_anchor"))
+    if anchored / len(head) >= 0.8:
+        return 0.9, "目录来自页面自己的「章节列表」区"
+    return q, why
 
 
 # ---------------------------------------------------------------------------
@@ -971,6 +1045,66 @@ def _onclick_links(html: str, base_url: str, rule: str) -> list[tuple[str, str]]
     return out
 
 
+def _book_prefix(path: str) -> str:
+    """页面路径里「这本书」的那一截（`/novel/bpo/`、`/book/1234/`）。"""
+    segs = [s for s in (path or "").split("/") if s]
+    if not segs:
+        return "/"
+    if "." in segs[-1]:          # 末段是 index.html / 349017.html
+        segs = segs[:-1]
+    return "/" + "/".join(segs) + "/" if segs else "/"
+
+
+def _link_positions(html: str, base_url: str) -> dict[str, int]:
+    """每个绝对地址第一次出现在 html 里的偏移。"""
+    out: dict[str, int] = {}
+    for m in _A_RE.finditer(html):
+        href = m.group(1).strip()
+        if href.startswith(("javascript:", "mailto:", "#")):
+            continue
+        u = urljoin(base_url, href)
+        if u.startswith("http"):
+            out.setdefault(u, m.start())
+    return out
+
+
+def _anchor_spans(html: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for m in _TOC_ANCHOR_RE.finditer(html):
+        spans.append((m.start(), m.start() + _TOC_ANCHOR_WINDOW))
+    return spans
+
+
+def _looks_like_toc_block(html: str, base_url: str,
+                          chapters: list[dict]) -> bool:
+    """页面自己说「这里是目录」+ 这一批链接挂在本页这本书下 + 占页面链接的多数。
+
+    三条同时成立才算。**任一条不成立就退回旧判据**（宁可漏判，不可乱报）——
+    误判的代价是把「猜你喜欢」当成目录，用户下到的是别人的书。
+    """
+    n = len(chapters)
+    if n < 8:
+        return False
+    urls = [c.get("url", "") for c in chapters]
+    # ① 链接都挂在本页这本书下面（排除 /book/2345/ 那种「猜你喜欢」）
+    prefix = _book_prefix(urlparse(base_url).path)
+    same = sum(1 for u in urls if urlparse(u).path.startswith(prefix))
+    if same / n < 0.8:
+        return False
+    # ② 紧跟在页面自己的「目录 / 章节列表」字样之后
+    spans = _anchor_spans(html)
+    if not spans or len(spans) > 40:
+        # 一个页面里有几十个「目录」字样时，窗口会连成一片，证据就失效了
+        return False
+    pos = _link_positions(html, base_url)
+    hit = sum(1 for u in urls if u in pos and any(a <= pos[u] <= b for a, b in spans))
+    if hit / n < 0.8:
+        return False
+    # ③ 它得是页面上的**主要**链接群，不是角落里的一小块
+    total = len(_A_RE.findall(html))
+    return n >= max(8, total * 0.3)
+
+
 def extract_toc(
     html: str,
     base_url: str,
@@ -1009,7 +1143,8 @@ def extract_toc(
     for url, txt in links:
         groups.setdefault(_template(url), []).append((url, txt))
 
-    cands: list[tuple[float, int, str, list[dict]]] = []
+    cands: list[tuple[float, int, str, list[dict], float]] = []
+    _prefix = _book_prefix(urlparse(base_url).path)
     for tpl, items in groups.items():
         if len(items) < min_items:
             continue
@@ -1017,15 +1152,49 @@ def extract_toc(
         if len(chapters) < min_items:
             continue
         q, _why = toc_quality(chapters)
-        cands.append((q, len(chapters), tpl, chapters))
+        if q < 0.55 and _looks_like_toc_block(doc, base_url, chapters):
+            # 标题不含「第N章」（散文集 / 严肃文学），但页面自己写着「章节列表」、
+            # 链接都挂在这本书下 —— 那就是目录。标记写在章节上，
+            # `analyze` 重新算 toc_quality 时还认得出（见 toc_quality）。
+            #
+            # 顺手把「锚点之外的那几条」挪到末尾：它们几乎总是页面顶部的
+            # 「最新章节」块（cn.shubaoc.com 实测 2 条），不挪的话
+            # 用户打开第一页看到的是《我的阿勒泰》的「附录 诗一首」。
+            # 稳定排序 —— 锚点内的条目保持页面给的顺序（那就是正序）。
+            _pos = _link_positions(doc, base_url)
+            _spans = _anchor_spans(doc)
+
+            def _in_block(c: dict) -> bool:
+                p = _pos.get(c.get("url", ""))
+                return p is not None and any(a <= p <= b for a, b in _spans)
+
+            chapters.sort(key=lambda c: 0 if _in_block(c) else 1)
+            for c in chapters:
+                c["_anchor"] = 1
+            q = toc_quality(chapters)[0]
+        # 「这一组链接挂不挂在本页这本书下」—— 排序时要用。
+        # ⚠ 为什么必须有它（2026-10-31 踩到）：`toc_quality()` 给「猜你喜欢」的
+        #   `/book/2345/…/book/2352/` 打 0.35（URL 单调、标题不像章节），
+        #   而一本散文集的真目录在**认不出目录区**的页面上只拿 0.0（slug id
+        #   没有章号可判、标题也没有「第N章」）。0.35 > 0.0，噪声组就赢了 ——
+        #   用户点开一本书，目录是别人的书。
+        _same = sum(1 for c in chapters
+                    if urlparse(c.get("url", "")).path.startswith(_prefix))
+        cands.append((q, len(chapters), tpl, chapters, _same / max(1, len(chapters))))
 
     if not cands:
         return []
 
-    # 学过的模板优先；否则按 (质量, 数量) 排
+    # 学过的模板优先 → **挂不挂在这本书下** → 够不够像目录 → 像不像目录 → 条数
+    #
+    # ⚠ 「挂在这本书下」必须排在质量分**前面**（2026-10-31）：噪声组的
+    #   `/book/2345/…/book/2352/` 是单调递增的（书 id 本来就连号），
+    #   `toc_quality()` 给它 0.35；而 slug 目录在认不出目录区的页面上是 0.0。
+    #   只按质量分排，噪声就顶掉了真目录 —— 用户点开一本书，目录是别人的书。
     hint = (tpl_hint or "").strip()
-    cands.sort(key=lambda c: (c[2] == hint, c[0] >= 0.55, c[0], c[1]), reverse=True)
-    _q, _n, tpl, chapters = cands[0]
+    cands.sort(key=lambda c: (c[2] == hint, c[4] >= 0.8, c[0] >= 0.55, c[0], c[1]),
+               reverse=True)
+    _q, _n, tpl, chapters = cands[0][:4]
 
     for i, c in enumerate(chapters, 1):
         c["index"] = i
@@ -1621,6 +1790,7 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
                                **({"toc_tpl": tpl} if tpl else {}))
             for c in toc:
                 c.pop("_tpl", None)
+                c.pop("_anchor", None)   # 判目录用的中间标记，别带出去
             # 目录"看起来不完整"时要**如实说出来**（见 toc_completeness）：
             # 否则界面把「12 章」当全书，用户下完才发现只有零头 —— 那比搜不到更坏。
             partial, chapter_note = toc_completeness(toc, html)

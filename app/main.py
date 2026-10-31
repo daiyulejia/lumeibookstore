@@ -81,7 +81,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import history, security, tunnel, visits
-from .engine import Engine, source_ledger, source_meta
+from .engine import Engine, source_ledger, source_meta, web_ledger
 from .errors import Cancelled, SourceBlocked
 from .exporter import DOWNLOAD_DIR, export as export_book
 
@@ -1029,6 +1029,12 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           #   只有数字的话，"到底谁在拖"永远查不出来（见
                           #   app/engine.py::source_ledger 的注释）。
                           **source_ledger(stats),
+                          # ---- 「联网了但 0 命中」到底是哪种 0 ----
+                          # `联网发现=0` 这一格只说了结果。5 个候选里几个被 WAF 拦、
+                          # 几个压根不是书页，决定了下一步是"换搜索词"还是"认了"。
+                          # 2026-10-31《乡土中国》：核实 5 个，日志里只有 2 条失败，
+                          # 另外 3 个（leshu8 的书页 / 央视节目页 / 一篇新闻）沉默消失。
+                          **web_ledger(stats.get("web_verify")),
                           # ---- 「这次搜索顺手废掉了几个源」 ----
                           # 可搜源池会**被搜索本身吃掉**：某站连续 3 次抽不到书链接
                           # 就把它的搜索模板作废（`registry.note_search_result`）。

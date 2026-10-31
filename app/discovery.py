@@ -38,6 +38,19 @@ PAGE_TTL = 900              # 抓下来的页面在内存里留多久
 
 # 页面缓存：核实阶段抓过的详情页，探测阶段不用再抓一遍
 _pg_cache: dict[str, tuple[float, dict]] = {}
+
+# 最近一轮核实的账本（threading.local：并发的两次搜索不互相覆盖）。
+# engine 在 `_discover()` 之后读它，写进 search.done 的 `联网核=` 一格。
+_tally_local = threading.local()
+
+
+def last_tally() -> dict:
+    """最近一次 `discover()` 的核实账本（没有就返回空 dict）。"""
+    return dict(getattr(_tally_local, "tally", None) or {})
+
+
+def clear_tally() -> None:
+    _tally_local.tally = None
 _pg_lock = threading.Lock()
 
 
@@ -139,7 +152,20 @@ def from_registry(keyword: str, *, limit: int = 8) -> list[BookResult]:
 # ---------------------------------------------------------------------------
 # 联网发现
 # ---------------------------------------------------------------------------
-def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
+def _bump(tally: Optional[dict], key: str, name: str) -> None:
+    """往这一轮的核实账本里点一个名。
+
+    ⚠ 一定要记**名字**（2026-10-31）：线上出现过「核实候选站点 5 个地址」
+      之后只有 2 条失败日志，另外 3 个凭空消失 —— 复盘时没法判断这轮是
+      「候选全被 403 拦」还是「打开的都是不相干的页面」，而这两种的处置
+      完全相反（前者换搜索词/放弃这本书，后者说明目录识别有 bug）。
+    """
+    if tally is None:
+        return
+    tally.setdefault(key, []).append(name)
+
+
+def _verify(cand: dict, keyword: str, tally: Optional[dict] = None) -> Optional[BookResult]:
     """核实一个候选：打开它，看有没有目录。"""
     url, host = cand["url"], cand["host"]
 
@@ -148,6 +174,7 @@ def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
     site = registry.known_site(host)
     if site and not registry.is_healthy(site):
         logger.debug("跳过已失效站点 %s", host)
+        _bump(tally, "skipped_dead", host)
         return None
 
     try:
@@ -157,6 +184,7 @@ def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
             data = page_of(url)
     except Exception as e:  # noqa: BLE001
         logger.info("候选核实失败 %s: %s", host, e)
+        _bump(tally, "fetch_fail", host)
         # why：连不上/5xx 才算"站点可能挂了"；**读超时**是我们等得不够
         # （核实阶段只给 10 秒），记 FAIL_SLOW，别把慢站推进 is_healthy 的死亡比值。
         slow = classify_fetch_error(e) == "slow"
@@ -169,6 +197,12 @@ def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
         # 给的地址指向了书页/简介页，是我们 URL 猜错，不是站不行。
         # （早先这里和上面的网络失败记成同一笔，把好站拖进"高失败率"。）
         registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)
+        # ⚠ 这一行以前没有（2026-10-31）。没有它，「打开了但不是目录」
+        #   就从日志里彻底消失，剩下的人只看到「核实 5 个、失败 2 条」。
+        logger.info("候选不是目录 %s: kind=%s 标题=《%s》 %s",
+                    host, data.get("kind"), (data.get("title") or "")[:24],
+                    (data.get("note") or "")[:40])
+        _bump(tally, "not_toc", host)
         return None
 
     toc = data.get("toc") or []
@@ -205,6 +239,7 @@ def _verify(cand: dict, keyword: str) -> Optional[BookResult]:
                        #   这里交的是**本次结论**（None → ""），完整就清掉旧警告。
                        note=str(data.get("chapter_note") or ""))
     r.score = score_result(r, keyword)
+    _bump(tally, "hit", real_host)
     logger.info("联网发现命中: %s 《%s》 %d 章 (质量 %.2f)",
                 real_host, r.title, r.chapter_count, float(data.get("quality") or 0))
     return r
@@ -625,6 +660,9 @@ def discover(
     keyword = (keyword or "").strip()
     if not keyword:
         return []
+    # 上一轮的账本先作废 —— 不清的话，「这轮没跑联网」会显示成
+    # 「上一轮的 5 个候选」。宁可打 `-`，也不要给一个过期的数。
+    clear_tally()
 
     say("联网搜索", f"本地没有《{keyword}》，出去找找")
     try:
@@ -648,12 +686,14 @@ def discover(
 
     say("核实候选站点", f"{len(uniq)} 个地址")
 
+    tally: dict = {"cands": len(uniq), "hit": [], "fetch_fail": [],
+                   "not_toc": [], "skipped_dead": [], "dup": [], "unchecked": 0}
     results: list[BookResult] = []
     seen_url: set[str] = set()
     lock = threading.Lock()
     checked = 0        # 已经**核完**（不管成败）的候选数
     pool = ThreadPoolExecutor(max_workers=min(DISCOVER_WORKERS, len(uniq)))
-    futs = {pool.submit(_verify, c, keyword): c for c in uniq}
+    futs = {pool.submit(_verify, c, keyword, tally): c for c in uniq}
     try:
         for fut in as_completed(futs, timeout=budget):
             checked += 1
@@ -667,6 +707,7 @@ def discover(
             with lock:
                 # 两个候选重定向到同一页 → 只留一条
                 if r.url in seen_url:
+                    _bump(tally, "dup", host_of(r.url))
                     continue
                 seen_url.add(r.url)
                 results.append(r)
@@ -680,11 +721,23 @@ def discover(
         #   命中在 3.9s 就拿到了，这条日志出现在 16.7s，而它只说"超预算"，
         #   既看不出还剩几个，也看不出那 12.8 秒花在了谁身上。
         left = max(0, len(futs) - checked)
+        tally["unchecked"] = left
         logger.info("联网核实超预算，先用已有结果（%d/%d 个候选核完、还剩 %d 个没核）",
                     checked, len(futs), left)
         say("核实超时", f"先把已经找到的给你（还剩 {left} 个候选没核）", True)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+    # 这一轮的核实账本 —— **必须点名**，不能只写「核实 5 个、0 命中」。
+    # 那正是 2026-10-30 之前的写法：5 个候选、日志里 2 条失败，3 个凭空消失。
+    logger.info("联网核实账: 候选=%d 命中=%d 打开失败=%d(%s) 不是目录=%d(%s) "
+                "已死站跳过=%d 重复=%d 未核=%d",
+                tally["cands"], len(results),
+                len(tally["fetch_fail"]), ",".join(tally["fetch_fail"][:6]) or "-",
+                len(tally["not_toc"]), ",".join(tally["not_toc"][:6]) or "-",
+                len(tally["skipped_dead"]), len(tally["dup"]),
+                tally["unchecked"])
+    _tally_local.tally = tally
 
     if results:
         results.sort(key=lambda r: -r.score)

@@ -37,6 +37,11 @@ class DiscoveredSource(Source):
     PROBE_BASE = 6
     FAIL_FAST = 4
 
+    # 最近一次 `search()` 的核实账本（cands / hit / fetch_fail / not_toc …）。
+    # engine 读它写进 search.done 的 `联网核=` 一格 —— 「核实 5 个、0 命中」
+    # 这句话本身没有信息量，得说清 5 个分别死在哪（2026-10-31）。
+    last_tally: dict = {}
+
     # ------------------------------------------------------------------
     # 搜索
     # ------------------------------------------------------------------
@@ -49,9 +54,12 @@ class DiscoveredSource(Source):
                     self.log("来源库命中", f"{len(hit)} 本（联网发现攒下来的）", True)
                 except Exception:  # noqa: BLE001
                     pass
+            self.last_tally = {}
             return hit
         # 2) 库里没有 → 出去找
-        return discovery.discover(keyword, log=self.log)
+        out = discovery.discover(keyword, log=self.log)
+        self.last_tally = discovery.last_tally()
+        return out
 
     # ------------------------------------------------------------------
     # 目录
