@@ -1115,7 +1115,11 @@ class Engine:
             # 并行那一路的核实账本：线程已在 936 行 join 过，这时读是安全的。
             # ⚠ 线上三本书（10-30/10-31）走的全是这条 preempt 路径 ——
             #   只给串行那一路挂账本 = 天天复盘的那批日志一个字都看不到。
-            web_tally = getattr(web, "last_tally", None) or None
+            # ⚠ 用 `web_target`，**不是** `web`：`web` 只在「串行联网」那条
+            #   分支里赋值（1061 行），走 preempt 时它压根没定义 ——
+            #   2026-10-31 线上当场 `local variable 'web' referenced before
+            #   assignment`，所有"本地全灭 + 并行兜底"的搜索直接 500 到前端。
+            web_tally = getattr(web_target, "last_tally", None) or None
             if results and probe:
                 self.probe_all(
                     results, on_verified=on_verified, top=probe_top,

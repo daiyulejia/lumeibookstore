@@ -167,6 +167,27 @@ class FakeWeb:
         pass
 
 
+class HangSrc8(HangSrc):
+    """给场景 8 专用的挂起源。
+
+    ⚠ 必须换个 name（`hang8`），不能复用 `hang`：熔断器是**跨 search 累积**的，
+      前面 7 个场景里 `hang` 已经连续超时 3 次被拉黑 —— 场景 8 一开搜就把它
+      跳过（`sources_breaker=1`），根本没有源挂起，preempt 分支一次都进不去。
+      测试会"绿"，但绿的是空转；反证当场证明了这一点（把 `web` 改回去也不红）。
+    """
+    name = "hang8"
+
+
+class FakeWebNothing(FakeWeb):
+    """联网跑了但一条都没找到 —— 只有这样 `need_web` 才一直是真，
+    才会走到「并行已发起、本地仍无结果」那条 preempt 分支。"""
+
+    def search(self, kw):
+        with self.lock:
+            self.calls += 1
+        return []
+
+
 class DeadSrc:
     """搜得到书名、但**打不开目录**的源 —— 线上 registry 的原样复制。
 
@@ -507,6 +528,40 @@ def _run() -> int:
     else:
         bad(f"discover=False 时 web 被调 {web8.calls} 次、"
             f"web_skip={st13.get('web_skip')!r} —— 应为 0 次 + disabled")
+
+    # -----------------------------------------------------------------
+    section("8. 并行预取那条路（preempt）不能崩 —— 2026-10-31 线上事故")
+    # 线上原样：本地全灭 + 走到「并行已发起」分支时，`web_verify` 想读一个
+    # 只在**串行**分支里赋值过的局部变量 `web`，于是
+    #   `local variable 'web' referenced before assignment`
+    # 整个搜索 500 到前端。而这条 preempt 路径**之前一条测试都没覆盖**
+    # （`grep preempt tools/test_*.py` 空），真正的"漏了一条开关组合"。
+    old_preempt = getattr(E, "SEARCH_WEB_PREEMPT", 1.5)
+    E.SEARCH_WEB_PREEMPT = 0.05        # 让并行预取立刻开跑
+    web9 = FakeWebNothing()
+    st14: dict = {}
+    err9 = ""
+    try:
+        run_case([HangSrc8(), EmptySrc(), web9], discover=True, stats=st14,
+                 probe=True)
+    except Exception as e:  # noqa: BLE001
+        err9 = f"{type(e).__name__}: {e}"
+    finally:
+        E.SEARCH_WEB_PREEMPT = old_preempt
+        HangSrc.release()
+
+    if web9.calls >= 1:
+        ok(f"并行预取真的发起了（web 被调 {web9.calls} 次）")
+    else:
+        bad("并行预取没发起 —— 这个场景没测到 preempt 分支（测试自己脱节了）")
+    if not err9:
+        ok("preempt 路径不抛异常")
+    else:
+        bad(f"preempt 路径炸了：{err9} —— 所有「本地全灭 + 并行兜底」的搜索都会 500")
+    if "web_verify" in st14:
+        ok(f"stats 里带 web_verify={st14.get('web_verify')!r}（没有就整个字段缺）")
+    else:
+        bad("stats 缺 web_verify —— search.done 的 `联网核=` 会取不到")
 
     print("\n" + "=" * 62)
     print(f"通过 {ok_n} · 失败 {bad_n}")

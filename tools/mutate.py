@@ -963,6 +963,22 @@ MUTATIONS: list[Mutation] = [
              '        logger.debug("候选不是目录 %s: kind=%s 标题=《%s》 %s",',
              TOC_ANCHOR_TEST),
 
+    # ------- 联网核实账本（2026-10-31） -------
+    # 线上原样：`local variable 'web' referenced before assignment` ——
+    # preempt（并行预取）分支读了一个**只在串行分支赋值**的局部变量，
+    # 所有「本地全灭 + 并行兜底」的搜索 500 到前端。
+    # 这条路径此前一条测试都没有（grep preempt tools/test_*.py 是空的）。
+    Mutation("联网账本", "preempt 分支误用只在串行分支存在的 `web`（未赋值就崩）",
+             ENGINE,
+             '            web_tally = getattr(web_target, "last_tally", None) or None',
+             '            web_tally = getattr(web, "last_tally", None) or None',
+             FALLBACK_TEST),
+    Mutation("联网账本", "没跑过联网时把账本打成空串（`0→0` 会被读成「核了 0 个」）",
+             ENGINE,
+             '        return {"联网核": "-"}',
+             '        return {"联网核": ""}',
+             TOC_ANCHOR_TEST),
+
     # ------- 联网兜底的门：有结果但一条可读都没有（2026-10-27） -------
     # 线上原样（《我的阿勒泰》）：`候选=1 成书=1 确切=1 可读=0 联网发现=0`。
     # 唯一候选是确切命中（100 分）但是个死链，收手门 1.5s 就被它喂饱 →
