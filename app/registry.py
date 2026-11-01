@@ -106,6 +106,18 @@ UNHEALTHY_FAILS = 3
 #   `SEARCH_LEARN_MAX_TRIES` 自然放弃 —— 有终点，不会每晚白查。
 SEARCH_SHAPE_MAX = 3
 
+# 「连续 N 次」的观测去重窗口（秒）：同一个站在这么短的时间内重复失败，
+# 只算**一次**观察。
+#
+# 为什么必须有（2026-10-31 线上）：用户连点搜索 → 8 秒内 16 个相同请求同时
+# 扇出 → 每个站被同一关键词打十几次 → 回限速页 → 每次各记一票 →
+# **一次观察就凑满 3 票** → 4 个站的模板当场作废，可搜源 23→19。
+# 这类"我们自己打太快"的失败不该算在模板头上（和 `_looks_like_busy_page`、
+# `_looks_like_empty_result` 是同一族判据，只是这一条按**时间**去重而不是按页面）。
+# 取 3 分钟：足够盖住一次风暴/一次连点/一次批量探针，
+# 又短到"真坏的模板在下一次搜索里照样能凑满票"。
+SHAPE_BURST_WINDOW = 180
+
 # 失败原因分类 —— 传给 `note_site(..., why=...)`。
 # 为什么必须分类：`fail` 是个混装桶，"站点真的连不上"和"我们 URL 猜错了"
 # 都只让它 +1。于是 is_healthy 的比值判据会把猜错路径算成"这个站不行"，
@@ -825,7 +837,29 @@ def note_search_result(host: str, *, hits: int, raw: int,
             cur["search_shape"] = 0
             cur["search_last"] = _now()
         elif raw <= 0 and not empty_page:
-            cur["search_shape"] = int(cur.get("search_shape") or 0) + 1
+            # ⚠ 「连续 3 次」必须是**三次独立的观察**，不能是同一瞬间被数三遍。
+            #
+            # 线上实证（2026-10-31 23:14）：用户连点搜索，8 秒里 16 个一模一样的
+            # 请求同时扇出。来源站被同一关键词打了十几遍 → 回限速页/空页 →
+            # 每个请求各记一次 `search_shape` → **一次观察凑满 3 票** →
+            # 模板当场作废。那一晚 `www.itiandixs.com` / `m.kudushu.org` /
+            # `www.xuanhuanbiquge.com` / `www.xizids.com` 四个站就是这么死的，
+            # 可搜源池 23→19，而且这笔账算在**别的用户**头上（永久）。
+            #
+            # 判据不是"耗时阈值"，是**观测去重**：短窗口内的重复失败只算一次。
+            # 真坏掉的模板会在下一次（几分钟/几小时后）的搜索里继续失败，
+            # 票照样能凑满；被我们打限速的站则不会。
+            # 宁可晚一点判死（白打几次请求），也别把好模板错杀（召回直接消失）。
+            _now_ts = _now()
+            _last_shape = int(cur.get("search_shape_at") or 0)
+            if _now_ts - _last_shape > SHAPE_BURST_WINDOW:
+                cur["search_shape"] = int(cur.get("search_shape") or 0) + 1
+            else:
+                # 沉默地合并就等于"票数为什么没涨"永远查不出来，所以要说一句。
+                logger.info("站 %s 又一次打开的不是搜索页，但距上次仅 %ds"
+                            "（< %ds 窗口）—— 按同一次观察合并，不计入死刑",
+                            host, _now_ts - _last_shape, SHAPE_BURST_WINDOW)
+            cur["search_shape_at"] = _now_ts
         else:
             cur["search_miss"] = int(cur.get("search_miss") or 0) + 1
         # 连续「不是搜索页」到顶，且从来没搜出过 → 模板作废、回重学队列。

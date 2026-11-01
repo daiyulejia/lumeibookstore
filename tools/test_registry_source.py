@@ -571,6 +571,14 @@ def main() -> int:
     try:
         _one = RS.RegistrySource()._search_one
         for _ in range(R.SEARCH_SHAPE_MAX):
+            # ⚠ 每次调用前把上次的时间戳推远：`note_search_result` 会把
+            # `SHAPE_BURST_WINDOW` 内的重复失败合并成一次观察
+            # （2026-10-31 并发风暴误杀 4 个站之后加的）。这里要测的是
+            # 「攒够 3 次独立观察才判死」，不是去重 —— 紧挨着调三次只会记 1 票，
+            # 于是这条断言测的就变成去重了，两条判据互相掩盖。
+            _cur = R._load()["sites"].get("homelike.com")
+            if isinstance(_cur, dict):
+                _cur["search_shape_at"] = 0
             _one("homelike.com", {"search_tpl": "/?s={kw}"}, "不存在的书")
         _home = R.known_site("homelike.com")
     finally:

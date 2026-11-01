@@ -592,6 +592,22 @@ def main() -> int:
                         search_method="get", search_ver=R.LEARN_VER, **extra)
             return R.known_site(host)
 
+        def _obs(host: str, *, hits: int = 0, raw: int = 0,
+                 empty_page: bool = False) -> None:
+            """记一次**独立的**「拿关键词去搜」观察。
+
+            ⚠ 为什么不能直接连着调：`note_search_result` 会把
+            `SHAPE_BURST_WINDOW` 内的重复形态失败合并成一次观察
+            （2026-10-31 线上被并发风暴误杀 4 个站之后加的）。
+            这里要测的是「攒够 N 次独立观察才判死」，
+            所以每次调用前把上一次的时间戳推远 —— 否则测的就不是死刑，
+            而是去重本身，两条判据会互相掩盖。
+            """
+            cur = R._load()["sites"].get(host)
+            if isinstance(cur, dict):
+                cur["search_shape_at"] = 0
+            R.note_search_result(host, hits=hits, raw=raw, empty_page=empty_page)
+
         alive = _mk("alive.example.com")
         check("前提：模板合法、已核实 → 算可搜源", R.is_searchable(alive),
               str(alive))
@@ -618,7 +634,7 @@ def main() -> int:
         # ② 抽出 0 条 = 打开的不是搜索页 → 连记到顶就作废模板
         _mk("dead.example.com")
         for i in range(R.SEARCH_SHAPE_MAX):
-            R.note_search_result("dead.example.com", hits=0, raw=0)
+            _obs("dead.example.com")
             st = R.known_site("dead.example.com")
             if i < R.SEARCH_SHAPE_MAX - 1:
                 check(f"第 {i + 1} 次「不是搜索页」还留着模板（别一棒子打死）",
@@ -639,7 +655,7 @@ def main() -> int:
         _mk("flaky.example.com")
         R.note_search_result("flaky.example.com", hits=2, raw=9)
         for _ in range(R.SEARCH_SHAPE_MAX + 2):
-            R.note_search_result("flaky.example.com", hits=0, raw=0)
+            _obs("flaky.example.com")
         flaky = R.known_site("flaky.example.com")
         check("★ 搜出过一次 → 之后连续「不是搜索页」也不作废模板",
               bool((flaky.get("search_tpl") or "").strip()),
@@ -664,7 +680,7 @@ def main() -> int:
         _mk("reborn.example.com")
         R.note_search_result("reborn.example.com", hits=2, raw=9)
         for _ in range(R.SEARCH_SHAPE_MAX):
-            R.note_search_result("reborn.example.com", hits=0, raw=0)
+            _obs("reborn.example.com")
         old = R.known_site("reborn.example.com")
         check("前提：旧模板搜出过东西、也攒过形态失败",
               int(old.get("search_hit") or 0) == 1
@@ -695,11 +711,11 @@ def main() -> int:
               R.is_searchable(reborn), str(reborn))
         # 反向验一遍：新模板有**完整的 3 次机会**，不是接着旧账只剩 1 次
         for i in range(R.SEARCH_SHAPE_MAX - 1):
-            R.note_search_result("reborn.example.com", hits=0, raw=0)
+            _obs("reborn.example.com")
             check(f"新模板第 {i + 1} 次搜不出东西还留着（旧账不许提前把它弄死）",
                   bool((R.known_site("reborn.example.com").get("search_tpl") or "").strip()),
                   str(R.known_site("reborn.example.com").get("search_tpl")))
-        R.note_search_result("reborn.example.com", hits=0, raw=0)
+        _obs("reborn.example.com")
         check("★ 攒满 3 次才作废（旧模板的成绩/旧账都不许护着它）",
               R.known_site("reborn.example.com").get("search_tpl") == "",
               str(R.known_site("reborn.example.com").get("search_tpl")))
@@ -736,8 +752,7 @@ def main() -> int:
         check("前提：4 次空结果页之后形态失败账还是 0",
               int(mid.get("search_shape") or 0) == 0, str(mid))
         for _ in range(R.SEARCH_SHAPE_MAX):
-            R.note_search_result("mixed.example.com", hits=0, raw=0,
-                                 empty_page=False)
+            _obs("mixed.example.com")
         check("★ 真的「不是搜索页」照样攒满作废（empty_page 不许当免死金牌）",
               R.known_site("mixed.example.com").get("search_tpl") == "",
               repr(R.known_site("mixed.example.com").get("search_tpl")))
@@ -783,6 +798,33 @@ def main() -> int:
         check("★ 没模板的站，死因照留（自愈不许把有效结论一起抹掉）",
               (legacy.get("search_fail_why") or "") == "没找到可用的搜索接口",
               repr(legacy.get("search_fail_why")))
+
+        # -----------------------------------------------------------------
+        print("\n—— ⑧ 并发风暴不许把模板数死 ——")
+        # 线上实证（2026-10-31 23:14）：用户连点搜索，8 秒里 16 个一模一样的
+        # 请求同时扇出 → 来源站被同一关键词打限速 → 每个请求各记一票 →
+        # **一次观察凑满 3 票** → 当场作废。那晚
+        # www.itiandixs.com / m.kudushu.org / www.xuanhuanbiquge.com /
+        # www.xizids.com 四个站就是这么死的，可搜源 23→19，
+        # 而这笔账算在**别的用户**头上。
+        _mk("storm.example.com")
+        for _ in range(8):                       # 8 个并发请求，同一瞬间
+            R.note_search_result("storm.example.com", hits=0, raw=0)
+        storm = R.known_site("storm.example.com")
+        check("★ 同一瞬间的 8 次形态失败只算 1 次观察",
+              int(storm.get("search_shape") or 0) == 1,
+              f"shape={storm.get('search_shape')}")
+        check("★ 风暴过后模板还在（不是一次连点就判死）",
+              bool((storm.get("search_tpl") or "").strip()),
+              repr(storm.get("search_tpl")))
+        check("风暴里误杀的站仍然算可搜源", R.is_searchable(storm), str(storm))
+        # 反向：真坏的模板在**下一次**（隔开窗口的）搜索里照样能凑满票。
+        # 少了这条，把窗口设成无穷大也能"通过"—— 那就等于永不作废了。
+        for _ in range(R.SEARCH_SHAPE_MAX - 1):
+            _obs("storm.example.com")
+        check("★ 隔开窗口的观察仍然照常累积（真坏的模板还是要判死）",
+              R.known_site("storm.example.com").get("search_tpl") == "",
+              f"shape={R.known_site('storm.example.com').get('search_shape')}")
 
         # -----------------------------------------------------------------
         print("\n—— 护栏：全清要显式确认 ——")

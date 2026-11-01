@@ -94,6 +94,9 @@ from .library import valid_id
 from .logging_setup import get_logger, get_request_id, log_event, set_request_id
 from .logging_setup import setup as setup_logging
 from .models import Book, BookResult, Chapter
+# 同一个查询的**在飞**请求合并（不是缓存）。见 searchflight.py 顶部那段
+# 线上实证：8 秒 16 个重复请求会把搜索引擎和来源站一起打成"返回垃圾"。
+from .searchflight import Flight, FlightBook
 from .suggest import confirm as confirm_keyword
 from .utils import cache_clear
 
@@ -225,6 +228,10 @@ async def _auth_gate(request: Request, call_next):
 TASKS: dict[str, dict] = {}
 TASKS_LOCK = threading.Lock()
 MAX_TASKS_KEPT = 60
+
+# 在飞搜索的登记簿：同一个 (书名, 来源筛选, 抽样/探测/联网开关) 只跑一轮，
+# 后来的请求挂上去一起收结果。**跑完立刻摘掉**，不是缓存。
+_FLIGHTS = FlightBook()
 
 # 章节预取：正在后台补的章节，避免重复请求
 _prefetch_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="prefetch")
@@ -912,47 +919,32 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
               指定来源=len(only) if only else "全部",
               抽样=bool(sample), 探测=bool(probe), 联网=bool(discover))
 
-    async def gen():
-        queue: asyncio.Queue = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-        # 客户端还在不在。用户关标签页 / 连点两次搜索把上一个请求顶掉时，
-        # 这个会变 False —— 此时引擎已经没有人在听了。
-        alive = threading.Event()
-        alive.set()
+    # ---- 同一个查询的在飞请求合并 -------------------------------------
+    # 线上实证（2026-10-31 23:14）：8 秒里 16 个一模一样的请求，每个都自己
+    # 起一轮引擎 → 搜索引擎被判为滥用、返回**别的页面**（候选是「江苏教育
+    # 考试院」「3D 漫画」「educoder」，与书名毫无关系），于是 8 轮里 7 轮
+    # `候选=0`，而单独搜同一本书是 `候选=2 可读=2`；同时 4 个来源站的模板
+    # 被「连续 3 次不是搜索页」误判作废，可搜源池 23→19。详情见
+    # `app/searchflight.py` 的模块注释。
+    #
+    # 注意这不是缓存：合并的只有**此刻在飞**的那一轮，跑完立刻散掉。
+    _key = _FLIGHTS.key_of(kw, only, sample, probe, discover)
+    # ⚠ request_id 存在 ContextVar 里，而引擎跑在线程池 —— 不手动接过去
+    #   的话引擎打的日志全是 req=----，最需要追的那段过程反而没有 id。
+    _req = get_request_id()
 
-        # ⚠ 为什么需要它：引擎跑在 `loop.run_in_executor` 的**线程池**里，
-        #   而线程池任务**不会**因为客户端断开就停（run_in_executor 返回的
-        #   future 我们没有 await，也就没人取消它）。于是用户一走了之之后，
-        #   引擎仍会把整轮搜索跑完 —— 每个源照抓、每个候选照探测，
-        #   白烧 CPU 和网络，还去撞来源站的限速配额。
-        #   这是个**只有真机才会暴露**的问题：单测直接调引擎，永远看不到
-        #   客户端断开这回事。
-        #
-        #   这里不做硬取消（引擎内部有自己的收手/超时逻辑，硬打断更危险），
-        #   只做**止损**：断开后不再往队列里塞事件（没人在读），
-        #   并且不再触发任何以 on_verified 为入口的回调。
-        def push(obj):
-            if not alive.is_set():
-                return                      # 没人在读了，别攒队列
-            try:
-                loop.call_soon_threadsafe(queue.put_nowait, obj)
-            except RuntimeError:
-                # 事件循环已经关了（请求早结束）—— 静默丢弃，别把线程炸掉
-                alive.clear()
-
-        def on_verified(r):
-            if not alive.is_set():
-                return
-            push({"type": "verified", "data": r.to_dict()})
-
-        # ⚠ 引擎跑在 run_in_executor 的**线程池**里，而 request_id 存在
-        # ContextVar 中 —— ContextVar 不跨线程传播，不手动接过去的话，
-        # 引擎打的日志全是 req=----，"search.start" 和 "search.done" 之间
-        # 那段最需要追的过程反而没有 id，等于白做。
-        _req = get_request_id()
-
-        def run():
+    def _make_runner():
+        # 这一轮真正干活的部分。它**不关心**是哪个请求触发的 ——
+        # 事件统一交给 flight.push 广播给所有订阅者。
+        def run(push, should_stop):
+            # ⚠ request_id 存在 ContextVar 里，不跨线程传播 —— 手动接过去，
+            #   否则引擎打的日志全是 req=----（与 search.start 对不上）。
             set_request_id(_req)
+
+            def on_verified(r):
+                # 没有订阅者在听时 push 自己会丢，这里不必再判一次。
+                push({"type": "verified", "data": r.to_dict()})
+
             # 客户端走了就别再探测了。
             #
             # ⚠ 这里踩过一个想当然的错误：我原以为「断开后 push() 丢了不就行」，
@@ -961,10 +953,14 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
             #   engine.search 内部的探测线程池：它压根不关心有没有人在听，
             #   非要抽到「已验过 3 本正文」才收手。
             #
-            #   所以必须把"客户端还在不在"**传进去**，让它把收手条件换成
-            #   alive —— 一旦没人听了就立刻停，别再花 6 秒去打来源站。
+            #   所以必须把"还有没有人在听"**传进去**，让它把收手条件换掉 ——
+            #   一旦没人听了就立刻停，别再花 6 秒去打来源站。
+            #
+            # ⚠ 判据从「这个请求还在不在」改成了「**还有没有订阅者**」：
+            #   合并之后一轮可能有好几个请求在听，第一个走掉不代表没人要结果。
+            #   flight 只在一个不剩时才置 stop（见 `Flight.leave`）。
             def _dead() -> bool:
-                return not alive.is_set()
+                return bool(should_stop())
 
             try:
                 stats: dict = {}
@@ -1045,6 +1041,13 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           # 打 `源池=22→15` 之后，一眼就能看出"这次搜索的代价"。
                           # 取不到时打 `?`，不补 0 —— 0 会被读成"源池空了"。
                           源池=stats.get("pool_note") or "?",
+                          # ---- 这一轮**被几个请求共用** ----
+                          # 合并之后，N 个重复请求只产生 1 行 search.done。
+                          # 不打这个数，日志就会变成「当天只有 1 次搜索」——
+                          # 而真实情况可能是"用户连点了 16 次"，
+                          # 下一次复盘看到 16 行 search.start / 1 行 done 会
+                          # 以为是日志丢了。`合并=1` 才是正常的单发。
+                          合并=int(flight.joined),
                           耗时ms=int((time.perf_counter() - _t0) * 1000))
                 push({
                     "type": "done",
@@ -1073,10 +1076,29 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                 logger.exception("搜索失败（详细堆栈）")
                 push({"type": "error", "msg": str(e)})
 
+        return run
+
+    flight, _fresh = _FLIGHTS.acquire(
+        _key, lambda: Flight(_key, _make_runner(), _req))
+
+    async def gen():
+        loop = asyncio.get_running_loop()
+        # 挂到这一轮上（可能是别人已经在跑的那一轮）。已发生过的事件
+        # 会先补一遍，所以迟到的订阅者也能看到「正在联网找书」的过程。
+        sub = flight.subscribe(loop)
         try:
-            loop.run_in_executor(None, run)
+            # ⚠⚠ 踩过一次「断断续续才生效」，根因是一个**启动顺序竞态**：
+            #   生成器是惰性的 —— `gen()` 被创建时一行都不跑，要等
+            #   Starlette 第一次 `__anext__()` 才从头执行到第一个 yield。
+            #   客户端可能在第一个 yield 之前就断了，那样生成器**从头到尾
+            #   不会被启动**，finally 也就不执行。所以「启动引擎」和
+            #   「有 finally 兜底」必须是同一个 try 里的原子动作。
+            #
+            #   合并之后还多一条：启动权交给**第一个真正开始读的请求**，
+            #   而不是建 flight 的那个 —— 建完马上就断的情况已经见过了。
+            flight.ensure_started(loop)
             while True:
-                item = await queue.get()
+                item = await sub.queue.get()
                 yield json.dumps(item, ensure_ascii=False) + "\n"
                 if item["type"] in ("done", "error"):
                     break
@@ -1085,23 +1107,10 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
             # 说明"断开是预期路径、不是错误"，真正干活的是下面的 finally。
             raise
         finally:
-            # 无论是正常收尾还是客户端半路断开（GeneratorExit），
-            # 都要把 alive 落下来 —— 断开的场景正是这个开关存在的理由。
-            # 注意这里**不 join** 那个线程：它的收手逻辑靠自己的超时，
-            # 硬等会把响应拖住；我们要的只是"别再往里塞东西"。
-            #
-            # ⚠⚠ 踩过一次「断断续续才生效」，根因是一个**启动顺序竞态**：
-            #   原来 `run_in_executor(...)` 写在 `try:` **外面**。
-            #   生成器是惰性的 —— `gen()` 被创建时一行都不跑，要等
-            #   Starlette 第一次 `__anext__()` 才从头执行到第一个 yield。
-            #   如果客户端在**第一个 yield 之前**（响应头都还没吐出去）
-            #   就断了，生成器可能**从头到尾没被启动过** ——
-            #   于是 finally 不执行、alive 永远是 set 状态，
-            #   而 run() 已经在 executor 里跑起来了 → 照样把整轮跑完。
-            #   表现就是同一个测试跑两次、一次通过一次失败。
-            #   把 `run_in_executor` 挪进 try，保证「任务已提交」和
-            #   「有 finally 兜底」是同一个 try 里的原子动作。
-            alive.clear()
+            # 退订。**最后一个订阅者走掉**才算"没人听了"，引擎才会收手 ——
+            # 一个请求断开不该把其他还挂着的请求一起弄死。
+            # 这里不 join 引擎线程：它有自己的收手/超时逻辑，硬等会把响应拖住。
+            flight.leave(sub)
 
     return StreamingResponse(
         gen(),

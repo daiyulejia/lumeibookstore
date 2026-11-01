@@ -135,6 +135,10 @@ TRUST_TEST = ROOT / "tools" / "test_search_trust.py"
 SHIP_PY = ROOT / "tools" / "ship.py"
 CHAIN_TEST = ROOT / "tools" / "test_ship_chain.py"
 
+# 同一个查询的**在飞**请求合并（tools/test_search_flight.py）
+FLIGHT = ROOT / "app" / "searchflight.py"
+FLIGHT_TEST = ROOT / "tools" / "test_search_flight.py"
+
 
 @dataclass
 class Mutation:
@@ -1456,10 +1460,10 @@ MUTATIONS: list[Mutation] = [
              REGSRC_TEST),
     Mutation("srchdead", "raw=0 也记成 miss（形态失败永远攒不满 → 不作废、永不重学）",
              REGISTRY,
-             "        elif raw <= 0 and not empty_page:\n"
-             "            cur[\"search_shape\"] = int(cur.get(\"search_shape\") or 0) + 1",
-             "        elif raw <= 0 and not empty_page:\n"
-             "            cur[\"search_miss\"] = int(cur.get(\"search_miss\") or 0) + 1",
+             "            if _now_ts - _last_shape > SHAPE_BURST_WINDOW:\n"
+             "                cur[\"search_shape\"] = int(cur.get(\"search_shape\") or 0) + 1",
+             "            if _now_ts - _last_shape > SHAPE_BURST_WINDOW:\n"
+             "                cur[\"search_miss\"] = int(cur.get(\"search_miss\") or 0) + 1",
              REGISTRY_TEST),
     Mutation("srchdead", "攒到顶也留着坏模板（只清 search_ver，每晚白查、永远不重学）",
              REGISTRY,
@@ -1797,6 +1801,47 @@ MUTATIONS: list[Mutation] = [
              "                    if streak > 0 and (now - at) <= FORGET_AFTER:",
              "                    if streak > 0:",
              HEALTH_TEST),
+
+    # ---------------- 同一个查询的在飞请求合并（tools/test_search_flight.py）----
+    # ⚠ 失败方式：8 秒里 16 个重复请求各起一轮引擎 → 搜索引擎返回**别的页面**、
+    #   来源站被同一关键词打限速进而模板被作废（2026-10-31 线上：8 轮里 7 轮
+    #   `候选=0`，可搜源 23→19）。全程不报错，只在"搜不到"里显形。
+    Mutation("合并", "启动不幂等（每个订阅者都起一轮引擎）",
+             FLIGHT,
+             "            if self._submitted or self._finished:\n"
+             "                return False",
+             "            if self._finished:\n"
+             "                return False",
+             FLIGHT_TEST),
+    Mutation("合并", "一个订阅者走掉就收手（先断的那个把别人一起弄死）",
+             FLIGHT,
+             "            if not self._subs and not self._finished:",
+             "            if not self._finished:",
+             FLIGHT_TEST),
+    Mutation("合并", "合并粒度不含「联网开关」（关掉联网的请求会捡别人的结果）",
+             FLIGHT,
+             "                bool(sample), bool(probe), bool(discover))",
+             "                bool(sample), bool(probe), bool(probe))",
+             FLIGHT_TEST),
+    Mutation("合并", "迟到的订阅者不补课（它只等到超时，看不到任何事件）",
+             FLIGHT,
+             "            for ev in self._events:",
+             "            for ev in ():",
+             FLIGHT_TEST),
+
+    # ---------------- 并发风暴不许把模板数死（tools/test_registry.py ⑧）--------
+    # ⚠ 失败方式：一次连点/一次批量探针就把"连续 3 次不是搜索页"凑满，
+    #   4 个站的模板当场作废、可搜源永久缩水 —— 而且账算在别的用户头上。
+    Mutation("风暴", "形态失败不做观测去重（同一瞬间的 8 次各记一票）",
+             REGISTRY,
+             "            if _now_ts - _last_shape > SHAPE_BURST_WINDOW:",
+             "            if True:",
+             REGISTRY_TEST),
+    Mutation("风暴", "去重窗口不记时间（等于没有窗口）",
+             REGISTRY,
+             '            cur["search_shape_at"] = _now_ts',
+             '            cur["search_shape_at"] = 0',
+             REGISTRY_TEST),
 ]
 
 
