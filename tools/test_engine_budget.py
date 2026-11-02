@@ -752,6 +752,74 @@ def main() -> int:
           and talC.get("skipped") == 0,
           f"tally={talC}")
 
+    # --------------------------------------------------------------
+    print("\n—— ⑪ 正文抽样也有同一个病灶（断连要立刻停，不许等满一本） ——")
+    # 今天（2026-11-02）只修 probe_all 的话就是"半修"：`verify_samples` 里
+    # 是一模一样的 `for fut in as_completed(futs, timeout=budget)` +
+    # 循环体内 `should_stop()`。今天它没被踩到纯属运气 ——
+    # 两笔断连都在探测阶段就把预算烧完了，抽样被整段跳过。
+    _H.reset()
+    gateS = threading.Event()
+
+    class _SampleGate(Source):
+        name = "sample_gate"
+        display = "正文页卡住的源"
+        priority = 1
+        enabled = True
+        calls = 0
+
+        def search(self, keyword):
+            return [BookResult(title=keyword, url=f"http://sg/{i}",
+                               source=self.name, source_display=self.display)
+                    for i in range(2)]
+
+        def probe(self, r): return {"ok": True, "chapters": 3, "ms": 1}
+
+        def sample(self, r):
+            type(self).calls += 1
+            gateS.wait(30)
+            r.sample_ok = True
+            return {"ok": True, "chars": 500}
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    def _ready(kw):
+        cands = _SampleGate().search(kw)
+        for r in cands:
+            r.available = True
+        return cands
+
+    _SampleGate.calls = 0
+    engS = E.Engine(sources=[_SampleGate])
+    ab0 = engS.verify_samples(_ready("抽样甲"), should_stop=lambda: True,
+                              budget=2.0)
+    check("⑪-1 ★ 进来时已无订阅者 → 一本都不抽", _SampleGate.calls == 0,
+          f"还是抽了 {_SampleGate.calls} 本")
+    check("⑪-2 这种情况要如实报 aborted（断连止损靠它判红）", ab0 is True,
+          f"aborted={ab0}")
+
+    _stop_at2 = time.time() + 0.05
+    _SampleGate.calls = 0
+    _t = time.time()
+    ab1 = engS.verify_samples(_ready("抽样乙"),
+                              should_stop=lambda: time.time() >= _stop_at2,
+                              budget=2.0)
+    spent3 = time.time() - _t
+    check("⑪-3 ★ 抽到一半断开也要早收（2s 预算，不能等满）", spent3 < 1.0,
+          f"花了 {spent3:.2f}s（旧写法会等满 2.0s）")
+    check("⑪-4 中途断开也要报 aborted", ab1 is True, f"aborted={ab1}")
+    gateS.set()
+
+    # 反向：没断开时抽样必须真的跑（否则上面三条"不抽/早退"可能只是没实现）
+    _H.reset()
+    _SampleGate.calls = 0
+    ab2 = engS.verify_samples(_ready("抽样丙"), should_stop=lambda: False,
+                              budget=2.0)
+    check("⑪-5 反向：没断开时 2 本都抽了、且没误报 aborted",
+          _SampleGate.calls == 2 and ab2 is False,
+          f"抽了 {_SampleGate.calls} 本、aborted={ab2}")
+
     print("\n" + "=" * 62)
     if fail_n == 0:        print(f"通过 {ok_n} · 失败 0\n✓ 全部通过")
     else:

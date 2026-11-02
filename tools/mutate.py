@@ -777,7 +777,13 @@ MUTATIONS: list[Mutation] = [
              BUDGET_TEST),
     Mutation("budget", "探测永远用满额（不看这一轮还剩多少）",
              ENGINE,
+             "        pool = ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(head)))\n"
+             "        futs = {pool.submit(self._probe_one, r): r for r in head}\n"
+             "        ok = 0\n"
              "        deadline = time.time() + budget",
+             "        pool = ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(head)))\n"
+             "        futs = {pool.submit(self._probe_one, r): r for r in head}\n"
+             "        ok = 0\n"
              "        deadline = time.time() + PROBE_BUDGET",
              BUDGET_TEST),
     Mutation("budget", "预算用光时静默跳过探测（把「没验」伪装成「验过不可用」）",
@@ -958,13 +964,59 @@ MUTATIONS: list[Mutation] = [
              BUDGET_TEST),
     Mutation("重复探", "等待不切片轮询（一次等到预算用尽，断连要等满一个详情页）",
              ENGINE,
-             "                    waiting, timeout=min(0.2, left),",
-             "                    waiting, timeout=left,",
+             "                    waiting, timeout=min(0.2, left),\n"
+             "                    return_when=FIRST_COMPLETED)\n"
+             "                hit_enough = False\n"
+             "                for fut in done_now:\n"
+             "                    try:\n"
+             "                        r = fut.result()\n"
+             "                    except Exception as e:  # noqa: BLE001",
+             "                    waiting, timeout=left,\n"
+             "                    return_when=FIRST_COMPLETED)\n"
+             "                hit_enough = False\n"
+             "                for fut in done_now:\n"
+             "                    try:\n"
+             "                        r = fut.result()\n"
+             "                    except Exception as e:  # noqa: BLE001",
              BUDGET_TEST),
     Mutation("重复探", "探测账本不记轮次（重复探测在日志里看不出来）",
              ENGINE,
              "            tally[\"rounds\"] = int(tally.get(\"rounds\", 0)) + 1",
              "            tally[\"rounds\"] = 1",
+             BUDGET_TEST),
+    # 正文抽样是同一个病灶的第二处（今天只修探测就是"半修"）：
+    # 今天它没被踩到纯属运气 —— 两笔断连都在探测阶段就把预算烧完了。
+    Mutation("重复探", "抽样入口不看有没有人听（照旧提交整批正文页）",
+             ENGINE,
+             "        if should_stop and should_stop():\n"
+             "            logger.info(\"客户端已断开，跳过正文抽样（%d 个候选保持「正文未验证」）\",\n"
+             "                        len(targets))\n"
+             "            return True",
+             "        if False:\n"
+             "            logger.info(\"客户端已断开，跳过正文抽样（%d 个候选保持「正文未验证」）\",\n"
+             "                        len(targets))\n"
+             "            return True",
+             BUDGET_TEST),
+    Mutation("重复探", "抽样等待不切片轮询（断连要等满一本正文）",
+             ENGINE,
+             "                    waiting, timeout=min(0.2, left),\n"
+             "                    return_when=FIRST_COMPLETED)\n"
+             "                hit_enough = False\n"
+             "                for fut in done_now:\n"
+             "                    try:\n"
+             "                        r = fut.result()\n"
+             "                    except Exception:  # noqa: BLE001\n"
+             "                        r = futs[fut]\n"
+             "                        r.sample_ok = None",
+             "                    waiting, timeout=left,\n"
+             "                    return_when=FIRST_COMPLETED)\n"
+             "                hit_enough = False\n"
+             "                for fut in done_now:\n"
+             "                    try:\n"
+             "                        r = fut.result()\n"
+             "                    except Exception:  # noqa: BLE001\n"
+             "                        r = futs[fut]\n"
+             "                        r.sample_ok = None",
              BUDGET_TEST),
 
     # ------- 目录识别：slug 章节 id / 散文集目录（2026-10-31） -------

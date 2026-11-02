@@ -1641,31 +1641,56 @@ class Engine:
             picked.append(r)
         targets = picked
 
+        # 客户端已经走了 → 一本都不抽（与 probe_all 入口同一道防线）。
+        # 抽样是整轮里第二贵的一段（每本都要开一次正文页），没人看时纯白烧。
+        if should_stop and should_stop():
+            logger.info("客户端已断开，跳过正文抽样（%d 个候选保持「正文未验证」）",
+                        len(targets))
+            return True
+
         pool = ThreadPoolExecutor(max_workers=min(SAMPLE_WORKERS, len(targets)))
         futs = {pool.submit(self._sample_one, r): r for r in targets}
         ok = 0
         aborted = False
+        deadline = time.time() + budget
+        waiting = set(futs)
         try:
-            for fut in as_completed(futs, timeout=budget):
+            # ⚠ 与 `probe_all` 同一个坑，2026-11-02 一起修（那边当天实测白烧 24 秒）：
+            #   `for fut in as_completed(futs, timeout=budget)` 会把 `should_stop()`
+            #   的检查关进**循环体**，而循环体要等第一本正文抽完才进得去 ——
+            #   一个卡住的正文页就能把断连止损拖满整个抽样预算（10 秒）。
+            #   「同类没踩到」不等于没问题：今天两笔断连都在探测阶段就把预算
+            #   烧完了，抽样被整段跳过，所以它幸免。修法必须一致，否则只是运气。
+            while waiting:
                 if should_stop and should_stop():
                     aborted = True
                     logger.info("客户端已断开，停止正文抽样（已验 %d 本）", ok)
                     break
-                try:
-                    r = fut.result()
-                except Exception:  # noqa: BLE001
-                    r = futs[fut]
-                    r.sample_ok = None
-                if on_verified:
-                    on_verified(r)
-                if r.sample_ok:
-                    ok += 1
-                    if ok >= SAMPLE_ENOUGH:
-                        # 正文本已经验过几本了，够用户选；再抽下去只是拖时间。
-                        logger.info("已验过 %d 本正文，提前收手", ok)
-                        break
-        except Exception:  # noqa: BLE001
-            logger.info("抽样校验超预算，部分候选未做正文验证")
+                left = deadline - time.time()
+                if left <= 0.0:
+                    logger.info("抽样校验超预算，部分候选未做正文验证")
+                    break
+                done_now, waiting = wait(
+                    waiting, timeout=min(0.2, left),
+                    return_when=FIRST_COMPLETED)
+                hit_enough = False
+                for fut in done_now:
+                    try:
+                        r = fut.result()
+                    except Exception:  # noqa: BLE001
+                        r = futs[fut]
+                        r.sample_ok = None
+                    if on_verified:
+                        on_verified(r)
+                    if r.sample_ok:
+                        ok += 1
+                        if ok >= SAMPLE_ENOUGH:
+                            # 正文本已经验过几本了，够用户选；再抽下去只是拖时间。
+                            logger.info("已验过 %d 本正文，提前收手", ok)
+                            hit_enough = True
+                            break
+                if hit_enough:
+                    break
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
