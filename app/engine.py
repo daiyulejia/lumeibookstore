@@ -1010,10 +1010,19 @@ class Engine:
             pb = budget_slice(t_start, PROBE_BUDGET,
                               SEARCH_TOTAL_BUDGET - SAMPLE_RESERVE)
             if pb <= 0.0:
+                # ⚠ 文案别说反话（2026-11-02 上线后第一笔搜索就撞上了）：
+                #   原来写「跳过探测：总预算 22s 已用完（已耗 18.5s）」——
+                #   22 秒的预算在 18.5 秒时"用完"了，一句话自相矛盾。
+                #   真实原因是这一段的上限**不是** 22s，而是
+                #   `SEARCH_TOTAL_BUDGET - SAMPLE_RESERVE` = 16s（给抽样留了 6s）。
+                #   两个数字摆在一起时，日报只会去查一个不存在的"预算被突破"。
                 logger.info(
-                    "跳过探测：总预算 %.0fs 已用完（已耗 %.1fs）—— %d 个候选保持"
+                    "跳过探测：已耗 %.1fs，已过这一段的上限 %.0fs"
+                    "（总预算 %.0fs，其中给正文抽样留了 %.0fs）—— %d 个候选保持"
                     "「未验证」，不再为补徽标让用户多等",
-                    SEARCH_TOTAL_BUDGET, time.time() - t_start, len(results))
+                    time.time() - t_start,
+                    SEARCH_TOTAL_BUDGET - SAMPLE_RESERVE,
+                    SEARCH_TOTAL_BUDGET, SAMPLE_RESERVE, len(results))
             else:
                 self.probe_all(results, on_verified=on_verified, top=probe_top,
                                should_stop=_stop, budget=pb, tally=probe_tally)

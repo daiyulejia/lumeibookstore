@@ -782,11 +782,8 @@ MUTATIONS: list[Mutation] = [
              BUDGET_TEST),
     Mutation("budget", "预算用光时静默跳过探测（把「没验」伪装成「验过不可用」）",
              ENGINE,
-             "                logger.info(\n"
-             "                    \"跳过探测：总预算 %.0fs 已用完（已耗 %.1fs）—— %d 个候选保持\"\n"
-             "                    \"「未验证」，不再为补徽标让用户多等\",\n"
-             "                    SEARCH_TOTAL_BUDGET, time.time() - t_start, len(results))",
-             "                pass",
+             "            if pb <= 0.0:",
+             "            if False:",
              BUDGET_TEST),
     Mutation("budget", "stats 里不报预算数值（超了也没人知道）",
              ENGINE,
