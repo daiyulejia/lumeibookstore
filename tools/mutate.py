@@ -753,8 +753,8 @@ MUTATIONS: list[Mutation] = [
     #   而消失（本轮加 budget= 就踩了，突变报"源码脱节"）。锚在**参数本身**上。
     Mutation("engine", "探测阶段直接透传原始 should_stop（绕过唯一的记账点）",
              ENGINE,
-             "                               should_stop=_stop, budget=pb)",
-             "                               should_stop=should_stop, budget=pb)",
+             "                               should_stop=_stop, budget=pb, tally=probe_tally)",
+             "                               should_stop=should_stop, budget=pb, tally=probe_tally)",
              FALLBACK_TEST),
 
     # ------- 搜索总预算 + 搜索账目（tools/test_engine_budget.py）-------
@@ -777,12 +777,8 @@ MUTATIONS: list[Mutation] = [
              BUDGET_TEST),
     Mutation("budget", "探测永远用满额（不看这一轮还剩多少）",
              ENGINE,
-             "            for fut in as_completed(futs, timeout=budget):\n"
-             "                if should_stop and should_stop():\n"
-             "                    # 客户端断开 → 没必要再把剩下的候选一个个打开验证。",
-             "            for fut in as_completed(futs, timeout=PROBE_BUDGET):\n"
-             "                if should_stop and should_stop():\n"
-             "                    # 客户端断开 → 没必要再把剩下的候选一个个打开验证。",
+             "        deadline = time.time() + budget",
+             "        deadline = time.time() + PROBE_BUDGET",
              BUDGET_TEST),
     Mutation("budget", "预算用光时静默跳过探测（把「没验」伪装成「验过不可用」）",
              ENGINE,
@@ -933,6 +929,45 @@ MUTATIONS: list[Mutation] = [
              ENGINE,
              "                web_skipped_budget = True",
              "                web_skipped_budget = False",
+             BUDGET_TEST),
+
+    # ------- 探测：不许重探 / 断连要立刻停（2026-11-02 复盘，tools/test_engine_budget.py ⑨⑩）
+    # 线上原样（01:24:22 搜《情欲超市全集》）：
+    #     search.done 候选=1 可读=0 联网=preempt 耗时ms=28008
+    #   22 秒的常规上限走到 28 秒，而 `over_budget=False`（走了联网，额度 32s）
+    #   → **没有任何判据会红**。翻日志才发现同一个候选被探了两遍
+    #   （01:24:10 / 01:24:22 各「探测超预算」一次，每次 12 秒）。
+    # 另一半（01:23:54 断开）：断连后仍探了 24 秒才收手 ——
+    #   `should_stop()` 检查在"取到一个已完成的候选之后"，卡住的详情页把它废掉了。
+    Mutation("重复探", "已探过的候选照样再探一遍（同一本书打开两次详情页）",
+             ENGINE,
+             "            if r.available is not None:\n"
+             "                skipped_probed += 1\n"
+             "                continue",
+             "            if False:\n"
+             "                skipped_probed += 1\n"
+             "                continue",
+             BUDGET_TEST),
+    Mutation("重复探", "断连时不看有没有人听，照样提交整批探测",
+             ENGINE,
+             "        if should_stop and should_stop():\n"
+             "            logger.info(\"客户端已断开，跳过探测（%d 个候选保持未验证）\",\n"
+             "                        len(results))\n"
+             "            return results",
+             "        if False:\n"
+             "            logger.info(\"客户端已断开，跳过探测（%d 个候选保持未验证）\",\n"
+             "                        len(results))\n"
+             "            return results",
+             BUDGET_TEST),
+    Mutation("重复探", "等待不切片轮询（一次等到预算用尽，断连要等满一个详情页）",
+             ENGINE,
+             "                    waiting, timeout=min(0.2, left),",
+             "                    waiting, timeout=left,",
+             BUDGET_TEST),
+    Mutation("重复探", "探测账本不记轮次（重复探测在日志里看不出来）",
+             ENGINE,
+             "            tally[\"rounds\"] = int(tally.get(\"rounds\", 0)) + 1",
+             "            tally[\"rounds\"] = 1",
              BUDGET_TEST),
 
     # ------- 目录识别：slug 章节 id / 散文集目录（2026-10-31） -------

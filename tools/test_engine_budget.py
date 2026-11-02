@@ -610,9 +610,139 @@ def main() -> int:
         (E.SEARCH_HARD_DEADLINE, E.SEARCH_MIN_WAIT, E.SEARCH_SOFT_DEADLINE,
          E.SEARCH_GRACE, E.SEARCH_ENOUGH) = _old_e
 
+    # --------------------------------------------------------------
+    print("\n—— ⑨ 同一批候选不许被探两遍（重复探测 = 白等一整段预算） ——")
+    # 动机（线上 2026-11-02 01:24:22，搜《情欲超市全集》）：
+    #
+    #     search.done 书名=情欲超市全集 候选=1 可读=0 确切=0 联网=preempt \
+    #                 答=5/7 卡满=否 耗时ms=28008
+    #     01:24:10 探测超预算   ← 第 1 轮，1 个候选，12 秒
+    #     01:24:22 探测超预算   ← 第 2 轮，还是那 1 个候选，又 12 秒
+    #
+    # 28 秒里有一半是纯重复。而它**没有任何判据会红**：
+    # `over_budget` 按 32 秒（走了联网兜底）算，28 < 32 → False。
+    # 根因：`search()` 里两处 probe_all —— 扇出之后的通用探测，和
+    # 「并行联网兜底已跑过」那段各探一次；后者拿到的是 rank 之后的全量，
+    # 把前面刚探过（`available` 已有值）的候选又探了一遍。
+    class _CountProbe(Source):
+        name = "probe_count"
+        display = "数探测次数的源"
+        priority = 1
+        enabled = True
+        calls = 0
+
+        def search(self, keyword):
+            return [BookResult(title=keyword, url=f"http://pc/{i}",
+                               source=self.name, source_display=self.display)
+                    for i in range(2)]
+
+        def probe(self, r):
+            type(self).calls += 1
+            return {"ok": True, "chapters": 3, "ms": 1}
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    _H.reset()
+    _CountProbe.calls = 0
+    engP = E.Engine(sources=[_CountProbe])
+    candsP = _CountProbe().search("探两遍")
+    tal: dict = {}
+    engP.probe_all(candsP, tally=tal)
+    first_round = _CountProbe.calls
+    check("⑨-1 第一轮：2 个候选各探一次（反证下面那条不是「压根不探」）",
+          first_round == 2, f"探了 {first_round} 次")
+    engP.probe_all(candsP, tally=tal)
+    check("⑨-2 ★ 已探过的候选不再探第二遍（线上那 12 秒就死在这）",
+          _CountProbe.calls == first_round,
+          f"第二轮又多探了 {_CountProbe.calls - first_round} 次")
+    check("⑨-3 账本记下「几轮 / 探几个 / 跳过几个已验」（search.done 的 探测=）",
+          tal.get("rounds") == 2 and tal.get("probed") == 2
+          and tal.get("skipped") == 2,
+          f"tally={tal}")
+
+    # --------------------------------------------------------------
+    print("\n—— ⑩ 客户端断开要立刻停探测（不许等满一个候选的详情页） ——")
+    # 动机（线上 2026-11-02 01:23:54，搜《情欲超市全集》）：
+    #
+    #     01:23:54 客户端已断开，扇出收手：已返回 2/7 个源
+    #     01:24:06 探测超预算            ← 断开后 12 秒
+    #     01:24:10 探测超预算            ← 断开后 16 秒
+    #     01:24:18 跳过正文抽样（已耗 25.8s）
+    #     01:24:18 search.done ... aborted=True 耗时ms=25810
+    #
+    # 根因：`for fut in as_completed(futs, timeout=budget)` 把 `should_stop()`
+    # 检查写在**循环体**里，而循环体要等第一个候选探完才进得去 ——
+    # 一个卡住的详情页就能把"断连止损"拖满整个探测预算。
+    # 判据刻意避开耗时阈值（会随机器负载漂），只看**机制**：
+    #   · 断开发生在进入探测之前 → 一个候选都不该被提交（次数为 0，确定性）
+    #   · 断开发生在探测途中     → 必须显著早于 budget 返回（2s 预算，<1s 返回）
+    import threading
+
+    gate = threading.Event()
+
+    class _BlockProbe(Source):
+        name = "probe_block"
+        display = "详情页卡住的源"
+        priority = 1
+        enabled = True
+        calls = 0
+
+        def search(self, keyword):
+            return [BookResult(title=keyword, url=f"http://pb/{i}",
+                               source=self.name, source_display=self.display)
+                    for i in range(3)]
+
+        def probe(self, r):
+            type(self).calls += 1
+            gate.wait(30)          # 假装这个详情页永远打不开
+            return {"ok": True, "chapters": 3, "ms": 1}
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    _H.reset()
+    _BlockProbe.calls = 0
+    engB = E.Engine(sources=[_BlockProbe])
+    candsB = _BlockProbe().search("断开了")
+    _t = time.time()
+    engB.probe_all(candsB, should_stop=lambda: True, budget=2.0)
+    spent1 = time.time() - _t
+    check("⑩-1 ★ 进来时已经没有订阅者 → 一个候选都不提交（不烧详情页）",
+          _BlockProbe.calls == 0,
+          f"还是提交了 {_BlockProbe.calls} 个探测")
+    check("⑩-2 立刻返回，不等探测预算", spent1 < 0.5, f"花了 {spent1:.2f}s")
+
+    _stop_at = time.time() + 0.05
+    _BlockProbe.calls = 0
+    _t = time.time()
+    engB.probe_all(candsB, should_stop=lambda: time.time() >= _stop_at,
+                   budget=2.0)
+    spent2 = time.time() - _t
+    check("⑩-3 ★ 探到一半断开也要早收（2s 预算，不能等满）",
+          spent2 < 1.0, f"花了 {spent2:.2f}s（旧写法会等满 2.0s）")
+    gate.set()                 # 放开卡住的探测线程，别让测试进程退不出去
+
+    # 反向：没断开时必须真能探出结果 —— 否则上面两条"不探/早退"
+    # 可能只是因为探测压根不工作（恒真的判据没有牙）。
+    _H.reset()
+    _BlockProbe.calls = 0
+    candsC = _BlockProbe().search("没断开")
+    engC = E.Engine(sources=[_BlockProbe])
+    talC: dict = {}
+    outC = engC.probe_all(candsC, should_stop=lambda: False, budget=2.0,
+                          tally=talC)
+    check("⑩-4 反向：没断开时 3 个候选都探到了（证明上面不是恒真）",
+          _BlockProbe.calls == 3
+          and sum(1 for r in outC if r.available) == 3,
+          f"探了 {_BlockProbe.calls} 次、可用 {sum(1 for r in outC if r.available)}")
+    check("⑩-5 账本在正常路径也要有数（rounds=1 / 探3个 / 跳过0）",
+          talC.get("rounds") == 1 and talC.get("probed") == 3
+          and talC.get("skipped") == 0,
+          f"tally={talC}")
+
     print("\n" + "=" * 62)
-    if fail_n == 0:
-        print(f"通过 {ok_n} · 失败 0\n✓ 全部通过")
+    if fail_n == 0:        print(f"通过 {ok_n} · 失败 0\n✓ 全部通过")
     else:
         print(f"通过 {ok_n} · 失败 {fail_n}\n✗ 有 {fail_n} 项没过")
     print("=" * 62)

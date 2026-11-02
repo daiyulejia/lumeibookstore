@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from typing import Callable, Optional
 
 from .aggregate import group as group_books
@@ -273,6 +273,34 @@ def source_ledger(stats: dict) -> dict:
         "卡满": "是" if (stats.get("hit_deadline")
                           and not stats.get("pushed")) else "否",
     }
+
+
+def probe_ledger(tally: Optional[dict]) -> dict:
+    """把「这一轮探测跑了几轮」摊成 search.done 里的一格。
+
+    为什么需要它（2026-11-02 复盘）：
+      线上《情欲超市全集》那一行是 `候选=1 可读=0 耗时ms=28008`。
+      22.0 秒的常规上限被走到 28 秒，而 `over_budget=False`（这一轮走了联网，
+      额度放大到 32 秒）—— 于是**没有任何判据认为它异常**。
+      真翻日志才发现：同一个候选被**探了两遍**。
+        01:24:10 探测超预算
+        01:24:22 探测超预算      ← 同一个 1 条候选，第二轮再来 12 秒
+      根因是 `search()` 里有两处 probe_all：通用那段（扇出探测完）和
+      「并行联网已跑过」那段各探一次，而后者拿到的是**排好序的全量结果**，
+      把前面刚探过（`available` 已有值）的候选又探了一遍。
+      12 秒纯重复，用户只感受到"28 秒才出结果、还没有一本能读"。
+
+    这一格的用处：**不用看耗时也能看出探测跑了几轮**。
+    `2轮` 配上 `探=1个` 就说明同一批候选被重探了；
+    跳过已验 > 0 则说明去重生效了（否则永远为 0，等于没修）。
+
+    格式：`2轮/探1个/跳过已验0`；没跑过探测打 `-`（不补 0，0 会被读成"探了 0 个"）
+    """
+    if not tally:
+        return {"探测": "-"}
+    return {"探测": (f"{tally.get('rounds', 0)}轮"
+                     f"/探{tally.get('probed', 0)}个"
+                     f"/跳过已验{tally.get('skipped', 0)}")}
 
 
 def web_ledger(tally: Optional[dict]) -> dict:
@@ -971,6 +999,11 @@ class Engine:
                 例子=[t for t, _ in (rpt.get("below_cut") or [])[:3]]
                      + [t for t, _ in (rpt.get("loose") or [])[:3]])
 
+        # 探测这一轮的账本（跑了几轮 / 探了几个 / 跳过几个已探过的）。
+        # 2026-11-02 加：`候选=1 可读=0 耗时ms=28008` 那一行里，唯一的异常是
+        # "同一个候选被探了两遍"，而它**没有任何字段能看出来** —— 耗时被
+        # `over_budget` 的 32 秒联网额度盖住了。见 probe_ledger。
+        probe_tally: dict = {}
         if probe and results:
             # 探测预算 = min(满额, 总预算 - 已耗 - 给抽样预留的那份)。
             # 扇出已经烧掉 20 秒时这里会算出 0 —— 那就干脆别探，并**说出来**。
@@ -983,7 +1016,7 @@ class Engine:
                     SEARCH_TOTAL_BUDGET, time.time() - t_start, len(results))
             else:
                 self.probe_all(results, on_verified=on_verified, top=probe_top,
-                               should_stop=_stop, budget=pb)
+                               should_stop=_stop, budget=pb, tally=probe_tally)
             results = self.refine(results, keyword)
 
         # ---- 本地一条可读的都没有？出去找 ----
@@ -1085,7 +1118,8 @@ class Engine:
                             extra, on_verified=on_verified, top=len(extra),
                             should_stop=_stop,
                             budget=budget_slice(t_start, PROBE_BUDGET,
-                                                DISCOVER_TOTAL_BUDGET))
+                                                DISCOVER_TOTAL_BUDGET),
+                            tally=probe_tally)
                     results = rank(results + extra, keyword)
                     results = self.refine(results, keyword)
             elif web is not None:
@@ -1125,7 +1159,8 @@ class Engine:
                     results, on_verified=on_verified, top=probe_top,
                     should_stop=_stop,
                     budget=budget_slice(t_start, PROBE_BUDGET,
-                                        DISCOVER_TOTAL_BUDGET))
+                                        DISCOVER_TOTAL_BUDGET),
+                    tally=probe_tally)
                 results = self.refine(results, keyword)
         elif need_web:
             # 该联网、但调用方把 discover 关了 —— 记清楚原因。
@@ -1136,10 +1171,20 @@ class Engine:
         if sample and results:
             sb = budget_slice(t_start, SAMPLE_BUDGET)
             if sb <= 0.0:
+                # ⚠ 文案别说反话（2026-11-02 复盘）：
+                #   原来写的是「跳过正文抽样：总预算 22s 已用完（已耗 28.0s）」，
+                #   而这一轮走了联网兜底、对外额度是 32s，同一行的
+                #   `over_budget` 是 **False** —— 一句话里"预算 22s"和"没超预算"
+                #   同时成立，日报只能读成"超了 6 秒"，于是去查一个不存在的违约。
+                #   抽样这一段确实是按常规上限 22s 算的（它不该吃掉联网那段额度），
+                #   那就把这两件事都写清楚：耗了多少、按哪个上限算的不够。
                 logger.info(
-                    "跳过正文抽样：总预算 %.0fs 已用完（已耗 %.1fs）—— %d 个候选"
-                    "保持「正文未验证」，不再为此让用户多等",
-                    SEARCH_TOTAL_BUDGET, time.time() - t_start, len(results))
+                    "跳过正文抽样：已耗 %.1fs，已过常规上限 %.0fs（本轮走了联网，"
+                    "对外额度 %.0fs）—— %d 个候选保持「正文未验证」，"
+                    "不再为此让用户多等",
+                    time.time() - t_start, SEARCH_TOTAL_BUDGET,
+                    (DISCOVER_TOTAL_BUDGET if (discover and need_web)
+                     else SEARCH_TOTAL_BUDGET), len(results))
             else:
                 aborted = self.verify_samples(results, on_verified=on_verified,
                                               should_stop=_stop, budget=sb)
@@ -1271,6 +1316,8 @@ class Engine:
                 # 联网核实这一轮的账（候选/命中/失败点名/不是目录点名）。
                 # None = 这轮没跑联网，`web_ledger()` 会把它打成 `-`。
                 "web_verify": web_tally,
+                # 探测跑了几轮（见 probe_ledger）。空 = 这轮没探过。
+                "probe_tally": probe_tally or None,
                 # 断开收手是否真的触发了（供真机测试断言）。
                 # ⚠ 用它而不是"耗时是不是更短"来验证收手 —— 耗时受源站快慢
                 #   影响，波动能有 5 倍（实测 2.3s ~ 25.6s），
@@ -1354,18 +1401,49 @@ class Engine:
         top: int = DEFAULT_PROBE_TOP,
         should_stop: Optional[Callable[[], bool]] = None,
         budget: float = PROBE_BUDGET,
+        tally: Optional[dict] = None,
     ) -> list[BookResult]:
         """并发探测候选，可用的排到前面。
 
         results 已按相关性排好序，这里按顺序取，但**每个来源限量**，
         且配额按该来源的实测速度自适应 —— 同域请求会被限速串行，
         一个每页 2 秒的慢站必须有更小的配额，否则会独吞整轮搜索预算。
+
+        `tally` 可选：传一个 dict 进来就把「跑了几轮 / 探了几个 / 跳过几个已验过的」
+        累加进去（见 `probe_ledger`）。search.done 靠它区分"探了一轮"和"探了两轮"。
         """
+        if tally is not None:
+            tally["rounds"] = int(tally.get("rounds", 0)) + 1
+        # ⚠ 客户端已经走了就一个候选都别提交。
+        #   踩过（2026-11-02 线上 01:23:54）：客户端在扇出阶段就断开了，
+        #   引擎收手退出扇出循环，然后**照样**进来探测 —— 而下面的等待循环
+        #   里 `should_stop()` 是写在"取到一个已完成的候选之后"的，
+        #   于是第一个候选没探完（12 秒）之前，那条检查一次都执行不到。
+        #   实测白烧 24 秒：01:23:54 断开 → 01:24:06/01:24:10/01:24:18
+        #   连着三轮「探测超预算」，才在 01:24:18 写出 search.done。
+        #   没人听结果时去撞来源站，既是浪费，也是"自己把自己打成搜不到"的同源问题。
+        if should_stop and should_stop():
+            logger.info("客户端已断开，跳过探测（%d 个候选保持未验证）",
+                        len(results))
+            return results
+
         head: list[BookResult] = []
         per_src: dict[str, int] = {}
+        skipped_probed = 0
         for r in results:
             if len(head) >= top:
                 break
+            # ⚠ `available` 有值（True/False）= 这个候选**已经被探过**，别再探第二遍。
+            #   踩过（2026-11-02 线上 01:24:22）：`search()` 里有两处 probe_all ——
+            #   一是扇出之后的通用探测，二是「并行联网兜底已跑过」那段。
+            #   后者拿到的 results 是 rank 之后的全量，前面刚探过的候选还在里面，
+            #   于是一本书被打开两次详情页，同一条候选白等 12 秒。
+            #   实测：`候选=1` 的一轮出现两次「探测超预算」，耗时 28.0 秒，
+            #   而 `over_budget=False`（走了联网，额度 32 秒）—— 没有任何判据报警。
+            #   去重放在这里而不是调用处：将来再加第三条探测路径也不会重犯。
+            if r.available is not None:
+                skipped_probed += 1
+                continue
             src = self._find_source(r.source)
             quota = min(PROBE_PER_SOURCE, src.probe_limit()) if src else 1
             n = per_src.get(r.source, 0)
@@ -1374,54 +1452,76 @@ class Engine:
             per_src[r.source] = n + 1
             head.append(r)
 
+        if tally is not None:
+            tally["skipped"] = int(tally.get("skipped", 0)) + skipped_probed
+            tally["probed"] = int(tally.get("probed", 0)) + len(head)
+
         if not head:
             return results
 
         pool = ThreadPoolExecutor(max_workers=min(PROBE_WORKERS, len(head)))
         futs = {pool.submit(self._probe_one, r): r for r in head}
         ok = 0
+        deadline = time.time() + budget
+        waiting = set(futs)
         try:
-            for fut in as_completed(futs, timeout=budget):
+            # ⚠⚠ 这里**不能**写 `for fut in as_completed(futs, timeout=budget)`。
+            #   那个写法把"客户端断开"的检查放进了循环体，而循环体要等
+            #   **第一个候选探完**才会进 —— 一个卡住的详情页能把断连止损
+            #   拖满整个探测预算（线上实测 12 秒），而它明明是一个布尔量
+            #   就能回答的问题。改成 0.2 秒切片轮询：最多 0.2 秒就认。
+            #   0.2 是"够细"和"别空转 CPU"的折中（12 秒预算 ≈ 60 次轮询）。
+            while waiting:
                 if should_stop and should_stop():
                     # 客户端断开 → 没必要再把剩下的候选一个个打开验证。
                     # 探测是整轮搜索里最贵的一段（每个候选都要打一次详情页），
                     # 没人看结果时继续跑纯粹是浪费。
                     logger.info("客户端已断开，停止探测（已验证 %d 个）", ok)
                     break
-                try:
-                    r = fut.result()
-                except Exception as e:  # noqa: BLE001
-                    r = futs[fut]
-                    r.available = False
-                    r.note = str(e)[:70]
-                if on_verified:
-                    on_verified(r)
-                if r.available:
-                    ok += 1
-                    # 埋点：哪一个候选、哪一源、验证结果、耗时。
-                    # 这条是"L 源闭环"的眼睛 —— 想判断一个源好不好，
-                    # 就看 verify.ok 里它出现的比例；全是 fail 的就是坏源，
-                    # 该进定期排查名单（registry.check）。
-                    # 注意**逐条发**而不是只发汇总：线上排障时要能按
-                    # 「源=xxx」grep 出这个源最近到底怎么挂的，汇总给不了这个。
-                    log_event(logger, "verify.ok", 源=r.source,
-                              书名=r.title[:30], 章=r.chapter_count,
-                              耗时=f"{r.probe_ms}ms")
-                    if ok >= PROBE_ENOUGH:
-                        # 已经有这么多个可用来源了，剩下的不必再验：
-                        # 再验一个就要多占一次同域请求，而用户在等。
-                        logger.info("已验出 %d 个可用候选，提前收手", ok)
-                        break
-                else:
-                    # 失败也逐条记：失败原因（超时/无正文/404）是评估源质量
-                    # 最值钱的信息 —— 只说"某个源不行"没法定位是站点改版
-                    # 还是被限流，带上 note 才能一眼分辨。
-                    log_event(logger, "verify.fail", 源=r.source,
-                              书名=r.title[:30],
-                              原因=(r.note or "未知")[:60],
-                              耗时=f"{r.probe_ms}ms")
-        except Exception:  # noqa: BLE001  (TimeoutError 或其它)
-            logger.info("探测超预算，剩余候选标记为未验证")
+                left = deadline - time.time()
+                if left <= 0.0:
+                    logger.info("探测超预算，剩余候选标记为未验证")
+                    break
+                done_now, waiting = wait(
+                    waiting, timeout=min(0.2, left),
+                    return_when=FIRST_COMPLETED)
+                hit_enough = False
+                for fut in done_now:
+                    try:
+                        r = fut.result()
+                    except Exception as e:  # noqa: BLE001
+                        r = futs[fut]
+                        r.available = False
+                        r.note = str(e)[:70]
+                    if on_verified:
+                        on_verified(r)
+                    if r.available:
+                        ok += 1
+                        # 埋点：哪一个候选、哪一源、验证结果、耗时。
+                        # 这条是"L 源闭环"的眼睛 —— 想判断一个源好不好，
+                        # 就看 verify.ok 里它出现的比例；全是 fail 的就是坏源，
+                        # 该进定期排查名单（registry.check）。
+                        # 注意**逐条发**而不是只发汇总：线上排障时要能按
+                        # 「源=xxx」grep 出这个源最近到底怎么挂的，汇总给不了这个。
+                        log_event(logger, "verify.ok", 源=r.source,
+                                  书名=r.title[:30], 章=r.chapter_count,
+                                  耗时=f"{r.probe_ms}ms")
+                        if ok >= PROBE_ENOUGH:
+                            # 已经有这么多个可用来源了，剩下的不必再验：
+                            # 再验一个就要多占一次同域请求，而用户在等。
+                            logger.info("已验出 %d 个可用候选，提前收手", ok)
+                            hit_enough = True
+                            break
+                    else:
+                        # 失败也逐条记：失败原因（超时/无正文/404）是评估源质量
+                        # 最值钱的信息 —— 只说"某个源不行"没法定位是站点改版
+                        # 还是被限流，带上 note 才能一眼分辨。
+                        log_event(logger, "verify.fail", 源=r.source,
+                                  书名=r.title[:30],
+                                  原因=(r.note or "未知")[:60],
+                                  耗时=f"{r.probe_ms}ms")
+                if hit_enough:
+                    break
         finally:
             # 超时的线程不再等待，让它们在后台自然结束
             pool.shutdown(wait=False, cancel_futures=True)

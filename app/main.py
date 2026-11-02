@@ -81,7 +81,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import history, security, tunnel, visits
-from .engine import Engine, source_ledger, source_meta, web_ledger
+from .engine import Engine, probe_ledger, source_ledger, source_meta, web_ledger
 from .errors import Cancelled, SourceBlocked
 from .exporter import DOWNLOAD_DIR, export as export_book
 
@@ -1031,6 +1031,16 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           # 2026-10-31《乡土中国》：核实 5 个，日志里只有 2 条失败，
                           # 另外 3 个（leshu8 的书页 / 央视节目页 / 一篇新闻）沉默消失。
                           **web_ledger(stats.get("web_verify")),
+                          # ---- 「探测跑了几轮」 ----
+                          # 2026-11-02《情欲超市全集》线上：`候选=1 可读=0
+                          # 耗时ms=28008`。22.0s 的常规上限被走到 28s 却
+                          # `over_budget=False`（走了联网，额度 32s），
+                          # 于是**没有任何判据认为它异常**。翻日志才看见同一个
+                          # 1 条候选被探了两遍（01:24:10 与 01:24:22 各
+                          # 「探测超预算」一次，每次 12 秒）。
+                          # 有了这一格，`2轮/探1个` 一眼就是"重探了"，
+                          # 不必再靠耗时去猜。
+                          **probe_ledger(stats.get("probe_tally")),
                           # ---- 「这次搜索顺手废掉了几个源」 ----
                           # 可搜源池会**被搜索本身吃掉**：某站连续 3 次抽不到书链接
                           # 就把它的搜索模板作废（`registry.note_search_result`）。
