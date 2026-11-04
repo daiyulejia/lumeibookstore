@@ -153,6 +153,14 @@ const kickConfirm = debounce(async text => {
     const d = await api.post("/api/confirm", { text });
     M.confirmData = d;
     if (!d.suspect) { setConfirm(""); return; }
+    // ⚠ 已经在搜这个书名了，就别再弹「你找的是不是《X》？」。
+    //
+    //   /api/confirm 是**按输入**防抖触发的，而搜索是提交时就起的 ——
+    //   于是搜索跑到 1.3 秒左右，确认框正好盖在正在跑的结果页上弹出来，
+    //   用户一点「就搜」，正在跑的那一轮被 abort、从头再来一遍。
+    //   线上 11-02 01:25《你腿真美》就是这么成对出现的（同名搜索间隔 1~2 秒、
+    //   前一个 `aborted=True`），白烧一轮 15 秒的搜索。
+    if (M.searching && M.confirmed === d.keyword) { setConfirm(""); return; }
     renderConfirm(d);
   } catch { setConfirm(""); }
 }, 320);
@@ -177,7 +185,13 @@ function renderConfirm(d) {
         <button class="btn primary sm" id="cfGo">就搜《${esc(d.keyword)}》</button>
       </div>
     </div>`);
-  $("#cfGo").onclick = () => { setConfirm(""); runSearch(d.keyword, true); };
+  $("#cfGo").onclick = () => {
+    setConfirm("");
+    // 同一个书名已经在搜了：再点一次「就搜」只是把自己跑了一半的那轮掐掉重来，
+    // 结果只会更晚到（服务端还得为此多起一轮引擎）。直接当"知道了"处理。
+    if (M.searching && M.confirmed === d.keyword) return;
+    runSearch(d.keyword, true);
+  };
   $("#cfCancel").onclick = () => { setConfirm(""); $("#q").focus(); };
   $$("#confirmBox .chip").forEach(c => c.onclick = () => {
     $("#q").value = c.dataset.t;

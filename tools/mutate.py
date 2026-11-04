@@ -1912,6 +1912,32 @@ MUTATIONS: list[Mutation] = [
              "            for ev in self._events:",
              "            for ev in ():",
              FLIGHT_TEST),
+    # ⚠ 失败方式（2026-11-02 01:25 线上实证）：新请求的 acquire 先过、老请求
+    #   随即断开把这一轮放弃、新请求这才 subscribe —— 挂到一具尸体上，
+    #   引擎下一次判 should_stop() 立刻收手，用户 1.5 秒拿到「没找到」。
+    #   日志写成 `合并=2 aborted=True`，看着像"客户端自己走了"，其实是我们
+    #   把新请求交给了死掉的那一轮。
+    Mutation("合并", "弃轮照收新订阅者（新请求挂到已经放弃的那一轮上）",
+             FLIGHT,
+             "            if self._abandoned:\n                return None\n            self.joined += 1",
+             "            self.joined += 1",
+             FLIGHT_TEST),
+    Mutation("合并", "登记簿不再为弃轮换新的一轮（把回放当结果交出去）",
+             FLIGHT,
+             "                if cur is not None and cur.accepts():",
+             "                if cur is not None:",
+             FLIGHT_TEST),
+    Mutation("合并", "请求路径退回 acquire + subscribe（那道缝又开出来了）",
+             MAIN,
+             "        flight, sub = _FLIGHTS.subscribe(_key, _make_flight, loop)",
+             "        flight, _fresh = _FLIGHTS.acquire(_key, _make_flight)\n"
+             "        sub = flight.subscribe(loop)",
+             FLIGHT_TEST),
+    Mutation("合并", "「就搜」又把正在跑的同名搜索掐掉重来",
+             DISCOVER_JS,
+             "    if (M.searching && M.confirmed === d.keyword) return;",
+             "    if (false) return;",
+             FLIGHT_TEST),
 
     # ---------------- 并发风暴不许把模板数死（tools/test_registry.py ⑧）--------
     # ⚠ 失败方式：一次连点/一次批量探针就把"连续 3 次不是搜索页"凑满，

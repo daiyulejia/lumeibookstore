@@ -114,10 +114,27 @@ class Flight:
     # ------------------------------------------------------------------
     # 订阅 / 退订
     # ------------------------------------------------------------------
-    def subscribe(self, loop: asyncio.AbstractEventLoop) -> _Sub:
-        """挂上来。已经发生过的事件会先补一遍（迟到的订阅者也能看到过程）。"""
+    def subscribe(self, loop: asyncio.AbstractEventLoop) -> _Sub | None:
+        """挂上来。已经发生过的事件会先补一遍（迟到的订阅者也能看到过程）。
+
+        返回 `None` 表示**这一轮已经被放弃了**（最后一个订阅者走掉了），
+        调用方必须换一轮新的 —— 不许挂上去。
+
+        ⚠ 这一条是 2026-11-02 01:25 线上实证补的，`accepts()` 挡不住它：
+          `acquire()` 在请求处理函数里调、`subscribe()` 要等生成器第一次
+          `__anext__()` 才跑，中间隔着"把响应头发出去"这一跳。实测就是这道缝：
+            · 新请求的 `acquire` 先过（此刻这一轮还活着，于是拿到同一个 flight）；
+            · 老请求这时断开 → `leave` 把 `_stop` 置上、这一轮成了弃轮；
+            · 新请求这才 `subscribe` —— 挂到一具尸体上，引擎下一次判
+              `should_stop()` 立刻收手，用户等了 1.5 秒拿到 `候选=0`。
+          日志上的样子极具误导性：`合并=2`（说明确实有两个订阅者）配
+          `aborted=True`，看起来像"客户端自己走了"，其实是**我们自己
+          把新请求交给了已经死掉的那一轮**。
+        """
         sub = _Sub(loop)
         with self._lock:
+            if self._abandoned:
+                return None
             self.joined += 1
             for ev in self._events:
                 sub.queue.put_nowait(ev)
@@ -241,6 +258,37 @@ class FlightBook:
         with self._lock:
             if self._items.get(key) is flight:
                 self._items.pop(key, None)
+
+    def subscribe(self, key: tuple, factory: Callable[[], Flight],
+                  loop: asyncio.AbstractEventLoop) -> tuple[Flight, _Sub]:
+        """**原子地**「拿一轮 + 挂上去」。请求路径只该用这个，别用 acquire。
+
+        为什么不能 `acquire()` 再 `subscribe()`：见 `Flight.subscribe` 的
+        注释（2026-11-02 线上：中间那道缝让新请求挂到被放弃的那一轮上，
+        用户等 1.5s 拿到 0 条）。这里把两步放进同一把锁里，
+        "还能不能挂"与"挂上去"之间就没有缝了。
+
+        拿不到就现建一轮 —— 弃轮/结束轮的 key 会被顺手摘掉，
+        下一次 `acquire` 才不会又把它捞出来。
+        """
+        for _attempt in range(4):
+            with self._lock:
+                cur = self._items.get(key)
+                if cur is not None and cur.accepts():
+                    sub = cur.subscribe(loop)
+                    if sub is not None:
+                        return cur, sub
+                    # 就在这一瞬间被放弃了（leave 不拿登记簿的锁）—— 换新的
+                if cur is not None and self._items.get(key) is cur:
+                    self._items.pop(key, None)
+                f = factory()
+                self._items[key] = f
+                f._on_finish = lambda: self.release(key, f)
+                sub = f.subscribe(loop)
+                if sub is not None:
+                    return f, sub
+            # 刚建好就被放弃：只可能是别的线程在别处乱动，重来一次即可。
+        raise RuntimeError("在飞搜索登记簿连续 4 次拿不到可订阅的一轮")
 
     def __len__(self) -> int:
         with self._lock:

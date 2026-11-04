@@ -933,9 +933,15 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
     #   的话引擎打的日志全是 req=----，最需要追的那段过程反而没有 id。
     _req = get_request_id()
 
-    def _make_runner():
+    def _make_flight():
         # 这一轮真正干活的部分。它**不关心**是哪个请求触发的 ——
         # 事件统一交给 flight.push 广播给所有订阅者。
+        #
+        # ⚠ `_holder` 让 runner 读到**自己那一轮**的 `joined`。不能闭包外面
+        #   的 `flight` 变量：一轮被放弃、同一请求改挂到新的一轮上时，
+        #   旧 runner 会读到新 flight 的合并数 —— 两轮在日志里被说成一回事。
+        _holder: dict = {}
+
         def run(push, should_stop):
             # ⚠ request_id 存在 ContextVar 里，不跨线程传播 —— 手动接过去，
             #   否则引擎打的日志全是 req=----（与 search.start 对不上）。
@@ -1057,7 +1063,7 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           # 而真实情况可能是"用户连点了 16 次"，
                           # 下一次复盘看到 16 行 search.start / 1 行 done 会
                           # 以为是日志丢了。`合并=1` 才是正常的单发。
-                          合并=int(flight.joined),
+                          合并=int(_holder["f"].joined),
                           耗时ms=int((time.perf_counter() - _t0) * 1000))
                 push({
                     "type": "done",
@@ -1086,16 +1092,22 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                 logger.exception("搜索失败（详细堆栈）")
                 push({"type": "error", "msg": str(e)})
 
-        return run
-
-    flight, _fresh = _FLIGHTS.acquire(
-        _key, lambda: Flight(_key, _make_runner(), _req))
+        f = Flight(_key, run, _req)
+        _holder["f"] = f
+        return f
 
     async def gen():
         loop = asyncio.get_running_loop()
         # 挂到这一轮上（可能是别人已经在跑的那一轮）。已发生过的事件
         # 会先补一遍，所以迟到的订阅者也能看到「正在联网找书」的过程。
-        sub = flight.subscribe(loop)
+        #
+        # ⚠⚠ 「拿一轮」和「挂上去」必须是**一个原子动作**（`FlightBook.subscribe`）。
+        #   拆成 `acquire()` + `subscribe()` 会留下一道缝，而线上正好漏过去一次
+        #   （2026-11-02 01:25《你腿真美》）：新请求 acquire 到还活着的这一轮，
+        #   紧接着老请求断开把这一轮放弃了，新请求这才 subscribe ——
+        #   挂到一具尸体上，引擎立刻收手，用户 1.5 秒拿到「没找到」。
+        #   现在被放弃的那一轮会拒绝订阅，于是这里换成新起一轮，正常搜完。
+        flight, sub = _FLIGHTS.subscribe(_key, _make_flight, loop)
         try:
             # ⚠⚠ 踩过一次「断断续续才生效」，根因是一个**启动顺序竞态**：
             #   生成器是惰性的 —— `gen()` 被创建时一行都不跑，要等

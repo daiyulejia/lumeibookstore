@@ -221,6 +221,126 @@ async def case_crash() -> None:
           got[-1].get("type") == "error", f"末事件={got[-1].get('type')}")
 
 
+# ---------------------------------------------------------------------------
+# ⑦ 弃轮不许被后来者继承（acquire 与 subscribe 之间的那道缝）
+# ---------------------------------------------------------------------------
+async def case_takeover() -> None:
+    print("\n【⑦ 最后一个订阅者走掉的轮次，新请求不许挂上去】")
+    calls: list[int] = []
+    gates: list[threading.Event] = []
+
+    def runner(push, should_stop):
+        g = threading.Event()
+        gates.append(g)
+        calls.append(1)
+        # 真实引擎就是这样：在扇出里循环等源，每个窗口判一次「还有没有人听」。
+        while not should_stop():
+            if g.wait(0.01):
+                break
+        if should_stop():
+            push({"type": "done", "count": 0, "aborted": True})
+        else:
+            push({"type": "done", "count": 2, "aborted": False})
+
+    book = FlightBook()
+    key = book.key_of("你腿真美", None, True, True, True)
+    loop = asyncio.get_running_loop()
+    f1, _ = book.acquire(key, lambda: Flight(key, runner))
+    a = f1.subscribe(loop)
+    f1.ensure_started(loop)
+    await _wait_for(lambda: len(calls) == 1, 3.0)
+
+    # ---- 线上 2026-11-02 01:25 的真实时序，一步不差地重放 ----
+    # 新请求（前端点「就搜」）先 acquire —— 此刻这一轮还活着，于是拿到同一个。
+    f2, _ = book.acquire(key, lambda: Flight(key, runner))
+    check("复现线上时序：缝里拿到的是同一轮", f2 is f1)
+    # 紧接着老请求断开，这一轮成了弃轮。
+    f1.leave(a)
+
+    # ⚠ 这里就是 bug 本身：旧代码会返回一个能用的 sub（挂到尸体上），
+    #   于是新请求拿到 done count=0 —— 用户看到"没找到这本书"。
+    check("弃轮拒绝新订阅（返回 None，而不是挂上去）",
+          f2.subscribe(loop) is None)
+
+    # 走真实接线：登记簿原子地给一轮，必须是**新的**一轮。
+    f3, sub3 = book.subscribe(key, lambda: Flight(key, runner), loop)
+    check("原子接口换了一轮新的", f3 is not f1 and f3 is not f2)
+    f3.ensure_started(loop)
+    await _wait_for(lambda: len(gates) == 2, 3.0)
+    if len(gates) >= 2:
+        gates[1].set()
+    got = await drain(sub3)
+    check("新请求拿到的是真结果，不是 0 条",
+          got[-1].get("count") == 2, f"末事件={got[-1]}")
+    check("新请求没被误标成 aborted", got[-1].get("aborted") is False,
+          f"末事件={got[-1]}")
+    check("没有因此多跑一轮（仍是 2 轮：弃轮 + 新轮）",
+          len(calls) == 2, f"calls={len(calls)}")
+
+
+# ---------------------------------------------------------------------------
+# ⑧ 已经跑完的一轮绝不许被复用（哪怕它还没从登记簿上摘掉）
+# ---------------------------------------------------------------------------
+async def case_finished() -> None:
+    """`finish()` 与 `release()` 之间有一道**真实存在**（但很短）的窗口：
+    先置 `_finished`，之后才回调登记簿摘牌。这道窗口里新请求如果被塞一份
+    「上一轮的回放」，用户就会拿到**别人的**（可能是空的）结果 ——
+    这正是 `searchflight.py` 模块注释里明令禁止的"复用上一轮"。
+
+    这里把摘牌挡掉来把窗口固定住（线上它只是几微秒，靠运气撞）。
+    """
+    print("\n【⑧ 已结束的一轮只许回放，不许当成新一轮发出去】")
+
+    def runner(push, should_stop):
+        push({"type": "done", "count": 9})
+
+    book = FlightBook()
+    key = book.key_of("活着", None, True, True, True)
+    loop = asyncio.get_running_loop()
+    f, _ = book.acquire(key, lambda: Flight(key, runner))
+    f._on_finish = lambda: None      # 固定住「跑完但还没摘牌」那道窗口
+    a = f.subscribe(loop)
+    f.ensure_started(loop)
+    await drain(a)
+    # ⚠ 收到 done ≠ 这一轮已经「结束」：`push(done)` 在前、`finish()` 在 runner
+    #   线程退栈时才跑。不等这一步会偶发红（我第一版就是这样，单独跑绿、
+    #   ship 里 red —— 典型的"判据自己有时序问题"）。
+    await _wait_for(lambda: not f.accepts(), 3.0)
+    check("前提：这一轮跑完了但还挂在登记簿上", len(book) == 1 and not f.accepts(),
+          f"len={len(book)} accepts={f.accepts()}")
+
+    f2, sub2 = book.subscribe(key, lambda: Flight(key, runner), loop)
+    check("新请求拿到的是**新的一轮**，不是上一轮的回放", f2 is not f,
+          f"same={f2 is f}")
+
+
+# ---------------------------------------------------------------------------
+# ⑨ 接线：请求路径必须走原子接口
+# ---------------------------------------------------------------------------
+def case_wiring() -> None:
+    print("\n【⑨ 接线：别再拆成 acquire + subscribe】")
+    src = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
+    check("搜索接口用原子的 FlightBook.subscribe",
+          "_FLIGHTS.subscribe(" in src)
+    check("不再有 _FLIGHTS.acquire(（那道缝就是它开出来的）",
+          "_FLIGHTS.acquire(" not in src)
+
+    js = (ROOT / "app" / "static" / "js" / "discover.js").read_text(encoding="utf-8")
+    n = js.count("M.searching && M.confirmed === d.keyword")
+    check("「就搜」与确认框都不会掐掉正在跑的同名搜索（两处守卫）",
+          n >= 2, f"命中 {n} 处")
+
+
+async def _wait_for(cond, timeout: float) -> bool:
+    """等一个**机制**成立（不是等一段时间）。超时只是为了别把测试挂死。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        await asyncio.sleep(0.01)
+    return bool(cond())
+
+
 def main() -> int:
     print("在飞搜索合并 —— 行为自检")
     asyncio.run(case_merge())
@@ -228,6 +348,9 @@ def main() -> int:
     asyncio.run(case_leave())
     case_key()
     asyncio.run(case_crash())
+    asyncio.run(case_takeover())
+    asyncio.run(case_finished())
+    case_wiring()
     print(f"\n结果：{ok_n} 通过，{fail_n} 失败")
     return 0 if fail_n == 0 else 1
 
