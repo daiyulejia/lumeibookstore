@@ -563,6 +563,48 @@ def _run() -> int:
     else:
         bad("stats 缺 web_verify —— search.done 的 `联网核=` 会取不到")
 
+    section("9. 并行那路真交回了候选 → 不许记成「本地有结果、不必联网」")
+    # 线上起点（2026-11-05 22:10，搜《情欲超市全集》）：
+    #   `候选=2 可读=2 联网发现=2 联网=not_needed`
+    # ⚠ 这**不是**矛盾：`联网发现=` 数的是"结果里 source=web 的条数"，
+    #   含库里上一轮抓的；那两条就是从素材库读出来的，not_needed 是对的。
+    #   我一开始读成了"没联网却有联网发现"，顺着查才找到真问题：
+    #   并行那一路**真的交回候选**时，标签仍会落到 not_needed（那一轮确实出去搜过）。
+    old_preempt = getattr(E, "SEARCH_WEB_PREEMPT", 1.5)
+    E.SEARCH_WEB_PREEMPT = 0.05
+    web10 = FakeWeb()
+    st15: dict = {}
+    try:
+        run_case([EmptySrc(), web10], discover=True, stats=st15, probe=True)
+    finally:
+        E.SEARCH_WEB_PREEMPT = old_preempt
+
+    if web10.calls >= 1:
+        ok(f"并行那路确实跑了（web 被调 {web10.calls} 次）")
+    else:
+        bad("并行那路没跑 —— 这个场景没构造出来，下面的断言等于空转")
+    if st15.get("discovered", 0) >= 1:
+        ok(f"联网确实交回了候选（discovered={st15.get('discovered')}）")
+    else:
+        bad("联网没交回候选 —— 构造失败，测不到「联网给了结果」这件事")
+    # ⚠ 这里刻意**不**断言「discovered>0 就不许 not_needed」—— 那两格口径不同
+    #   （discovered 含库里上次抓的），按它判会把合法状态判成 bug。
+    # 上面那一段的时序很难在单测里稳定造出来（要并行那路恰好先交付），
+    # 真正钉住这条判据的是**纯函数**：`web_skip_label()` 的三个返回值。
+    lab = E.web_skip_label
+    cases = [
+        (False, 2, "preempt", "联网交回 2 条 → 不能说「不需要联网」"),
+        (False, 0, "not_needed", "本地够用、联网一条没给 → not_needed"),
+        (True, 0, "", "联网真跑了（串行）→ 空串"),
+        (True, 3, "", "串行联网也交回了 → 仍然是空串，别改成 preempt"),
+    ]
+    for need, gave, want, why in cases:
+        got = lab(need_web=need, web_gave=gave)
+        if got == want:
+            ok(f"web_skip_label({need},{gave})={got!r} —— {why}")
+        else:
+            bad(f"web_skip_label({need},{gave})={got!r}，应为 {want!r} —— {why}")
+
     print("\n" + "=" * 62)
     print(f"通过 {ok_n} · 失败 {bad_n}")
     if bad_n:

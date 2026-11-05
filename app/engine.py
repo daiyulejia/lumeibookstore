@@ -303,6 +303,35 @@ def probe_ledger(tally: Optional[dict]) -> dict:
                      f"/跳过已验{tally.get('skipped', 0)}")}
 
 
+def web_skip_label(*, need_web: bool, web_gave: int) -> str:
+    """`search.done` 里 `联网=` 那一格该填什么。
+
+    这一格存在的唯一理由：**`联网发现=0` 同时对应好几件处置完全不同的事**
+    （本地够用 / 并行跑过 / 预算没了 / 调用方关了 / 真的没找到）。
+    所以它答的必须是"这轮联网到底跑没跑、为什么没跑"，不是"我们想不想跑"。
+
+    ⚠ 先把 `联网发现=` 的口径说清楚（2026-11-05 复盘，我自己先读错了一次）：
+      它数的是**最终结果里 `source=web` 的条数**，包含"上一轮联网找回来、
+      这一次从素材库里直接读出来"的那些。所以 `联网发现=2` **不代表这一轮
+      出去搜过** —— 11-05 22:10 那行 `候选=2 可读=2 联网发现=2 联网=not_needed`
+      看着自相矛盾，查下来两条都是从库里读的，`not_needed` 是对的。
+      两个字段口径不同，别把它们当成一件事的两种说法。
+
+    那为什么还要分 preempt：并行那一路**真的交回了候选**时，这一轮确实
+    出去搜过（还花了 3~10 秒），写 `not_needed`（"本地有能读的结果，不必联网"）
+    就是在描述一件没发生的事。所以判据看 `web_gave`（并行那路交回几条），
+    不看 `need_web`（那是"还要不要**再**联网"）。
+
+    三个返回值，每个都对应一件真事：
+      `""`        联网真跑了（串行那条路），结果在 `联网发现=` 里
+      `preempt`   并行那一路跑的，而且**交回了候选**（不是"没跑"）
+      `not_needed` 本地有可读结果，联网一次都没跑
+    """
+    if not need_web:
+        return "preempt" if web_gave else "not_needed"
+    return ""
+
+
 def web_ledger(tally: Optional[dict]) -> dict:
     """把「联网核实」这一轮的账摊成 search.done 里的一格，**每个都点名**。
 
@@ -314,14 +343,22 @@ def web_ledger(tally: Optional[dict]) -> dict:
       而真正的事实是"5 个候选里 3 个根本不是书页，2 个被 Cloudflare 拦"。
       这两种病因的处置完全相反：前者该改搜索词，后者只能等/换源。
 
-    格式：`5→0 失败=2(99csw,academia) 非目录=3(leshu8,tv.cctv,zgxcfx) 未核=0`
+    格式：`5→0 失败=2(99csw,academia) 非目录=3(leshu8,tv.cctv,zgxcfx) 引擎=bing6,baidu6 未核=0`
+
+    ⚠ `_pack` 截断时必须**把还剩几个写出来**（`+6`）。2026-11-04 线上
+      `非目录=11(jfdaily,cmc.hebtv,zq.cyol,health.huanqiu,world.huanqiu)` ——
+      看上去"点名了"，实际有 6 个名字被吃掉，复盘根本不知道被挤掉的是谁。
+      「只报数不报名字」是这里反复踩的坑，截断本身不是问题，**沉默地截断**才是。
     """
     if not tally:
         # 没跑过联网（本地就有）→ 打 `-`，不补 0：`0→0` 会被读成"核了 0 个"
         return {"联网核": "-"}
 
     def _pack(names: list[str]) -> str:
-        return f"({','.join(names[:5])})" if names else ""
+        if not names:
+            return ""
+        head = ",".join(names[:5])
+        return f"({head}+{len(names) - 5})" if len(names) > 5 else f"({head})"
 
     ff = list(tally.get("fetch_fail") or [])
     nt = list(tally.get("not_toc") or [])
@@ -333,6 +370,10 @@ def web_ledger(tally: Optional[dict]) -> dict:
         s += f" 死站={len(dead)}{_pack(dead)}"
     if tally.get("unchecked"):
         s += f" 未核={tally['unchecked']}"
+    # 候选是谁给的：分不清「百度一条没返回」和「返回了但被截掉」就复盘不了。
+    eng = tally.get("engines") or {}
+    if eng:
+        s += " 引擎=" + ",".join(f"{k}{v}" for k, v in eng.items())
     return {"联网核": s}
 
 
@@ -965,6 +1006,7 @@ class Engine:
             web_thread.join(timeout=SEARCH_HARD_DEADLINE + 5)
             with web_box_lock:
                 web_extra = list(web_box["items"])
+            web_gave = len(web_extra)
             if web_extra:
                 with lock:
                     raw.extend(web_extra)
@@ -1090,6 +1132,11 @@ class Engine:
         web_skipped_budget = False
         # 联网核实的账本（候选几个、几个失败、几个不是目录）。None = 没跑过。
         web_tally = None
+        # 并行那一路**实际交回几条候选**。为什么要在 1100 行这里先置 0：
+        #   `web_extra` 只在「起了并行线程」的分支里赋值（979 行），
+        #   在这条 if/elif 里直接读它就是 10-31 那个 500（`web` 未定义）的翻版。
+        #   凡是在分支里赋值的变量，跨分支使用前必须先有个默认值。
+        web_gave = 0
         # ---- 「这轮为什么没联网」也要留字段 ----
         # 线上 `联网发现=0` 同时对应四件处置完全不同的事：
         #   not_needed 本地有能读的结果（好事，不必联网）
@@ -1098,7 +1145,11 @@ class Engine:
         #   disabled   调用方关掉了 discover
         # 2026-10-27《我的阿勒泰》就是被"not_needed"的假象盖住的：
         # 它本地交不出任何可读结果，日志里却只有一句 `联网发现=0`。
-        web_skip = "not_needed" if not need_web else ""
+        # 「并行那一路真交回了候选」时，这一轮**确实出去搜过** —— 不能写 not_needed。
+        # 判据看 `web_gave`（并行那路交回几条），不是 `need_web`（还要不要再联网）。
+        # ⚠ 别拿 `联网发现>0` 当证据：那一格数的是"结果里 source=web 的条数"，
+        #   含库里上次抓的，2026-11-05 我自己就先被它带偏过一次。
+        web_skip = web_skip_label(need_web=need_web, web_gave=web_gave)
         if discover and need_web and not already_web:
             web = self._find_source(DISCOVER_SOURCE)
             # 联网兜底也是**串行**加在后面的，同样得看总预算 ——

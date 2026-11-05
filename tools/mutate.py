@@ -77,6 +77,11 @@ SITELEARN = ROOT / "app" / "sitelearn.py"
 #   阶段时收手明明发生了却报 False。它不报错，只是让真机断连测试
 #   变成"取决于掐断落在哪个窗口"的偶发假红。
 ENGINE = ROOT / "app" / "engine.py"
+# 联网发现（搜索引擎抽候选）—— 2026-11-04 纳入反证。
+# ⚠ 失败方式全静默：名额被一个引擎的噪声吃光、桶内不排序、
+#   名字截断不说还剩几个 —— 全都只表现为"搜不到"。
+WEBSEARCH = ROOT / "app" / "websearch.py"
+WEBSEARCH_TEST = ROOT / "tools" / "test_websearch.py"
 # 「推荐」独立 tab 的接线 —— 2026-10-15 纳入反证。
 # ⚠ 失败方式全是静默：导航少一格（手机进不去）、#view-ranks 丢失
 #   （切过去白页）、深链不认（分享的链接落到发现页）、点书名不切页
@@ -1083,7 +1088,7 @@ MUTATIONS: list[Mutation] = [
              FALLBACK_TEST),
     Mutation("联网门", "该联网却没跑时不记原因（web_skip 恒空 → 与「跑过」同形）",
              ENGINE,
-             '        web_skip = "not_needed" if not need_web else ""',
+             '        web_skip = web_skip_label(need_web=need_web, web_gave=web_gave)',
              '        web_skip = ""',
              FALLBACK_TEST),
 
@@ -1952,6 +1957,54 @@ MUTATIONS: list[Mutation] = [
              '            cur["search_shape_at"] = _now_ts',
              '            cur["search_shape_at"] = 0',
              REGISTRY_TEST),
+
+    # ---------------- 联网候选的名额分配（tools/test_websearch.py）--------------
+    # ⚠ 失败方式：Bing 回一堆撞词新闻 → 吃掉 12 个名额里的 9 个 → 百度找回来的
+    #   真书页只剩 3 个位置。表现只是"搜不到"，日志写 `联网发现=0`，
+    #   和"网上真的没有这本书"完全一样。
+    Mutation("名额", "名额退回「按引擎平铺再截断」（一个引擎的噪声吃光所有名额）",
+             WEBSEARCH,
+             "    buckets = [_buckets(items, per_host=per_host, keyword=keyword)\n"
+             "               for items in per_engine]",
+             "    buckets = [[x] for x in sum(per_engine, [])]",
+             WEBSEARCH_TEST),
+    Mutation("名额", "同一引擎内部不按「像不像这本书」排序（噪声占前排）",
+             WEBSEARCH,
+             '    groups.sort(key=lambda g: -max(_overlap(x.get("title") or "", keyword) for x in g))',
+             "    pass",
+             WEBSEARCH_TEST),
+    Mutation("名额", "重合度退化成「包含书名」，书页标题不写全名就被判不相关",
+             WEBSEARCH,
+             "    return sum(1 for g in grams if g in t)",
+             "    return len(grams) if kw in t else 0",
+             WEBSEARCH_TEST),
+    Mutation("名额", "名字截断后又不说还剩几个（沉默地吃掉 6 个名字）",
+             ENGINE,
+             '        return f"({head}+{len(names) - 5})" if len(names) > 5 else f"({head})"',
+             '        return f"({head})"',
+             WEBSEARCH_TEST),
+    Mutation("名额", "「候选是谁给的」不记账（分不清没返回还是被截掉）",
+             DISCOVERY,
+             '        engines[k] = engines.get(k, 0) + 1',
+             '        engines[k] = 0',
+             WEBSEARCH_TEST),
+    Mutation("名额", "同站上限退回「每个引擎各算一次」（一个站占走 4 个名额）",
+             WEBSEARCH,
+             '                    if host_n.get(it["host"], 0) >= per_host:',
+             '                    if host_n.get(it["host"], 0) >= per_host * 2:',
+             WEBSEARCH_TEST),
+    Mutation("名额", "核实账那行截断名字却不说还剩几个（6 个名字凭空消失）",
+             DISCOVERY,
+             '        return f"{head}(+{len(names) - 6})" if len(names) > 6 else head',
+             "        return head",
+             WEBSEARCH_TEST),
+    Mutation("名额", "`联网=` 只看 need_web、不看联网有没有真给过东西",
+             ENGINE,
+             '    if not need_web:\n'
+             '        return "preempt" if web_gave else "not_needed"\n'
+             '    return ""',
+             '    return "not_needed" if not need_web else ""',
+             FALLBACK_TEST),
 ]
 
 

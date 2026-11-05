@@ -686,8 +686,16 @@ def discover(
 
     say("核实候选站点", f"{len(uniq)} 个地址")
 
+    # 候选是按引擎轮转取出来的，这里把「谁给了几条」记进账本 ——
+    # 复盘时才能回答「百度到底是没返回，还是返回了被截掉」。
+    engines: dict[str, int] = {}
+    for c in uniq:
+        k = c.get("engine") or "?"
+        engines[k] = engines.get(k, 0) + 1
+
     tally: dict = {"cands": len(uniq), "hit": [], "fetch_fail": [],
-                   "not_toc": [], "skipped_dead": [], "dup": [], "unchecked": 0}
+                   "not_toc": [], "skipped_dead": [], "dup": [], "unchecked": 0,
+                   "engines": engines}
     results: list[BookResult] = []
     seen_url: set[str] = set()
     lock = threading.Lock()
@@ -730,11 +738,20 @@ def discover(
 
     # 这一轮的核实账本 —— **必须点名**，不能只写「核实 5 个、0 命中」。
     # 那正是 2026-10-30 之前的写法：5 个候选、日志里 2 条失败，3 个凭空消失。
+    # ⚠ 2026-11-04 又栽在同一件事的第二层：这里 `[:6]` 截断了名字却不说，
+    #   线上 `不是目录=11(a,b,c,d,e,f)` 看着"点名了"，其实 5 个名字凭空消失。
+    #   截断不是问题，**沉默地截断**才是。
+    def _nm(names: list[str]) -> str:
+        if not names:
+            return "-"
+        head = ",".join(names[:6])
+        return f"{head}(+{len(names) - 6})" if len(names) > 6 else head
+
     logger.info("联网核实账: 候选=%d 命中=%d 打开失败=%d(%s) 不是目录=%d(%s) "
                 "已死站跳过=%d 重复=%d 未核=%d",
                 tally["cands"], len(results),
-                len(tally["fetch_fail"]), ",".join(tally["fetch_fail"][:6]) or "-",
-                len(tally["not_toc"]), ",".join(tally["not_toc"][:6]) or "-",
+                len(tally["fetch_fail"]), _nm(tally["fetch_fail"]),
+                len(tally["not_toc"]), _nm(tally["not_toc"]),
                 len(tally["skipped_dead"]), len(tally["dup"]),
                 tally["unchecked"])
     _tally_local.tally = tally
