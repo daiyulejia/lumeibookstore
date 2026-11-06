@@ -2005,6 +2005,34 @@ MUTATIONS: list[Mutation] = [
              '    return ""',
              '    return "not_needed" if not need_web else ""',
              FALLBACK_TEST),
+
+    # ---------------- 「学会 → 被判死」循环要有终点（tools/test_registry.py ⑨）--
+    # ⚠ 失败方式（2026-11-06 复盘）：5 个站每天 03:19 学会、22:51 被判死、
+    #   次日再学会，连着 6 天一字不差。日志每次都写「已失败 1 次」，像头一回。
+    #   代价是每晚白跑一遍学站 + 「综合 N 站」这个数字每天虚高一次。
+    Mutation("学站循环", "闸门关掉（判死多少次都照样每晚重学）",
+             REGISTRY,
+             "    if tpl_dead_count(s) >= TPL_DEAD_MAX:\n"
+             '        if _now() - int(s.get("tpl_dead_at") or 0) < TPL_DEAD_COOLDOWN:\n'
+             "            return False\n",
+             "",
+             REGISTRY_TEST),
+    Mutation("学站循环", "作废时不记站级账（tpl_dead 永远 0，闸门永不触发）",
+             REGISTRY,
+             '            cur["tpl_dead"] = int(cur.get("tpl_dead") or 0) + 1',
+             '            cur["tpl_dead"] = 0',
+             REGISTRY_TEST),
+    Mutation("学站循环", "重学成功时把 tpl_dead 也清零（旧 bug 的等价写法）",
+             REGISTRY,
+             '        cur["search_hit"] = 0\n        cur["search_shape"] = 0',
+             '        cur["search_hit"] = 0\n        cur["search_shape"] = 0\n'
+             '        cur["tpl_dead"] = 0',
+             REGISTRY_TEST),
+    Mutation("学站循环", "冷却期设成 0（等于不冷却，判死完立刻又能学）",
+             REGISTRY,
+             "TPL_DEAD_COOLDOWN = 7 * 86400",
+             "TPL_DEAD_COOLDOWN = 0",
+             REGISTRY_TEST),
 ]
 
 

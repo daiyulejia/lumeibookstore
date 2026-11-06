@@ -827,6 +827,87 @@ def main() -> int:
               f"shape={R.known_site('storm.example.com').get('search_shape')}")
 
         # -----------------------------------------------------------------
+        print("\n—— ⑨ 「学会 → 被判死」的循环必须有终点 ——")
+        # 线上实证（2026-11-06 复盘）：这 5 个站从 10-31 起**每天**走一遍同一个圈：
+        #   m.kudushu.org / www.jcxs.cc / www.xizids.com /
+        #   www.xuanhuanbiquge.com / www.itiandixs.com
+        #     03:19 学会模板 → 22:37~22:51 被 3 次「不是搜索页」作废 → 次日 03:19 再学会
+        # 而上面那段注释写着「重学仍不行就由 SEARCH_LEARN_MAX_TRIES 自然放弃
+        # —— 有终点，不会每晚白查」。终点到不了，因为 `save_search_tpl()`
+        # 会把 `search_fail` 清零（"学会了，失败账清零"），而放弃门槛读的
+        # **正是**它 —— 计数永远停在 0/1，门槛是 3。
+        # 日志也因此一直撒谎：每次作废都写「已失败 1 次」，看着像头一回。
+
+        def _learn(host: str) -> bool:
+            """模拟学站器又给它学出一份模板（模板内容是否相同无关紧要）。"""
+            R.note_site(host, name=host)
+            return R.note_search_tpl(host, "/?s={kw}")
+
+        def _kill(host: str) -> None:
+            """把它搜到被判死：3 次独立观察都抽不出书链接。"""
+            for _ in range(R.SEARCH_SHAPE_MAX):
+                _obs(host)
+
+        loop = "loop.example.com"
+        R.note_site(loop, name=loop)          # 见过这个站，但还没有模板
+        check("前提：还没模板、也没失败过 → 允许学", R.should_try_learn(loop))
+        check("前提：第一次学得进去", _learn(loop))
+        _kill(loop)
+        s = R.known_site(loop)
+        check("判死一次：search_fail=1 且 tpl_dead=1",
+              int(s.get("search_fail") or 0) == 1 and R.tpl_dead_count(s) == 1,
+              f"fail={s.get('search_fail')} tpl_dead={s.get('tpl_dead')}")
+        check("★ 只判死一次不算惯犯：还允许它再学一次（不许一次失误就停）",
+              R.should_try_learn(loop))
+
+        check("前提：第二次也学得进去", _learn(loop))
+        s = R.known_site(loop)
+        check("★ 重学**不许**清「被作废过几次」（清了闸门就永远不触发）",
+              R.tpl_dead_count(s) == 1, f"tpl_dead={s.get('tpl_dead')}")
+        check("前提：重学之后 search_fail 确实归零（这就是放弃门槛失效的原因）",
+              int(s.get("search_fail") or 0) == 0, f"fail={s.get('search_fail')}")
+
+        _kill(loop)
+        s = R.known_site(loop)
+        check("判死两次：tpl_dead=2", R.tpl_dead_count(s) == 2,
+              f"tpl_dead={s.get('tpl_dead')}")
+        check("★ 判死两次之后不许再学（冷却期内不再为它花学站预算）",
+              not R.should_try_learn(loop), f"tpl_dead={s.get('tpl_dead')}")
+        check("★ 它也不在学站候选清单里", loop not in R.learn_candidates())
+        check("冷却期内它不是可搜源（模板已被撤）",
+              not R.is_searchable(R.known_site(loop)))
+        check("死因照留（复盘要能看见「为什么没学它」）",
+              (R.known_site(loop).get("search_fail_why") or "") == "模板打开的不是搜索页",
+              repr(R.known_site(loop).get("search_fail_why")))
+
+        # 反向：冷却**到期**要重新给机会 —— 否则这条闸门就变成"永久拉黑"，
+        # 站点真改回静态搜索页也永远回不来。
+        R._load()["sites"][loop]["tpl_dead_at"] = int(
+            time.time()) - (R.TPL_DEAD_COOLDOWN + 60)
+        check("★ 冷却 7 天到期后重新允许学", R.should_try_learn(loop))
+
+        # 反向之二：**搜出过东西**的站一根毫毛都不许动。
+        # 判死的前提是 `search_hit == 0`（从没交过一条真结果），所以这条
+        # 闸门天然只打在"从来没产出"的站上；这条断言把该前提钉住。
+        alive2 = "hasresult.example.com"
+        R.note_site(alive2, name=alive2)
+        check("前提：给它学一份模板", R.note_search_tpl(alive2, "/?s={kw}"))
+        for _ in range(5):
+            _obs(alive2, hits=2, raw=10)
+        check("★ 搜出过东西的站 tpl_dead 永远是 0（闸门不许打在活站上）",
+              R.tpl_dead_count(R.known_site(alive2)) == 0,
+              f"tpl_dead={R.known_site(alive2).get('tpl_dead')}")
+        check("它照样是可搜源", R.is_searchable(R.known_site(alive2)))
+
+        # 这本账必须真的落盘：重启后 `_ensure_loaded` 读回来还是 2，
+        # 否则每天重启一次（ship/部署）就等于把闸门清零，循环照旧。
+        R.flush()
+        _dsk = disk()["sites"]
+        check("★ tpl_dead 落盘了（重启后闸门还在）",
+              int((_dsk.get(loop) or {}).get("tpl_dead") or 0) == 2,
+              str(_dsk.get(loop)))
+
+        # -----------------------------------------------------------------
         print("\n—— 护栏：全清要显式确认 ——")
         # 先落一次盘：缩水护栏是拿「盘上那份」当基准的，
         # 上面这些 note_* 都还压在内存里（落盘有 1 秒节流）

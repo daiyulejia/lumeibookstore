@@ -118,6 +118,34 @@ SEARCH_SHAPE_MAX = 3
 # 又短到"真坏的模板在下一次搜索里照样能凑满票"。
 SHAPE_BURST_WINDOW = 180
 
+# 「学会 → 被判死」这个循环跑几轮之后就该停（2026-11-06 复盘）。
+#
+# 上面那段写着「重学仍不行就由 `SEARCH_LEARN_MAX_TRIES` 自然放弃 ——
+# 有终点，不会每晚白查」。**这句话是假的**，线上连着 6 天打脸：
+#   · 固定的 5 个站（`m.kudushu.org` / `www.jcxs.cc` / `www.xizids.com` /
+#     `www.xuanhuanbiquge.com` / `www.itiandixs.com`）每天走一遍同一个圈：
+#       03:19 学会模板 → 22:37~22:51 被 3 次「不是搜索页」作废 → 次日 03:19 再学会
+#   · 10-31 / 11-01 / 11-02 / 11-04(两次) / 11-05 的作废清单里，这 5 个一字不差。
+#   终点之所以到不了：`save_search_tpl()` 会 `search_fail = 0`（「学会了，
+#   失败账清零」），而 `should_try_learn()` 用的**正是**这个计数当放弃门槛 ——
+#   于是它永远停在 0/1，门槛是 3，永远够不到。日志也跟着撒谎：每次作废都写
+#   「已失败 1 次」，看着像头一回。
+#
+# 病根是把两本账记成了一个：
+#   · `search_hit` / `search_shape` —— 「**这一份模板**行不行」。换模板＝换假设，
+#     证据该重采（对，这条设计没错）。
+#   · `tpl_dead` —— 「**这个站的搜索页**对我们到底有没有用」。它跨模板累计，
+#     `save_search_tpl()` **不许**清它。放弃门槛必须记在这本账上。
+#
+# 判定代价不对称：误停 7 天 → 少一个本来也搜不出东西的源（它 `search_hit`
+# 恒为 0，从没交过一条真结果）；不停 → 每晚白跑一遍学站 + 可搜源数每天
+# 撒谎一次（30→26→30 是账面假象，不是真资产）。
+TPL_DEAD_MAX = 2
+# 判死这么多次之后，隔多久再给它一次机会（秒）。
+# 7 天：真改回静态搜索页的站，一周内必然被看见；而每晚重学一次是
+# 「0 收益 + 占学站预算 + 让『综合 N 站』这个数字虚高」。
+TPL_DEAD_COOLDOWN = 7 * 86400
+
 # 失败原因分类 —— 传给 `note_site(..., why=...)`。
 # 为什么必须分类：`fail` 是个混装桶，"站点真的连不上"和"我们 URL 猜错了"
 # 都只让它 +1。于是 is_healthy 的比值判据会把猜错路径算成"这个站不行"，
@@ -759,6 +787,14 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
         cur["search_ver"] = 0
         cur["search_fail"] = 0          # 学会了，失败账清零
         cur["search_fail_ver"] = LEARN_VER
+        # ⚠ 但 `tpl_dead` **不许**在这里清零（2026-11-06）。
+        #   上面那句"学会了，失败账清零"清的是 `search_fail`，它说的是
+        #   "**这份**模板学了几次没学会"；一旦清零，而 `should_try_learn()`
+        #   又拿它当放弃门槛，就出现了线上那个死循环：
+        #   每晚学会 → 白天被判死 → 夜里 fail 归零 → 再学一遍，永不终止。
+        #   `tpl_dead` 说的是"这个站的搜索**页**对我们有没有用"，
+        #   换模板不会改变这个事实（jcxs 的搜索页靠 JS 渲染、
+        #   m.kudushu 整站 Cloudflare 403 —— 都不是换一份模板能救的）。
         # ⚠ 上一条模板的**死因**也要一起清掉（2026-10-22 复盘）。
         #   `search_fail_why` 说的是「**那一个**模板为什么被撤」，不是
         #   「这个站行不行」。重学成功换了新模板，旧结论就失效了 ——
@@ -881,10 +917,20 @@ def note_search_result(host: str, *, hits: int, raw: int,
             cur["search_fail"] = int(cur.get("search_fail") or 0) + 1
             cur["search_fail_ver"] = LEARN_VER
             cur["search_fail_why"] = "模板打开的不是搜索页"
+            # ⚠ 站级账：跨模板累计，`save_search_tpl()` **不清**它。
+            #   `search_fail` 会在重学成功时清零（那是对的，它说的是"这份
+            #   模板失败了几次"），所以放弃门槛不能读它 —— 见 `TPL_DEAD_MAX`。
+            cur["tpl_dead"] = int(cur.get("tpl_dead") or 0) + 1
+            cur["tpl_dead_at"] = _now()
+            _dead_n = int(cur["tpl_dead"])
+            if _dead_n >= TPL_DEAD_MAX:
+                _tail = "（已到上限：%d 天内不再为它花学站预算）" % (TPL_DEAD_COOLDOWN // 86400)
+            else:
+                _tail = ""
             logger.info("站 %s 连续 %d 次打开的不是搜索页（模板 %s），"
-                        "作废该模板让它重学（已失败 %d 次）",
+                        "作废该模板让它重学（本次模板已失败 %d 次，该站累计被判死 %d 次%s）",
                         host, int(cur.get("search_shape") or 0), dead_tpl[:60],
-                        int(cur.get("search_fail") or 0))
+                        int(cur.get("search_fail") or 0), _dead_n, _tail)
         cur["updated"] = _now()
         global _dirty
         _dirty = True
@@ -978,7 +1024,27 @@ def should_try_learn(host: str) -> bool:
         return False                    # 没见过的站先别学
     if (s.get("search_tpl") or "").strip():
         return False                    # 已经会了
+    # 「学会 → 被判死」循环的闸门（2026-11-06）：这个站的搜索页已经被
+    # 证伪过 `TPL_DEAD_MAX` 次，冷却期内不再为它花预算重学。
+    # ⚠ 读的是 `tpl_dead`（跨模板累计）而**不是** `search_fail`（重学即清零）——
+    #   后者正是"每晚重学一遍、永远够不到放弃门槛"的原因，见 `TPL_DEAD_MAX`。
+    if tpl_dead_count(s) >= TPL_DEAD_MAX:
+        if _now() - int(s.get("tpl_dead_at") or 0) < TPL_DEAD_COOLDOWN:
+            return False
     return learn_tries(s) < SEARCH_LEARN_MAX_TRIES
+
+
+def tpl_dead_count(site: dict) -> int:
+    """这个站的搜索模板一共**被判死过几次**（跨模板累计，学站成功不清零）。
+
+    和 `learn_tries()` 是两本账，别混：
+      · `learn_tries()` —— 「学不会」失败了几次（学习器自己没找到接口）
+      · 本函数        —— 「学会了但用不了」失败了几次（模板被作废）
+    线上每天循环的正是后者，而放弃门槛原来只盯前者，于是永远不触发。
+    """
+    if not isinstance(site, dict):
+        return 0
+    return int(site.get("tpl_dead") or 0)
 
 
 def learn_tries(site: dict) -> int:
