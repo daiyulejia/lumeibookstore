@@ -507,6 +507,195 @@ def main() -> int:
     check("★ 取不到源池时打「?」，不许补 0（0→0 会被读成源池空了）",
           E._pool_note(-1) == "?", f"_pool_note(-1)={E._pool_note(-1)!r}")
 
+    print("\n── H. 「够用了」不许切断**还在自己预算里**的源（2026-11-09 主线）──")
+    # 现场：`RegistrySource`（库里 26~32 个已学会的站一起扇出）要跑 3~5 秒，
+    # 而 ②③ 两条收手条件在 1.5~3.5 秒就成立 → 它每次半路被判「未回」，
+    # 抓回来的候选全部作废。线上 11-06 的 17 次搜索里出现 12 次；
+    # 单独调它能拿 8/40 条（《顾漫》/《三体》）。
+    #
+    # ⚠ 判据刻意**不看耗时**（随机器负载漂），看的是「那个源到底答没答」+
+    #   「收手日志认不认这笔账」。三个场景互为反向：
+    #     H1 宣告了预算 → 必须等它，正主必须进结果；
+    #     H2 没宣告预算 → 不许等（否则"等所有人"，慢源把搜索拖死）；
+    #     H3 预算已过   → 不许等（否则声明值变成无限期）。
+    _H_OLD = (E.SEARCH_SOFT_DEADLINE, E.SEARCH_MIN_WAIT, E.SEARCH_GRACE,
+              E.SEARCH_ANSWERED_RATIO, E.SEARCH_ENOUGH, E.SEARCH_HARD_DEADLINE)
+
+    class _HFast(Source):
+        """秒回、带确切命中 —— 负责把 ③（宽限期）喂到成立。"""
+        delay = 0.01
+
+        def search(self, keyword):
+            time.sleep(type(self).delay)
+            return [BookResult(title=keyword, url=f"http://{self.name}/1",
+                               source=self.name, source_display=self.display,
+                               author="某人")]
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    class _HFastA(_HFast):
+        name = "recall_h_fast_a"
+        display = "快源A"
+        priority = 1
+        enabled = True
+
+    class _HFastB(_HFast):
+        name = "recall_h_fast_b"
+        display = "快源B"
+        priority = 2
+        enabled = True
+
+    class _HFastC(_HFast):
+        """0.12s 才回来 —— **它的到达才是「重判收手」的触发点**。
+
+        ⚠ 这一条是场景能不能成立的关键（第一版没有它，判据全部空转）：
+          引擎只在「某个源回来」时才重判收手，`elapsed` 本身不会把它叫醒。
+          只有两个 0.01s 的快源时，第三次重判发生在**慢源自己回来那一刻**，
+          于是"保护没保护好"根本无从观察 —— 三个场景的耗时全都等于慢源延时。
+        """
+        name = "recall_h_fast_c"
+        display = "快源C"
+        priority = 3
+        enabled = True
+        delay = 0.12
+
+    class _HSlow(Source):
+        """慢半拍、带**独有**的一条结果。budget_s 由子类决定。"""
+        delay = 0.45
+
+        def search(self, keyword):
+            time.sleep(type(self).delay)
+            return [BookResult(title=keyword, url=f"http://{self.name}/1",
+                               source=self.name, source_display=self.display,
+                               author="某人")]
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    class _HBudget(_HSlow):
+        """**宣告**了 budget_s=0.7 —— 引擎必须为它让路。"""
+        name = "recall_h_budget"
+        display = "宣告预算的慢源"
+        priority = 4
+        enabled = True
+        budget_s = 0.70
+
+    class _HSlowNoBudget(_HSlow):
+        """同样慢，但**没宣告**预算 —— 引擎不许为它让路（H2 的反证靶）。"""
+        name = "recall_h_nobudget"
+        display = "没宣告预算的慢源"
+        priority = 4
+        enabled = True
+        budget_s = None
+
+    class _HHang(Source):
+        """永远不回来（3s > 软截止）。没宣告预算 —— 不许为它多等。"""
+        name = "recall_h_hang"
+        display = "不回来的源"
+        priority = 9
+        enabled = True
+
+        def search(self, keyword):
+            time.sleep(3.0)
+            return []
+
+        def get_chapters(self, url): return []
+        def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+    def _h_setup():
+        E.SEARCH_MIN_WAIT = 0.05
+        E.SEARCH_GRACE = 0.10
+        E.SEARCH_ANSWERED_RATIO = 0.99   # 关掉②，让③单独负责
+        E.SEARCH_ENOUGH = 12
+        E.SEARCH_SOFT_DEADLINE = 1.20
+        E.SEARCH_HARD_DEADLINE = 1.20
+
+    # ⚠ A~F 组的 finally 把级别还原成了 NOTSET（= 听 root 的），
+    #   于是 H 组想抓 `logger.info` 的那行收手日志会**一条都收不到** ——
+    #   断言会变成"判据空转"却报红，看起来像产品坏了（第一版就栽在这）。
+    _h_old_level = lg.level
+    lg.setLevel(logging.DEBUG)
+
+    try:
+        # ---- H1：宣告 budget_s=0.7 的慢源，必须被等到 ----
+        print("\n  ① 宣告了预算的源：正主不许被「够用了」扔掉")
+        _h_setup()
+        capH = _Cap()
+        lg.addHandler(capH)
+        stH: dict = {}
+        t0 = time.time()
+        try:
+            resH = E.Engine(sources=[_HFastA, _HFastB, _HFastC,
+                                     _HBudget, _HHang]).search(
+                KW, stats=stH, discover=False, probe=False, sample=False)
+            errH = ""
+        except Exception as e:  # noqa: BLE001
+            resH, errH = [], repr(e)
+        elH = time.time() - t0
+        lg.removeHandler(capH)
+        check("H1 引擎跑完了（跑不完下面全是空转）", not errH, errH)
+        srcsH = [r.source for r in resH]
+        check("H1 前置：重判收手的触发点真的到来了（快源C 0.12s 回来过）",
+              _HFastC.name in srcsH, f"来源={srcsH}")
+        check("★ H1 慢源那条结果进了最终结果（旧实现 0.12s 就收手，它还在睡）",
+              _HBudget.name in srcsH, f"来源={srcsH}")
+        check("★ H1 收手日志认这笔账：写出「按自身预算等过 recall_h_budget」",
+              "按自身预算等过" in capH.text()
+              and "recall_h_budget" in capH.text(),
+              capH.text()[-300:] or "（没抓到收手日志，判据空转）")
+        check("H1 没有退化成「等所有人」：不回来的源仍被记「未回」",
+              stH.get("unreturned_sources") == ["recall_h_hang"],
+              f"未回={stH.get('unreturned_sources')}")
+        check("H1 是「等到它就收」，不是撞软截止蒙过去的",
+              elH < E.SEARCH_SOFT_DEADLINE,
+              f"耗时={elH:.2f}s 软截止={E.SEARCH_SOFT_DEADLINE}")
+
+        # ---- H2：反向 —— 没宣告预算的慢源，不许等 ----
+        print("\n  ② 反向：没宣告预算的慢源，不许为它多等")
+        _h_setup()
+        stN: dict = {}
+        t0 = time.time()
+        resN = E.Engine(sources=[_HFastA, _HFastB, _HFastC,
+                                 _HSlowNoBudget, _HHang]).search(
+            KW, stats=stN, discover=False, probe=False, sample=False)
+        elN = time.time() - t0
+        srcsN = [r.source for r in resN]
+        check("★ H2 没宣告预算 → 宽限期一到就收手，慢源那条被弃（保护只发给声明过的源）",
+              _HSlowNoBudget.name not in srcsN, f"来源={srcsN}")
+        check("H2 确实提前收了（没有偷偷变成「一律等」）",
+              elN < 0.40, f"耗时={elN:.2f}s，慢源要 0.45s 才回来")
+
+        # ---- H3：反向 —— 预算已经过了，就不许再拿它当挡箭牌 ----
+        print("\n  ③ 反向：预算已过，不许再等（否则声明值成无限期）")
+        _h_setup()
+
+        class _HBudgetExpired(_HSlow):
+            name = "recall_h_expired"
+            display = "预算已过的慢源"
+            priority = 5
+            enabled = True
+            budget_s = 0.05          # 0.12s 的重判点上早已过期
+            delay = 0.30
+
+        stX: dict = {}
+        t0 = time.time()
+        resX = E.Engine(sources=[_HFastA, _HFastB, _HFastC,
+                                 _HBudgetExpired, _HHang]).search(
+            KW, stats=stX, discover=False, probe=False, sample=False)
+        elX = time.time() - t0
+        srcsX = [r.source for r in resX]
+        check("★ H3 预算过期后不再等：慢源那条被弃",
+              _HBudgetExpired.name not in srcsX, f"来源={srcsX}")
+        check("H3 收手落在 0.12s 那个重判点上，没有被拖到 0.30s",
+              elX < 0.28, f"耗时={elX:.2f}s")
+    finally:
+        (E.SEARCH_SOFT_DEADLINE, E.SEARCH_MIN_WAIT, E.SEARCH_GRACE,
+         E.SEARCH_ANSWERED_RATIO, E.SEARCH_ENOUGH,
+         E.SEARCH_HARD_DEADLINE) = _H_OLD
+        lg.setLevel(_h_old_level)
+        HEALTH.reset()
+
     print("\n" + "=" * 62)
     if fail_n == 0:
         print(f"通过 {ok_n} · 失败 0\n✓ 全部通过")

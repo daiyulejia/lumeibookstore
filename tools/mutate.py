@@ -2033,6 +2033,47 @@ MUTATIONS: list[Mutation] = [
              "TPL_DEAD_COOLDOWN = 7 * 86400",
              "TPL_DEAD_COOLDOWN = 0",
              REGISTRY_TEST),
+
+    # ---------------- 「够用了」不许切断还在自己预算里的源（2026-11-09）--------
+    # 现场：`RegistrySource` 内部要跑 3~5s（26~32 个站一起扇出），而 ②③ 两条
+    # 收手条件在 1.5~3.5s 就成立 → 它每次半路被判「未回」，抓回来的候选全废。
+    # 线上 11-06 的 17 次搜索里出现 12 次。
+    Mutation("源预算让路", "②③ 不再给「声明了预算的源」让路（回到每天扔掉 30 个站的老样子）",
+             ENGINE,
+             "                        or (_tight_ok and not _wait_honored\n"
+             "                            and answered_ratio >= SEARCH_ANSWERED_RATIO)\n"
+             "                        or (_tight_ok and not _wait_honored\n"
+             "                            and enough_answered and elapsed >= SEARCH_GRACE)",
+             "                        or (_tight_ok\n"
+             "                            and answered_ratio >= SEARCH_ANSWERED_RATIO)\n"
+             "                        or (_tight_ok\n"
+             "                            and enough_answered and elapsed >= SEARCH_GRACE)",
+             RECALL_TEST),
+    Mutation("源预算让路", "让路判据不看到期（声明值变成无限期，预算过期了还在等）",
+             ENGINE,
+             "                if elapsed < float(bud):",
+             "                if bud:",
+             RECALL_TEST),
+    Mutation("源预算让路", "「为谁多等了」不累计（日志永远看不出这笔时间是故意的）",
+             ENGINE,
+             "                        waited_for.update(_honored_names)",
+             "                        pass",
+             RECALL_TEST),
+    Mutation("源预算让路", "自有来源不声明预算（引擎不会为它让路）",
+             REGISTRY_SOURCE,
+             "    budget_s = SEARCH_BUDGET",
+             "    budget_s = None",
+             BUDGET_SRC_TEST),
+    Mutation("源预算让路", "总预算改回 7.0s（比引擎软截止还长 → 声明了也用不满）",
+             REGISTRY_SOURCE,
+             "SEARCH_BUDGET = 5.0",
+             "SEARCH_BUDGET = 7.0",
+             BUDGET_SRC_TEST),
+    Mutation("源预算让路", "连接池缩回 10 条（30 个站被压成 3 批串行）",
+             UTILS,
+             "POOL_MAX_CONNECTIONS = 32",
+             "POOL_MAX_CONNECTIONS = 10",
+             BUDGET_SRC_TEST),
 ]
 
 

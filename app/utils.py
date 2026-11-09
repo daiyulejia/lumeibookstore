@@ -223,6 +223,13 @@ def _cert_error(exc: BaseException) -> bool:
     return False
 
 
+# 连接池大小（见 `_make_client` 里那段注释）。
+# 提成常量是为了能被判据读到 —— 结构矛盾（池子比扇出小 → 串行 → 超时）
+# 单看代码是看不出来的，必须是可断言的数字。
+POOL_MAX_CONNECTIONS = 32
+POOL_MAX_KEEPALIVE = 16
+
+
 def _make_client(*, verify: bool, use_proxy: bool) -> httpx.Client:
     """建一个 httpx.Client。两处（有/无代理）只差 trust_env 与 limits。"""
     kw: dict = dict(
@@ -234,7 +241,15 @@ def _make_client(*, verify: bool, use_proxy: bool) -> httpx.Client:
     )
     if not use_proxy:
         kw["trust_env"] = False          # 关键：忽略系统代理
-        kw["limits"] = httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        # ⚠ 连接池大小**必须容得下「自有来源」的一次扇出**（2026-11-09）。
+        #   `RegistrySource` 一次要问 26~32 个站（`SEARCH_WORKERS=24`），
+        #   而这里原来是 10 条连接 —— 30 个站被压成 3 批串行跑，
+        #   实测同一次搜索里它要 7.0s（预算刚好撞满、末尾一批永远轮不到），
+        #   而把它单独放大到 32 条连接后只要 4.37s（《顾漫》8 条、《三体》40 条）。
+        #   这不只是"慢"：慢到超过引擎的收手点，整个源的产出就被扔掉了。
+        #   ⚠ 同域请求仍由 utils 的限速器串行化，放大总连接数不会打爆任何一个站。
+        kw["limits"] = httpx.Limits(max_keepalive_connections=POOL_MAX_KEEPALIVE,
+                                    max_connections=POOL_MAX_CONNECTIONS)
     return httpx.Client(**kw)
 
 

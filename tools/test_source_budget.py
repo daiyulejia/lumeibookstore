@@ -92,6 +92,49 @@ class _OKClient:
 
 
 def main() -> int:
+    # =====================================================================
+    print("\n—— ⓿ 结构性一致：声明的时间预算必须真的能被用满（2026-11-09） ——")
+    # 这一组不跑任何网络，钉的是**三个数字之间的关系**。
+    # 病灶原型（线上 11-06，17 次搜索里 12 次）：`RegistrySource` 内部
+    # 预算 7.0s，而引擎「有结果就收手」的软截止是 6.0s、宽限期更是 3.5s ——
+    # 于是它永远在半路被扔掉，30 个已学会的站抓回来的候选全部作废。
+    # 这类矛盾**单看任何一处代码都看不出来**，只存在于两个常量的大小关系里，
+    # 所以必须做成可断言的数字。
+    import app.engine as E                       # noqa: E402
+    import app.sources as SRC                    # noqa: E402
+    import app.sources.registry_source as RS     # noqa: E402
+    import app.utils as U                        # noqa: E402
+
+    _all = SRC.BUILTIN_SOURCES
+    _classes = [x if isinstance(x, type) else type(x) for x in _all]
+    check("前置：枚举到 >= 8 个源（否则下面几条是空转）",
+          len(_classes) >= 8, f"只枚到 {len(_classes)} 个")
+
+    _declared = {c.name: getattr(c, "budget_s", None) for c in _classes}
+    _declared = {k: v for k, v in _declared.items() if v}
+    check("前置：至少有一个源声明了 budget_s（否则『让路』机制没启用过）",
+          bool(_declared), f"声明表={_declared}")
+    _bad = {k: v for k, v in _declared.items() if not (0 < float(v) <= E.SEARCH_SOFT_DEADLINE)}
+    check("★ 声明了预算的源，值必须 <= 引擎软截止（否则『声明了也永远等不到』是假话）",
+          not _bad, f"越界={_bad} 软截止={E.SEARCH_SOFT_DEADLINE}")
+
+    check("★ 自有来源必须声明 budget_s（它是唯一一个内部要扇出 30 个站的源）",
+          bool(getattr(RS.RegistrySource, "budget_s", None)),
+          f"budget_s={getattr(RS.RegistrySource, 'budget_s', None)!r}")
+    check("★ 声明值必须就是它自己真正在用的预算（两处只改一处等于没改）",
+          getattr(RS.RegistrySource, "budget_s", None) == RS.SEARCH_BUDGET,
+          f"budget_s={getattr(RS.RegistrySource, 'budget_s', None)!r} "
+          f"SEARCH_BUDGET={RS.SEARCH_BUDGET!r}")
+    check("自有来源的总预算必须小于引擎软截止",
+          RS.SEARCH_BUDGET < E.SEARCH_SOFT_DEADLINE,
+          f"{RS.SEARCH_BUDGET} vs {E.SEARCH_SOFT_DEADLINE}")
+    check("单站超时必须明显小于它自己的总预算（否则一个慢站拖死整批）",
+          RS.SEARCH_SITE_TIMEOUT < RS.SEARCH_BUDGET,
+          f"{RS.SEARCH_SITE_TIMEOUT} vs {RS.SEARCH_BUDGET}")
+    check("★ 连接池必须容得下自有来源的并发（池子比扇出小 → 站被压成几批串行）",
+          U.POOL_MAX_CONNECTIONS >= RS.SEARCH_WORKERS,
+          f"池={U.POOL_MAX_CONNECTIONS} 并发={RS.SEARCH_WORKERS}")
+
     src = WS.WikisourceSource()
 
     print("\n—— ① 到点就**不发**请求（而不是发完再判） ——")

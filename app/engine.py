@@ -730,9 +730,37 @@ class Engine:
         def _pend_names() -> list[str]:
             """还没回来的源名 —— 日志里只给个数，复盘时永远查不出"谁在拖"。"""
             return sorted(futs[f].name for f in pending if f in futs)
+
+        def _honored(elapsed: float) -> list[str]:
+            """哪些源**还没回来、但还在它自己声明的预算里**（`Source.budget_s`）。
+
+            2026-11-09 复盘：这是「够用了」收手最大的一个洞。
+              `RegistrySource`（库里 26~32 个已学会的站一起扇出）内部要跑
+              3~5 秒，而 ②③ 两条收手条件在 1.5~3.5 秒就会成立 ——
+              于是它每次都在半路被判「未回」，30 来个站抓回来的候选**全部作废**。
+              线上实证：11-06 的 17 次搜索里 `未回=...(registry)` 出现 12 次；
+              同一天复现时 `搜索收手 4.5s` 的「放弃」名单第一项就是 registry，
+              而单独调它 3.5s 能拿 40 条（含 30 个站里只有它有的正主）。
+
+            判据是**源自己声明的预算**，不是耗时阈值 —— 耗时阈值会随机器
+            负载漂，而"我说我需要 5 秒"是源的结构事实。
+            """
+            out: list[str] = []
+            for f in pending:
+                s = futs.get(f)
+                bud = getattr(s, "budget_s", None) if s is not None else None
+                if not bud:
+                    continue
+                if elapsed < float(bud):
+                    out.append(getattr(s, "name", "?"))
+            return sorted(out)
         # 「是不是等到了墙钟上限才结束的」—— 见下面 need_web 的注释。
         # 默认 False = 因为「已经有结果」提前收手；True = 真的等到了头。
         hit_deadline = False
+        # 这一轮**为了谁**多等了（源名）。必须累计：收手那一刻被等的源
+        # 早已答完、不在 pending 里了，只看当轮快照永远是空的 ——
+        # 那样"我们故意多花的时间"在日志里就无从追溯（2026-11-09 踩到）。
+        waited_for: set[str] = set()
         try:
             while pending:
                 elapsed = time.time() - t_search
@@ -802,23 +830,38 @@ class Engine:
                     #   ⚠ 软截止那条④必须**无条件**保留：它是唯一的兜底上界，
                     #     否则"永远没有确切命中的书"会把总预算吃穿。
                     _tight_ok = tight_streamed > 0
+                    # ⚠ ②③ 还得让路给「宣告了预算、还在自己预算里跑着」的源。
+                    #   不这么写的话，一个内部要跑 5 秒的源必然在半路被扔掉，
+                    #   它声明的预算就永远用不满 —— 声明等于没声明。
+                    #   ①（真的攒够 12 条确切命中）**不让路**：那种情况下
+                    #   多等一秒是纯损失；④ 软截止更是无条件兜底。
+                    _honored_names = _honored(elapsed)
+                    _wait_honored = bool(_honored_names)
+                    if _wait_honored:
+                        waited_for.update(_honored_names)
                     if (
                         (_tight_ok and len(raw) >= SEARCH_ENOUGH)
-                        or (_tight_ok and answered_ratio >= SEARCH_ANSWERED_RATIO)
-                        or (_tight_ok and enough_answered and elapsed >= SEARCH_GRACE)
+                        or (_tight_ok and not _wait_honored
+                            and answered_ratio >= SEARCH_ANSWERED_RATIO)
+                        or (_tight_ok and not _wait_honored
+                            and enough_answered and elapsed >= SEARCH_GRACE)
                         or elapsed >= SEARCH_SOFT_DEADLINE
                     ):
                         # 收手原因必须写清楚：`确切=0` 的收手只可能是撞软截止，
                         # 而"有确切命中、攒够条数"是正常提速 —— 两者在耗时上
                         # 分不出来，在处置上（该补源 / 该不管）完全相反。
+                        # ⚠ 「为谁多等了几秒」也要写：否则复盘只能看到耗时变长，
+                        #   看不到这是**故意的**（2026-11-09 新增的那条让路）。
                         logger.info(
                             "搜索收手：已返回 %d/%d 个源（%.0f%%）、原始 %d 条/"
                             "推给前端 %d 条（其中确切 %d 条）、耗时 %.1fs，"
-                            "放弃 %d 个还没回来的慢源（%s）",
+                            "放弃 %d 个还没回来的慢源（%s）%s",
                             done_count, total, answered_ratio * 100,
                             len(raw), streamed, tight_streamed, elapsed,
                             len(pending),
-                            ", ".join(_pend_names()) or "-")
+                            ", ".join(_pend_names()) or "-",
+                            ("；按自身预算等过 %s" % ", ".join(sorted(waited_for)))
+                            if waited_for else "")
                         break
                 # 有结果了 → 最多等到软截止；还没结果 → 放宽到硬上限再等。
                 # 这个区分是必须的：源内部会串行发多次请求（wyshu 试十来个
