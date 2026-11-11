@@ -2028,10 +2028,34 @@ MUTATIONS: list[Mutation] = [
              '        cur["search_hit"] = 0\n        cur["search_shape"] = 0\n'
              '        cur["tpl_dead"] = 0',
              REGISTRY_TEST),
+    # 第二条入口（2026-11-11）：11-06 的闸门只堵了「连续 3 次不是搜索页」，
+    # 漏了夜间复核判假 → `clear_search_tpl()` 撤模板 → 次日再学。
+    # 线上 `www.hgcha.com` 一晚三轮、连跑三夜，`tpl_dead` 键根本没出现过。
+    Mutation("学站循环", "复核判假撤模板时不记站级账（11-06 漏掉的那条入口）",
+             REGISTRY,
+             '        cur["tpl_dead"] = int(cur.get("tpl_dead") or 0) + 1\n'
+             '        cur["tpl_dead_at"] = _now()\n'
+             '        _dead_n = int(cur["tpl_dead"])',
+             '        _dead_n = int(cur.get("tpl_dead") or 0)',
+             REGISTRY_TEST),
     Mutation("学站循环", "冷却期设成 0（等于不冷却，判死完立刻又能学）",
              REGISTRY,
              "TPL_DEAD_COOLDOWN = 7 * 86400",
              "TPL_DEAD_COOLDOWN = 0",
+             REGISTRY_TEST),
+    # 2026-11-11：体检会删站删书（全局状态变更），日志必须点名。
+    # 原来只有一句推给客户端的进度，落盘日志零字段 —— 复盘时
+    # 「某个站每晚被学一遍却不在库里」到底是没写进去还是被删了，只能猜。
+    Mutation("体检点名", "体检汇总行只报数字、不点名（复盘查不出谁被删了）",
+             DISCOVERY,
+             '                ("（" + ", ".join(gone[:20]) + ("…" if len(gone) > 20 else "") + "）")\n'
+             '                if gone else "")',
+             '                "")',
+             REGISTRY_TEST),
+    Mutation("体检点名", "点名取「体检前全集」而不是差集（把活站也说成被删）",
+             DISCOVERY,
+             "        gone = sorted(_before_sites - set(registry.sites()))",
+             "        gone = sorted(_before_sites)",
              REGISTRY_TEST),
 
     # ---------------- 「够用了」不许切断还在自己预算里的源（2026-11-09）--------

@@ -1176,6 +1176,24 @@ def clear_search_tpl(host: str, *, why: str = "") -> bool:
         cur["search_fail_ver"] = LEARN_VER
         if why:
             cur["search_fail_why"] = why[:60]
+        # ⚠ 站级账：**撤模板也算这个站被判死一次**（2026-11-11）。
+        #   这是「学会 → 判死 → 再学」的第二条入口，11-06 的闸门漏了它：
+        #   当时只让 `note_search_result()` 的「连续 3 次不是搜索页」记
+        #   `tpl_dead`，而夜间复核判假走的是**这里** —— 清了模板、
+        #   `search_fail` 记 1，然后下一轮 `save_search_tpl()` 又把它清零，
+        #   于是 `TPL_DEAD_MAX` 永远够不到。
+        #   线上实证：`www.hgcha.com` 11-09/10/11 三晚，每晚
+        #   03:18 学会 → 03:18:41 复核判假撤掉 → 03:39 再学会 → 再撤，
+        #   一晚上三轮，`tpl_dead` 这个键从头到尾没出现过。
+        #   `search_fail` 说的是"这份模板学了几次没学会"（换模板就重记），
+        #   `tpl_dead` 说的是"这个站的搜索页对我们有没有用"（换模板不改变）。
+        cur["tpl_dead"] = int(cur.get("tpl_dead") or 0) + 1
+        cur["tpl_dead_at"] = _now()
+        _dead_n = int(cur["tpl_dead"])
+        logger.info("撤掉搜索模板 %s（%s）—— 该站累计被判死 %d 次%s",
+                    h, (why or "-")[:40], _dead_n,
+                    "（已到上限：%d 天内不再为它花学站预算）"
+                    % (TPL_DEAD_COOLDOWN // 86400) if _dead_n >= TPL_DEAD_MAX else "")
         cur["updated"] = _now()
         global _dirty
         _dirty = True

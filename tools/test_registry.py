@@ -899,6 +899,49 @@ def main() -> int:
               f"tpl_dead={R.known_site(alive2).get('tpl_dead')}")
         check("它照样是可搜源", R.is_searchable(R.known_site(alive2)))
 
+        # —— ⑨b 同一个终点的**第二条入口**：复核判假 ——
+        # 11-06 那道闸门只堵了「连续 3 次不是搜索页」这一条路，漏了夜间复核：
+        #   学会 → 复核判假 → `clear_search_tpl()` 撤模板 → 次日再学。
+        # `clear_search_tpl()` 只把 `search_fail` +1，而它下一轮又被
+        # `save_search_tpl()` 清零 → 门槛（3）永远够不到，`tpl_dead` 那个键
+        # 甚至从头到尾没被创建过。线上实证（2026-11-11）：`www.hgcha.com`
+        # 11-09 / 11-10 / 11-11 三晚，每晚 03:18 学会 → 03:18:41 判假撤掉 →
+        # 03:39 再学会 → 03:39:31 再撤，一晚上三轮，`/api/registry` 里
+        # 该站的 `tpl_dead` 一直是 `None`，`search_fail` 永远是 1。
+        judge = "fakejudge.example.com"
+        R.note_site(judge, name=judge)
+        check("前提：复核对象有一份模板", R.note_search_tpl(judge, "/?s={kw}"))
+        check("前提：复核判假撤模板成功",
+              R.clear_search_tpl(judge, why="复核：模板不认关键词（假搜索）") is True)
+        _s = R.known_site(judge)
+        check("★ 复核判假也要记进站级账（否则闸门看不见这条路）",
+              R.tpl_dead_count(_s) == 1,
+              f"tpl_dead={_s.get('tpl_dead')} fail={_s.get('search_fail')}")
+        check("只被判假一次不算惯犯：还允许它再学一次",
+              R.should_try_learn(judge))
+        check("前提：第二次照样学得进去", R.note_search_tpl(judge, "/?s={kw}"))
+        check("★ 重学之后「被判死几次」不许清零（清了闸门就永远不触发）",
+              R.tpl_dead_count(R.known_site(judge)) == 1,
+              f"tpl_dead={R.known_site(judge).get('tpl_dead')}")
+        R.clear_search_tpl(judge, why="复核：模板不认关键词（假搜索）")
+        _s = R.known_site(judge)
+        check("★ 判假两次 → 闸门合上（冷却期内不再为它花学站预算）",
+              R.tpl_dead_count(_s) == 2 and not R.should_try_learn(judge),
+              f"tpl_dead={_s.get('tpl_dead')}")
+        check("它也不在学站候选清单里", judge not in R.learn_candidates())
+        check("死因照留（复盘要能看见是哪条路判的）",
+              (R.known_site(judge).get("search_fail_why") or "").startswith("复核"),
+              repr(R.known_site(judge).get("search_fail_why")))
+        # 反向：**没有模板可撤**的时候不许记账 —— 否则一个从来没学过、
+        # 或者刚被别处撤过的站，会被重复扣成"惯犯"而提前进 7 天冷却。
+        notpl = "notpl.example.com"
+        R.note_site(notpl, name=notpl)
+        check("反向：没有模板可撤时返回 False",
+              R.clear_search_tpl(notpl, why="复核：模板不认关键词（假搜索）") is False)
+        check("★ 反向：那一次不许记成判死",
+              R.tpl_dead_count(R.known_site(notpl)) == 0,
+              f"tpl_dead={R.known_site(notpl).get('tpl_dead')}")
+
         # 这本账必须真的落盘：重启后 `_ensure_loaded` 读回来还是 2，
         # 否则每天重启一次（ship/部署）就等于把闸门清零，循环照旧。
         R.flush()
@@ -906,6 +949,70 @@ def main() -> int:
         check("★ tpl_dead 落盘了（重启后闸门还在）",
               int((_dsk.get(loop) or {}).get("tpl_dead") or 0) == 2,
               str(_dsk.get(loop)))
+
+        # -----------------------------------------------------------------
+        print("\n—— ⑨c 体检清理必须点名（删站是全局状态变更） ——")
+        # 2026-11-11 复盘：`health_check()` 删了站/书，只在推给客户端的
+        # 进度里说一句 `清理 3 本 / 1 站`，**落盘日志零字段**。
+        # 结果复盘时看到「某个站每晚都被学一遍、却始终不在库里」，
+        # 分不清是"从没写进去"还是"被体检删掉了" —— 只能靠猜。
+        # 这和 10-30「源池 22→15 无字段」是同一类病：
+        # **凡一次操作会改全体状态，就要在日志里留下改了什么（含名字）**。
+        from app import discovery as D
+        import logging as _logging
+
+        keeper = "keepme.example.com"
+        doomed = "doomed.example.com"
+        for _h in (keeper, doomed):
+            R.note_site(_h, name=_h)
+        R.note_book("https://keepme.example.com/book/1/", host=keeper,
+                    title="活着的书", chapters=10)
+        R.note_book("https://doomed.example.com/book/1/", host=doomed,
+                    title="要死的书", chapters=10)
+        # 把 doomed 弄成不健康（ok=0 且 fail 攒够）—— 这是 prune 的判据
+        for _ in range(R.UNHEALTHY_FAILS + 1):
+            R.note_site(doomed, ok=False, why=R.FAIL_DOWN)
+        check("前提：doomed 已经不健康（否则 prune 不会动它）",
+              not R.is_healthy(R.known_site(doomed)), str(R.known_site(doomed)))
+
+        class _CapLog(_logging.Handler):
+            def __init__(self) -> None:
+                super().__init__()
+                self.lines: list[str] = []
+
+            def emit(self, rec) -> None:      # noqa: ANN001
+                try:
+                    self.lines.append(rec.getMessage())
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _cap = _CapLog()
+        _lg = _logging.getLogger("novel.discovery")
+        _old_lvl = _lg.level
+        _real_check = D._check_book
+        _lg.addHandler(_cap)
+        _lg.setLevel(_logging.INFO)
+        try:
+            # 只让「要死的书」体检失败 → dead>0 → 真的会走 prune
+            D._check_book = lambda url, meta: "doomed" not in url
+            D.health_check()
+        finally:
+            D._check_book = _real_check
+            _lg.removeHandler(_cap)
+            _lg.setLevel(_old_lvl)
+
+        _sum = [x for x in _cap.lines if "来源库体检" in x]
+        check("体检写了汇总行（跑没跑、清了多少，日志里看得见）",
+              bool(_sum), str(_cap.lines[-3:]))
+        _last = _sum[-1] if _sum else ""
+        check("★ 被清掉的站**点名**了（不是只报数字）",
+              doomed in _last, _last)
+        check("★ 没被清掉的站不许出现在点名里（日志不能说谎）",
+              keeper not in _last, _last)
+        check("前提/结果一致：doomed 真的从库里没了",
+              doomed not in R.sites(), str(list(R.sites())[:5]))
+        check("keeper 还在（活站不许被顺手清掉）", keeper in R.sites())
+
 
         # -----------------------------------------------------------------
         print("\n—— 护栏：全清要显式确认 ——")

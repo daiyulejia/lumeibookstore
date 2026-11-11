@@ -863,8 +863,24 @@ def health_check(*, log: Optional[LogFn] = None, limit: int = 0) -> dict:
         pool.shutdown(wait=False, cancel_futures=True)
 
     removed = {"sites_removed": 0, "books_removed": 0}
+    gone: list[str] = []
     if dead:
+        _before_sites = set(registry.sites())
         removed = registry.prune(only_dead=True)
+        gone = sorted(_before_sites - set(registry.sites()))
+    # ⚠ 一次体检会**改全局状态**（删书、删站），它必须自己说清楚删了谁
+    #   （2026-11-11 复盘）。原来这里只有一句 `say()` 推给客户端，
+    #   落盘日志里零字段 —— 复盘时看到「某个站每晚都被学一遍、却不在库里」，
+    #   无法判断它是"从没写进去"还是"被体检删掉了"，只能靠猜。
+    #   这和 10-30「源池 22→15 无字段」是同一类病：**凡一次操作会改
+    #   全体状态，就要在日志里留下改了什么**（取不到就写 `?`，不补 0）。
+    #   站名单取「prune 前后的差集」而不是 `sites_removed` 计数 ——
+    #   计数只说几个，说不了是谁；而这份库里"是谁"才是复盘要的。
+    logger.info("来源库体检：查 %d 本，存活 %d / 失效 %d，清理 %d 本 / %d 站%s",
+                len(items), ok, dead,
+                int(removed.get("books_removed") or 0), len(gone),
+                ("（" + ", ".join(gone[:20]) + ("…" if len(gone) > 20 else "") + "）")
+                if gone else "")
     if log:
         try:
             log("来源库体检完成",
