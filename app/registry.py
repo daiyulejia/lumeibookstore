@@ -476,7 +476,7 @@ def _scrub_and_log(db: dict) -> None:
 # 读 / 写
 # ---------------------------------------------------------------------------
 def _empty() -> dict:
-    return {"sites": {}, "books": {}}
+    return {"sites": {}, "books": {}, "dead": {}}
 
 
 def _load() -> dict:
@@ -491,10 +491,13 @@ def _load() -> dict:
         raw = {}
     raw.setdefault("sites", {})
     raw.setdefault("books", {})
+    raw.setdefault("dead", {})
     if not isinstance(raw["sites"], dict):
         raw["sites"] = {}
     if not isinstance(raw["books"], dict):
         raw["books"] = {}
+    if not isinstance(raw["dead"], dict):
+        raw["dead"] = {}
     # 自愈：把影视站 / 非小说站条目判死，见 _scrub 注释
     _scrub_and_log(raw)
     _cache = raw
@@ -511,10 +514,13 @@ def _read_disk() -> dict:
         return _empty()
     raw.setdefault("sites", {})
     raw.setdefault("books", {})
+    raw.setdefault("dead", {})
     if not isinstance(raw["sites"], dict):
         raw["sites"] = {}
     if not isinstance(raw["books"], dict):
         raw["books"] = {}
+    if not isinstance(raw["dead"], dict):
+        raw["dead"] = {}
     # 自愈：把影视站 / 非小说站条目判死，见 _scrub 注释
     _scrub_and_log(raw)
     return raw
@@ -553,6 +559,22 @@ def _merge(disk: dict, mine: dict) -> dict:
         for k in _tomb[bucket]:
             merged.pop(k, None)
         out[bucket] = merged
+    # 判死台账（第三桶）：**不做墓碑**，取「次数多、时间新」的那份。
+    # 为什么它单独一个桶：站被删掉之后它必须还在（见 `note_tpl_dead`）。
+    dead: dict = dict(disk.get("dead") or {})
+    for k, v in (mine.get("dead") or {}).items():
+        old = dead.get(k)
+        if not isinstance(old, dict):
+            dead[k] = v
+            continue
+        new_n = int((v or {}).get("n") or 0)
+        old_n = int(old.get("n") or 0)
+        if (new_n > old_n or (new_n == old_n
+                              and int((v or {}).get("at") or 0) >= int(old.get("at") or 0))):
+            keep_dead = dict(old)
+            keep_dead.update(v or {})
+            dead[k] = keep_dead
+    out["dead"] = dead
     return out
 
 
@@ -920,9 +942,8 @@ def note_search_result(host: str, *, hits: int, raw: int,
             # ⚠ 站级账：跨模板累计，`save_search_tpl()` **不清**它。
             #   `search_fail` 会在重学成功时清零（那是对的，它说的是"这份
             #   模板失败了几次"），所以放弃门槛不能读它 —— 见 `TPL_DEAD_MAX`。
-            cur["tpl_dead"] = int(cur.get("tpl_dead") or 0) + 1
-            cur["tpl_dead_at"] = _now()
-            _dead_n = int(cur["tpl_dead"])
+            # ⚠ 2026-11-12：收进 `note_tpl_dead()`（同时写台账，见那里的注释）。
+            _dead_n = note_tpl_dead(host, why="模板打开的不是搜索页")
             if _dead_n >= TPL_DEAD_MAX:
                 _tail = "（已到上限：%d 天内不再为它花学站预算）" % (TPL_DEAD_COOLDOWN // 86400)
             else:
@@ -1028,23 +1049,128 @@ def should_try_learn(host: str) -> bool:
     # 证伪过 `TPL_DEAD_MAX` 次，冷却期内不再为它花预算重学。
     # ⚠ 读的是 `tpl_dead`（跨模板累计）而**不是** `search_fail`（重学即清零）——
     #   后者正是"每晚重学一遍、永远够不到放弃门槛"的原因，见 `TPL_DEAD_MAX`。
-    if tpl_dead_count(s) >= TPL_DEAD_MAX:
-        if _now() - int(s.get("tpl_dead_at") or 0) < TPL_DEAD_COOLDOWN:
+    if tpl_dead_count(s, h) >= TPL_DEAD_MAX:
+        if _now() - tpl_dead_at(s, h) < TPL_DEAD_COOLDOWN:
             return False
     return learn_tries(s) < SEARCH_LEARN_MAX_TRIES
 
 
-def tpl_dead_count(site: dict) -> int:
+def tpl_dead_count(site: dict, host: str = "") -> int:
     """这个站的搜索模板一共**被判死过几次**（跨模板累计，学站成功不清零）。
 
     和 `learn_tries()` 是两本账，别混：
       · `learn_tries()` —— 「学不会」失败了几次（学习器自己没找到接口）
       · 本函数        —— 「学会了但用不了」失败了几次（模板被作废）
     线上每天循环的正是后者，而放弃门槛原来只盯前者，于是永远不触发。
+
+    ⚠ 带 `host` 时**取站上和台账里更大的那个数**（2026-11-12）。
+      为什么不能只读站字段：`www.ddbiqvge.cc` 的实证 —— 它每晚 03:18 被学
+      三份模板、全部判假、04:00 被体检当"不健康"删掉，而判死次数是记在
+      站条目上的，**删站把账一起删了** → 次日它又被联网发现捡回来、
+      从 0 开始学一遍。台账（`note_tpl_dead`）活在 `db["dead"]` 里，
+      不随站删除，所以门槛第一次真正够得到（11-12 线上：删站后
+      `tpl_dead` 从"消失"变成可持续累计）。
     """
-    if not isinstance(site, dict):
+    n = int((site or {}).get("tpl_dead") or 0) if isinstance(site, dict) else 0
+    h = (host or "").strip().lower()
+    if h:
+        n = max(n, int((_dead_entry(h) or {}).get("n") or 0))
+    return n
+
+
+def _dead_entry(host: str) -> dict:
+    """台账里这个站的判死记录（没有就回空 dict）。"""
+    h = (host or "").strip().lower()
+    if not h:
+        return {}
+    d = (_load().get("dead") or {}).get(h)
+    return d if isinstance(d, dict) else {}
+
+
+def tpl_dead_at(site: dict, host: str = "") -> int:
+    """最近一次判死的时间戳（冷却期从这儿算）。
+
+    ⚠ 同样要读台账：站被删后重建，站上的 `tpl_dead_at` 是空的，
+      只看它会让"7 天冷却"变成"删一次就立刻重来"。
+    """
+    at = int((site or {}).get("tpl_dead_at") or 0) if isinstance(site, dict) else 0
+    h = (host or "").strip().lower()
+    if h:
+        at = max(at, int((_dead_entry(h) or {}).get("at") or 0))
+    return at
+
+
+def note_tpl_dead(host: str, *, why: str = "") -> int:
+    """记一次「这个站的搜索页对我们没用」，返回累计次数。
+
+    ⚠ 这是**唯一写入口**。原来有两处各自 `+1`（`note_search_result()` 的
+      「连续 3 次不是搜索页」和 `clear_search_tpl()` 的复核判假），11-11 的
+      复盘就是因为新加了一道闸门却只装在其中一个入口上，线上 hgcha 一夜
+      三轮、`tpl_dead` 这个键从没被创建过。凡"这件事有几个入口"先数一遍，
+      然后让它们调同一个函数。
+    ⚠ 同时写两份：站条目（老字段，界面/复盘在看）+ 台账（不随删站消失）。
+    """
+    h = (host or "").strip().lower()
+    if not h:
         return 0
-    return int(site.get("tpl_dead") or 0)
+    with _lock:
+        db = _load()
+        n = 0
+        cur = db["sites"].get(h)
+        if isinstance(cur, dict):
+            cur["tpl_dead"] = int(cur.get("tpl_dead") or 0) + 1
+            cur["tpl_dead_at"] = _now()
+            n = int(cur["tpl_dead"])
+        dead = db.setdefault("dead", {})
+        old = dead.get(h) if isinstance(dead.get(h), dict) else {}
+        old_n = int(old.get("n") or 0)
+        old_at = int(old.get("at") or 0)
+        entry = {"n": max(old_n + 1, n), "at": max(old_at, _now()),
+                 "why": (why or old.get("why") or "")[:60]}
+        dead[h] = entry
+        global _dirty
+        _dirty = True
+        _maybe_save()
+        return int(entry["n"])
+
+
+def note_reverify_miss(host: str) -> int:
+    """复核一次**没拿到结论**（结论性：真词 0 条 / 两轮打架）。返回连续次数。
+
+    ⚠ 为什么必须有这个计数（2026-11-12 线上）：
+      复核有两条终点（判假→撤模板、判真→盖章），但「没结论」这条
+      **只 `unjudged += 1` 然后就没了** —— 站留在 `reverify_candidates()`
+      里，每夜重查。线上 6 个站因此每夜被查 3 轮、36+ 请求、零信息，
+      连着好几天一字不差。判据有终点、`没结论` 没有终点，
+      这和 11-06 的「学会→判死→再学」是同一个母题。
+    ⚠ 限速（站点自己的"搜索间隔 N 秒"）**不许**记在这里 —— 那是我们
+      打太快，不是站的问题（`judge_by_control` 会回 `throttled`）。
+    """
+    h = (host or "").strip().lower()
+    with _lock:
+        cur = _load()["sites"].get(h)
+        if not isinstance(cur, dict):
+            return 0
+        cur["reverify_miss"] = int(cur.get("reverify_miss") or 0) + 1
+        cur["reverify_miss_at"] = _now()
+        global _dirty
+        _dirty = True
+        _maybe_save()
+        return int(cur["reverify_miss"])
+
+
+def clear_reverify_miss(host: str) -> None:
+    """复核拿到结论（判真）→ 连续次数清零。"""
+    h = (host or "").strip().lower()
+    with _lock:
+        cur = _load()["sites"].get(h)
+        if not isinstance(cur, dict):
+            return
+        if cur.get("reverify_miss"):
+            cur["reverify_miss"] = 0
+            global _dirty
+            _dirty = True
+            _maybe_save()
 
 
 def learn_tries(site: dict) -> int:
@@ -1187,9 +1313,9 @@ def clear_search_tpl(host: str, *, why: str = "") -> bool:
         #   一晚上三轮，`tpl_dead` 这个键从头到尾没出现过。
         #   `search_fail` 说的是"这份模板学了几次没学会"（换模板就重记），
         #   `tpl_dead` 说的是"这个站的搜索页对我们有没有用"（换模板不改变）。
-        cur["tpl_dead"] = int(cur.get("tpl_dead") or 0) + 1
-        cur["tpl_dead_at"] = _now()
-        _dead_n = int(cur["tpl_dead"])
+        # ⚠ 2026-11-12：+1 的动作收进 `note_tpl_dead()`，因为它现在要同时写
+        #   站条目和**不随删站消失的台账**（ddbiqvge 每晚"删站→重学"就是这么来的）。
+        _dead_n = note_tpl_dead(h, why=why or "复核判假")
         logger.info("撤掉搜索模板 %s（%s）—— 该站累计被判死 %d 次%s",
                     h, (why or "-")[:40], _dead_n,
                     "（已到上限：%d 天内不再为它花学站预算）"

@@ -107,38 +107,43 @@ def main() -> int:
     A = {"https://h.com/a/1.html", "https://h.com/a/2.html"}
     B = {"https://h.com/b/1.html", "https://h.com/b/2.html"}
     seq: list[tuple] = []
-    real_ex = sitelearn._fetch_hits_ex
+    # ⚠ 2026-11-12：桩要打在**产品实际调用的那个函数**上。
+    #   控制实验现在读四态（`ok` / `empty` / `busy` / `error`），
+    #   因为「站点限速」和「请求失败」必须分开（见 tools/test_reverify.py）。
+    #   继续桩 `_fetch_hits_ex`（三态）会打空 —— 它已经不是这条路径的入口了，
+    #   于是这些断言会拿真实网络去跑，表现为莫名其妙的全红。
+    real_state = sitelearn._fetch_hits_state
 
-    def _seq_ex(*a, **k):
+    def _seq_state(*a, **k):
         return seq.pop(0)
 
-    sitelearn._fetch_hits_ex = _seq_ex
+    sitelearn._fetch_hits_state = _seq_state
     try:
-        seq[:] = [(2, A, True), (2, A, True)]
+        seq[:] = [(2, A, "ok", 0), (2, A, "ok", 0)]
         check("★ 两轮结果集完全相同 → 判假（铁假）",
               sitelearn.judge_by_control("/?s={kw}", "h.com",
                                          urls=A, hits=2) == "fake")
-        seq[:] = [(2, B, True), (2, B, True)]
+        seq[:] = [(2, B, "ok", 0), (2, B, "ok", 0)]
         check("★ 两轮结果集都不同 → 判真",
               sitelearn.judge_by_control("/?s={kw}", "h.com",
                                          urls=A, hits=2) == "real")
-        seq[:] = [(0, set(), True), (0, set(), True)]
+        seq[:] = [(0, set(), "empty", 0), (0, set(), "empty", 0)]
         check("★ 控制词「请求成功但 0 条」→ 判真（那正是真站行的行为）",
               sitelearn.judge_by_control("/?s={kw}", "h.com",
                                          urls=A, hits=2) == "real")
-        seq[:] = [(0, set(), False), (0, set(), False)]
+        seq[:] = [(0, set(), "error", 0), (0, set(), "error", 0)]
         check("★ 两轮请求都失败 → 判不了（绝不当成真站盖章）",
               sitelearn.judge_by_control("/?s={kw}", "h.com",
                                          urls=A, hits=2) == "unknown")
-        seq[:] = [(2, A, True), (2, B, True)]
+        seq[:] = [(2, A, "ok", 0), (2, B, "ok", 0)]
         check("★ 两轮结论打架 → 判不了（单次采样翻转正是 zxs8 躲过复核的原因）",
               sitelearn.judge_by_control("/?s={kw}", "h.com",
                                          urls=A, hits=2) == "unknown")
-        seq[:] = [(0, set(), False), (2, A, True)]
+        seq[:] = [(0, set(), "error", 0), (2, A, "ok", 0)]
         check("★ 一轮失败一轮说一样 → 判不了（凑不够两轮）",
               sitelearn.judge_by_control("/?s={kw}", "h.com",
                                          urls=A, hits=2) == "unknown")
-        seq[:] = [(2, A, True)]
+        seq[:] = [(2, A, "ok", 0)]
         check("学站阶段仍是单轮判假（control_says_fake 兼容）",
               sitelearn.control_says_fake("/?s={kw}", "h.com",
                                           urls=A, hits=2) is True)
@@ -153,7 +158,7 @@ def main() -> int:
         check("★ 这个分支真的没去打控制词（seq 一个都没被消费）",
               seq == [], f"还剩 {len(seq)} 条预置返回值没被用掉")
     finally:
-        sitelearn._fetch_hits_ex = real_ex
+        sitelearn._fetch_hits_state = real_state
 
     # 「请求失败」和「成功但 0 条」必须分得开 —— `_fetch_hits` 分不开，
     # 所以控制实验换用 `_fetch_hits_ex`（第三位 = 这次到底成没成）。

@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Optional
 from urllib.parse import urljoin, urlparse, quote
 
@@ -474,6 +475,113 @@ CONTROL_SAME_RATIO = 0.5
 _CONTROL_SAME_RATIO = CONTROL_SAME_RATIO   # 兼容内部旧引用
 
 
+# 站点自己的「搜索间隔」限速页 —— 必须单独认出来，不能和"请求失败"混为一谈。
+#
+# 为什么（2026-11-12 线上实测）：夜间复核对 6 个站**每夜 3 轮、36+ 请求、零结论**，
+# 连着好几天一字不差。逐个复现发现：真实探测（站上确实有的书名）能拿 8~10 条，
+# 紧接着的控制词请求拿回的是 **59 字节**的
+#   `<script>alert("搜索间隔: 30 秒");window.history.go(-1);</script>`
+# —— 站点明说了"两个请求之间要隔 10/30 秒"。而 `_fetch_hits_ex` 把这种
+# 短页当成「这次请求没成」（`ok=False`），`judge_by_control` 于是
+# 一轮都不计数 → 永远 `unknown` → 永远留在复核队列。
+# 也就是说：**这不是站的毛病，是我们一秒钟问了两次**（同
+# `_looks_like_busy_page` 那一族判据，只是这里的限速提示是纯 JS 且短得离谱）。
+_THROTTLE_RES = (
+    re.compile(r"(?:搜索|查询|请求)\s*间隔[^0-9]{0,6}(\d{1,3})\s*秒"),
+    re.compile(r"请\s*(?:间隔|等待|稍等)?\s*(\d{1,3})\s*秒后"),
+    re.compile(r"(\d{1,3})\s*秒(?:内|之后)?(?:只能|才能|再)(?:搜索|查询)"),
+)
+
+
+def throttle_wait(html: str) -> int:
+    """这一页是不是站点的「搜索间隔」提示页？是的话回它要求的秒数，否则 0。
+
+    ⚠ 只认**明确的秒数**：认不出秒数就不等（宁可当"请求失败"，
+      也不要凭猜测 sleep —— 睡多久全是猜的，会把复核预算吃光）。
+    """
+    text = html or ""
+    if len(text) > 4000:      # 限速页都很短；长页面里偶然出现这几个字不算
+        return 0
+    for rx in _THROTTLE_RES:
+        m = rx.search(text)
+        if not m:
+            continue
+        try:
+            n = int(m.group(1))
+        except Exception:  # noqa: BLE001
+            continue
+        if n <= 0:
+            continue
+        return max(1, min(n, 120))
+    return 0
+
+
+def _fetch_hits_state(tpl: str, host: str, keyword: str, *,
+                      enc: str = "utf-8", scheme: str = "https",
+                      method: str = "get", body: Optional[dict] = None,
+                      min_hits: int = 3) -> tuple[int, set[str], str, int]:
+    """请求一次，回 `(命中数, 结果 URL 集合, 状态, 限速秒数)`。
+
+    状态四态（`_fetch_hits_ex` 只有三态，把它压成了 bool）：
+      · `"ok"`    —— 拿到了 ≥`min_hits` 条像章节的链接
+      · `"empty"` —— **请求成功**，但这一页一条结果都没有
+      · `"busy"`  —— 站点回了「搜索间隔 N 秒」的限速页（第 4 项是 N）
+      · `"error"` —— 网络层失败 / 页面太短 / 掉回首页 / 抽不出链接
+
+    `busy` 与 `empty` 的差别是**判据能不能用的差别**：
+      · `empty` 说明"这个关键词在这站没有结果" → 控制实验里是**真站的证据**
+      · `busy`  说明"我们问太快了" → 什么也证明不了，但**等一会儿再问就有结论**
+    原来两者都被压成 `ok=False`，于是限速站永远判不出真假（见 `throttle_wait`）。
+    """
+    from . import webfetch        # 延迟导入：避免启动期的循环依赖
+    from .utils import fetch_text
+
+    url = build_url(tpl, host, keyword, enc=enc, scheme=scheme)
+    if not url:
+        return 0, set(), "error", 0
+
+    data = None
+    if (method or "get").lower() == "post":
+        data = {k: str(v).replace("{kw}", keyword)
+                for k, v in (body or {"s": "{kw}"}).items()}
+        url = build_url(tpl, host, "", enc=enc, scheme=scheme) or url
+
+    try:
+        html, final = fetch_text(url, with_url=True, data=data)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("搜索模板验证失败 %s: %s", url, e)
+        return 0, set(), "error", 0
+    # ⚠ 限速页只有 59 字节，必须先认它再判"太短"，否则永远被当成失败。
+    wait = throttle_wait(html)
+    if wait:
+        # ⚠ 措辞不能说"等够了再问"：等得起的是 10 秒档，30 秒档实测等 30.5 秒
+        #   也不放行（见 discovery._REVERIFY_BUSY_WAIT 的注释），等不等由调用方定。
+        logger.info("站点要求搜索间隔 %ds：%s %s（这次不算失败，交给调用方决定等不等）",
+                    wait, host, tpl)
+        return 0, set(), "busy", wait
+    if not html or len(html) < 400:
+        return 0, set(), "error", 0
+
+    # 跟随重定向后掉回首页 → 这个模板是假的「能搜」
+    fp = urlparse(final or url)
+    fpath = (fp.path or "/").rstrip("/")
+    if fpath in ("", "/", "/index.php") and fp.query == "":
+        return 0, set(), "error", 0
+
+    try:
+        toc = webfetch.extract_toc(html, final or url)
+    except Exception:  # noqa: BLE001
+        return 0, set(), "error", 0
+    toc = toc or []
+    urls = {str(t.get("url") or "") for t in toc if isinstance(t, dict)}
+    urls.discard("")
+    if len(toc) < min_hits:
+        # ⚠ 这里状态是 `empty`：请求**成功了**，只是这一页没凑够像章节的链接。
+        #   对控制实验来说"成功但没结果"正是真站的行为，不能算失败。
+        return 0, set(), "empty", 0
+    return len(toc), urls, "ok", 0
+
+
 def _fetch_hits(tpl: str, host: str, keyword: str, *,
                 enc: str = "utf-8", scheme: str = "https",
                 method: str = "get", body: Optional[dict] = None,
@@ -503,46 +611,16 @@ def _fetch_hits_ex(tpl: str, host: str, keyword: str, *,
       要么把真站永远判成"没结论"（每晚白查一遍）。
 
     返回 `(命中数, 结果 URL 集合, 这次成不成)`。
+
+    ⚠ 2026-11-12：实现整体搬进 `_fetch_hits_state()`，这里只负责把四态压成
+      bool（`busy`/`error` 都算"没成"）。需要区分"站点限速"和"真的打不开"的
+      调用方（控制实验）请直接用四态版本 —— 限速被压成失败，就是那 6 个站
+      每夜白查 3 轮、永远判不出真假的原因。
     """
-    from . import webfetch        # 延迟导入：避免启动期的循环依赖
-    from .utils import fetch_text
-
-    url = build_url(tpl, host, keyword, enc=enc, scheme=scheme)
-    if not url:
-        return 0, set(), False
-
-    data = None
-    if (method or "get").lower() == "post":
-        data = {k: str(v).replace("{kw}", keyword)
-                for k, v in (body or {"s": "{kw}"}).items()}
-        url = build_url(tpl, host, "", enc=enc, scheme=scheme) or url
-
-    try:
-        html, final = fetch_text(url, with_url=True, data=data)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("搜索模板验证失败 %s: %s", url, e)
-        return 0, set(), False
-    if not html or len(html) < 400:
-        return 0, set(), False
-
-    # 跟随重定向后掉回首页 → 这个模板是假的「能搜」
-    fp = urlparse(final or url)
-    fpath = (fp.path or "/").rstrip("/")
-    if fpath in ("", "/", "/index.php") and fp.query == "":
-        return 0, set(), False
-
-    try:
-        toc = webfetch.extract_toc(html, final or url)
-    except Exception:  # noqa: BLE001
-        return 0, set(), False
-    toc = toc or []
-    urls = {str(t.get("url") or "") for t in toc if isinstance(t, dict)}
-    urls.discard("")
-    if len(toc) < min_hits:
-        # ⚠ 这里 `ok=True`：请求**成功了**，只是这一页没凑够像章节的链接。
-        #   对控制实验来说"成功但没结果"正是真站的行为，不能算失败。
-        return 0, set(), True
-    return len(toc), urls, True
+    n, urls, state, _wait = _fetch_hits_state(
+        tpl, host, keyword, enc=enc, scheme=scheme, method=method, body=body,
+        min_hits=min_hits)
+    return n, urls, state in ("ok", "empty")
 
 
 def _fetch_hits(tpl: str, host: str, keyword: str, *,
@@ -619,8 +697,14 @@ def judge_by_control(tpl: str, host: str, *, enc: str = "utf-8",
                      scheme: str = "https", method: str = "get",
                      body: Optional[dict] = None, urls: set[str],
                      hits: int, min_hits: int = 3, rounds: int = 2,
-                     control_kw: str = _CONTROL_KW) -> str:
-    """控制实验的**三态**结论：`"fake"` / `"real"` / `"unknown"`。
+                     control_kw: str = _CONTROL_KW,
+                     busy_wait: float = 0.0) -> str:
+    """控制实验的**四态**结论：`"fake"` / `"real"` / `"unknown"` / `"throttled"`。
+
+    `throttled`（2026-11-12 加）说的是「每轮都被站点的搜索间隔挡住」——
+    它不是"没结论"，因为**等一会儿再问就有结论**；把它算成 `unknown`
+    会让调用方"下次再查"，而下次还是连着问两次，永远撞限速。
+    `busy_wait` 是调用方允许的最长等待（0 = 不睡，学站那一路用）。
 
     `urls` / `hits` 传调用方**已经拿到**的那次真实探测结果 —— 少发一个请求。
 
@@ -663,11 +747,25 @@ def judge_by_control(tpl: str, host: str, *, enc: str = "utf-8",
         return "unknown"
     same_rounds = 0
     diff_rounds = 0
+    busy_rounds = 0
     for _ in range(max(1, int(rounds))):
-        n2, urls2, ok = _fetch_hits_ex(tpl, host, control_kw, enc=enc,
-                                       scheme=scheme, method=method, body=body,
-                                       min_hits=min_hits)
-        if not ok:
+        n2, urls2, state, wait = _fetch_hits_state(
+            tpl, host, control_kw, enc=enc, scheme=scheme, method=method,
+            body=body, min_hits=min_hits)
+        if state == "busy":
+            # ⚠ 限速页**不是失败**（2026-11-12）。站点明说"隔 N 秒再问"，
+            #   而复核是连着发两个请求 —— 不等就等于这一轮必然作废。
+            #   `busy_wait` 由调用方给（夜里复核给 30 秒级，学站给 0 不睡），
+            #   只等**站点自己声明的**那个数，且只等一次，睡多久不是我们猜的。
+            if busy_wait > 0 and wait and wait <= busy_wait:
+                time.sleep(min(wait + 0.5, busy_wait))
+                n2, urls2, state, wait = _fetch_hits_state(
+                    tpl, host, control_kw, enc=enc, scheme=scheme, method=method,
+                    body=body, min_hits=min_hits)
+            if state == "busy":
+                busy_rounds += 1
+                continue
+        if state == "error":
             continue          # 请求就没成 —— 这一轮什么都不说明，不参与定案
         if not n2:
             # 请求成功、但那串不可能存在的书名**一条都没搜到** →
@@ -689,6 +787,15 @@ def judge_by_control(tpl: str, host: str, *, enc: str = "utf-8",
         return "fake"
     if diff_rounds >= need:
         return "real"
+    if busy_rounds >= need:
+        # ⚠ 第四态（2026-11-12）：**每一轮都被站点的搜索间隔挡住**。
+        #   这和"没结论"必须分开 —— 前者是我们打太快（等一等就有答案），
+        #   后者是这个站/这份模板确实判不了（等多久都一样）。
+        #   混在一起就是线上那 6 个站每夜 3 轮零结论的直接原因：
+        #   `unknown` 只能让调用方"下次再查"，而"下次"还是连着问两次。
+        logger.info("控制实验受限速：%s %s —— 每轮都被站点要求间隔 %ds，"
+                    "这次不算结论（不是模板的问题）", host, tpl, wait or 0)
+        return "throttled"
     # 有分歧（一轮说有、一轮说没有）或全都请求失败 → 没结论。
     # ⚠ 「判不了」绝不等于「判真」—— 盖章意味着以后不再查它。
     return "unknown"

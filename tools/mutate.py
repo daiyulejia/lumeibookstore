@@ -100,6 +100,11 @@ MOTION_TEST = ROOT / "tools" / "test_motion.py"
 RANKS_TEST = ROOT / "tools" / "test_ranks.py"
 OFFTOPIC_TEST = ROOT / "tools" / "test_offtopic.py"
 REGISTRY_TEST = ROOT / "tools" / "test_registry.py"
+# 夜间复核的终点 + 站点限速（tools/test_reverify.py）—— 2026-11-12。
+# ⚠ 失败方式：6 个站每夜 3 轮、36+ 请求、零结论，日志写着"没结论 6"，
+#   看起来像"这批站有点怪"，实际是**判据自己没有终点**，外加把站点的
+#   「搜索间隔 30 秒」提示页当成了"请求失败"。
+REVERIFY_TEST = ROOT / "tools" / "test_reverify.py"
 REGSRC_TEST = ROOT / "tools" / "test_registry_source.py"
 # 源熔断（含「源自己吞了异常也要熔断」，见 app/sources/base.py::note_error）
 HEALTH_TEST = ROOT / "tools" / "test_source_health.py"
@@ -1507,8 +1512,8 @@ MUTATIONS: list[Mutation] = [
     #   现在：两轮都判假才撤、两轮都判真才盖章、有分歧=没结论（下次再查）。
     Mutation("verdict", "请求失败也算真站证据（打不开的站会被当成「已核实」盖章）",
              SITELEARN,
-             "        if not ok:",
-             "        if not ok:\n            diff_rounds += 1",
+             '        if state == "error":',
+             '        if state == "error":\n            diff_rounds += 1',
              TRUST_TEST),
     Mutation("verdict", "一轮判假就撤（单次采样翻转就误撤真站）",
              SITELEARN,
@@ -1517,8 +1522,8 @@ MUTATIONS: list[Mutation] = [
              TRUST_TEST),
     Mutation("verdict", "「请求成功但 0 条」当成请求失败（真站全被判成没结论，每晚白查）",
              SITELEARN,
-             "        return 0, set(), True\n    return len(toc), urls, True",
-             "        return 0, set(), False\n    return len(toc), urls, True",
+             '        return 0, set(), "empty", 0\n    return len(toc), urls, "ok", 0',
+             '        return 0, set(), "error", 0\n    return len(toc), urls, "ok", 0',
              TRUST_TEST),
     Mutation("verdict", "复核把「没结论」也盖章（假站从此免检 —— xxsy/zxs8 就是这么躲过去的）",
              DISCOVERY,
@@ -2012,8 +2017,8 @@ MUTATIONS: list[Mutation] = [
     #   代价是每晚白跑一遍学站 + 「综合 N 站」这个数字每天虚高一次。
     Mutation("学站循环", "闸门关掉（判死多少次都照样每晚重学）",
              REGISTRY,
-             "    if tpl_dead_count(s) >= TPL_DEAD_MAX:\n"
-             '        if _now() - int(s.get("tpl_dead_at") or 0) < TPL_DEAD_COOLDOWN:\n'
+             "    if tpl_dead_count(s, h) >= TPL_DEAD_MAX:\n"
+             "        if _now() - tpl_dead_at(s, h) < TPL_DEAD_COOLDOWN:\n"
              "            return False\n",
              "",
              REGISTRY_TEST),
@@ -2033,9 +2038,7 @@ MUTATIONS: list[Mutation] = [
     # 线上 `www.hgcha.com` 一晚三轮、连跑三夜，`tpl_dead` 键根本没出现过。
     Mutation("学站循环", "复核判假撤模板时不记站级账（11-06 漏掉的那条入口）",
              REGISTRY,
-             '        cur["tpl_dead"] = int(cur.get("tpl_dead") or 0) + 1\n'
-             '        cur["tpl_dead_at"] = _now()\n'
-             '        _dead_n = int(cur["tpl_dead"])',
+             '        _dead_n = note_tpl_dead(h, why=why or "复核判假")',
              '        _dead_n = int(cur.get("tpl_dead") or 0)',
              REGISTRY_TEST),
     Mutation("学站循环", "冷却期设成 0（等于不冷却，判死完立刻又能学）",
@@ -2098,6 +2101,71 @@ MUTATIONS: list[Mutation] = [
              "POOL_MAX_CONNECTIONS = 32",
              "POOL_MAX_CONNECTIONS = 10",
              BUDGET_SRC_TEST),
+    # ---------------- 复核的终点 + 站点限速（2026-11-12）----------------
+    # 现场：6 个站每夜 03:18/03:40/04:00 各被复核一轮、每站 4 个请求，
+    # 连着三天名单一字不差，零信息。两个病必须分开修、也必须分开验：
+    #   · 4 个站的第 2 个请求拿回 59 字节的
+    #     `<script>alert("搜索间隔: 30 秒")…>` → 我们自己打太快
+    #   · 2 个站连自己库里的书名都搜不到 / 整站 403 → 真的判不了
+    # 前者要"等一等再问"，后者要"够了就撤"。混成一个 `unknown`，
+    # 两种都治不好 —— 这就是下面这组突变要钉住的东西。
+    Mutation("复核终点", "限速页不再被认出来（回到「请求失败」→ 永远判不出真假）",
+             SITELEARN,
+             '    text = html or ""\n'
+             "    if len(text) > 4000:",
+             '    text = ""\n'
+             "    if len(text) > 4000:",
+             REVERIFY_TEST),
+    Mutation("复核终点", "限速混进「没结论」（等一等就有答案的站被推向撤模板）",
+             SITELEARN,
+             '        return "throttled"',
+             '        return "unknown"',
+             REVERIFY_TEST),
+    Mutation("复核终点", "复核把限速记成「没结论」（我们打太快，却被算在站头上）",
+             DISCOVERY,
+             "            throttled_n += 1\n"
+             '            logger.info("复核 %s 撞上站点限速（秒数见上一行），本轮不做结论", host)\n'
+             "            continue",
+             "            throttled_n += 1\n"
+             '            logger.info("复核 %s 撞上站点限速（秒数见上一行），本轮不做结论", host)',
+             REVERIFY_TEST),
+    Mutation("复核终点", "「没结论」不再累计（判据没有终点，站永远留在队列里）",
+             REGISTRY,
+             '        cur["reverify_miss"] = int(cur.get("reverify_miss") or 0) + 1',
+             '        cur["reverify_miss"] = 1',
+             REVERIFY_TEST),
+    Mutation("复核终点", "没结论的上限抬到 99（等于没有终点）",
+             DISCOVERY,
+             "_REVERIFY_MISS_MAX = 3",
+             "_REVERIFY_MISS_MAX = 99",
+             REVERIFY_TEST),
+    Mutation("复核终点", "反复没结论不撤模板（每晚照旧查 4 个请求，永远）",
+             DISCOVERY,
+             "        if miss >= _REVERIFY_MISS_MAX:",
+             "        if False:",
+             REVERIFY_TEST),
+    # ---------------- 判死账不许随删站消失（2026-11-12）----------------
+    # 现场：`www.ddbiqvge.cc` 每晚 03:18 学三份模板、三份全判假，04:00 被体检
+    # 当"不健康"删掉 —— 判死次数记在站条目上，**删站把账一起删了**，
+    # 次日联网发现又捡回来、从 0 开始。判死记录的生命周期比对象短。
+    Mutation("判死账", "判死次数只读站条目（删站就把账删了 → 次日重新学一遍）",
+             REGISTRY,
+             '    h = (host or "").strip().lower()\n'
+             "    if h:\n"
+             '        n = max(n, int((_dead_entry(h) or {}).get("n") or 0))\n'
+             "    return n",
+             '    h = (host or "").strip().lower()\n'
+             "    return n",
+             REGISTRY_TEST),
+    Mutation("判死账", "冷却时间只读站条目（删一次站，7 天冷却就归零）",
+             REGISTRY,
+             '    h = (host or "").strip().lower()\n'
+             "    if h:\n"
+             '        at = max(at, int((_dead_entry(h) or {}).get("at") or 0))\n'
+             "    return at",
+             '    h = (host or "").strip().lower()\n'
+             "    return at",
+             REGISTRY_TEST),
 ]
 
 

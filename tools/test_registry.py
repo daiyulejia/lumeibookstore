@@ -882,8 +882,12 @@ def main() -> int:
 
         # 反向：冷却**到期**要重新给机会 —— 否则这条闸门就变成"永久拉黑"，
         # 站点真改回静态搜索页也永远回不来。
-        R._load()["sites"][loop]["tpl_dead_at"] = int(
-            time.time()) - (R.TPL_DEAD_COOLDOWN + 60)
+        # ⚠ 2026-11-12：判死时间现在**两份**（站条目 + 不随删站消失的台账），
+        #   `tpl_dead_at()` 取两者较新的那个 —— 所以模拟"七天过去了"必须
+        #   把两份都推远。只推站上那份，台账里"刚刚判死"会把冷却重新拉满。
+        _old = int(time.time()) - (R.TPL_DEAD_COOLDOWN + 60)
+        R._load()["sites"][loop]["tpl_dead_at"] = _old
+        R._load()["dead"][loop]["at"] = _old
         check("★ 冷却 7 天到期后重新允许学", R.should_try_learn(loop))
 
         # 反向之二：**搜出过东西**的站一根毫毛都不许动。
@@ -949,6 +953,49 @@ def main() -> int:
         check("★ tpl_dead 落盘了（重启后闸门还在）",
               int((_dsk.get(loop) or {}).get("tpl_dead") or 0) == 2,
               str(_dsk.get(loop)))
+
+        # -----------------------------------------------------------------
+        print("\n—— ⑨d 判死账不许随「删站」一起消失（ddbiqvge 每夜重学） ——")
+        # 2026-11-12 线上实证：`www.ddbiqvge.cc` 每晚 03:18 被学三份模板、
+        # 三份全判假（真实探测 16 条，换成搜不到的书名结果集不变），
+        # 04:00 被体检当"不健康"删掉 —— 而判死次数是记在**站条目**上的，
+        # 删站把账一起删了 → 次日联网发现又把它捡回来、从 0 开始学一遍。
+        # 病根：**判死记录的生命周期比被判死的对象短**。
+        # 台账 `db["dead"]` 不随删站消失，所以门槛第一次真正够得到。
+        gone = "ddbiq.example.com"
+        R.note_site(gone, name=gone)
+        check("前提：学会一份模板", R.note_search_tpl(gone, "/?s={kw}"))
+        for _i in range(2):
+            R.note_search_tpl(gone, "/?s={kw}")     # 判假后重学（保持真实节奏）
+            R.clear_search_tpl(gone, why="复核：模板不认关键词（假搜索）")
+        check("前提：它已经判死两次、闸门合上",
+              R.tpl_dead_count(R.known_site(gone), gone) == 2
+              and not R.should_try_learn(gone),
+              f"tpl_dead={R.known_site(gone).get('tpl_dead')}")
+
+        # 体检删站（真实路径就是 `prune(only_dead=True)` / `forget_site`）
+        check("前提：站真的被删掉了", R.forget_site(gone) and gone not in R.sites())
+        # 次日被联网发现捡回来 —— 新条目里没有任何判死痕迹
+        R.note_site(gone, name=gone)
+        _fresh = R.known_site(gone)
+        check("前提：捡回来的新条目自己不带判死次数",
+              not _fresh.get("tpl_dead"), str(_fresh))
+        check("★ 台账还在：删站 + 重建之后仍然算「判死过两次」",
+              R.tpl_dead_count(_fresh, gone) == 2,
+              f"site={_fresh.get('tpl_dead')} total={R.tpl_dead_count(_fresh, gone)}")
+        check("★ 所以闸门照样合上（不再每晚为它白学三遍）",
+              not R.should_try_learn(gone))
+        check("它也不在学站候选里", gone not in R.learn_candidates())
+        R.flush()          # 落盘有 1 秒节流，断言前必须先冲一次
+        check("★ 台账落盘了（重启/部署也带不走它）",
+              int((disk().get("dead") or {}).get(gone, {}).get("n") or 0) == 2,
+              str((disk().get("dead") or {}).get(gone)))
+        # 反向：**没判死过**的站不许被台账连坐。
+        clean = "neverseen.example.com"
+        R.note_site(clean, name=clean)
+        check("反向：没判死过的站照样能学（台账不许扩大打击面）",
+              R.tpl_dead_count(R.known_site(clean), clean) == 0
+              and R.should_try_learn(clean))
 
         # -----------------------------------------------------------------
         print("\n—— ⑨c 体检清理必须点名（删站是全局状态变更） ——")

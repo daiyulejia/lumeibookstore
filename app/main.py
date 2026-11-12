@@ -1158,7 +1158,12 @@ async def registry_view():
             #   那种站该去清库/换域名，不是"再学一次"。
             {"host": h, "healthy": registry.is_healthy(s), "label": registry.site_label(h),
              "searchable": registry.is_searchable(s),
-             "has_search_tpl": registry.has_search_tpl(s), **s}
+             "has_search_tpl": registry.has_search_tpl(s), **s,
+             # ⚠ 判死次数取「站上 + 台账」的较大值（2026-11-12）：站被体检删掉
+             #   再被联网发现捡回来时，站上的 `tpl_dead` 从 0 重新开始，
+             #   界面和复盘就会看到"这站从来没被判死过" —— 而它其实每晚都在死。
+             "tpl_dead": registry.tpl_dead_count(s, h),
+             "tpl_dead_at": registry.tpl_dead_at(s, h)}
             for h, s in sorted(registry.sites().items(),
                                key=lambda kv: -int(kv[1].get("ok", 0)))
         ],
@@ -1346,6 +1351,12 @@ async def registry_learn(host: str = "", limit: int = 0, reverify: bool = True):
               跳过=rep.get("skipped"), 没跑完=rep.get("pending"),
               复核查=rev.get("checked"), 撤掉=rev.get("dropped"),
               复核没结论=rev.get("unjudged"), 复核没跑完=rev.get("pending"),
+              # ⚠ 这两个字段是 2026-11-12 补的：原来「没结论 6」这一个数
+              #   把两件完全不同的事混在一起 —— 「站点限速（我们打太快）」
+              #   和「真判不了（这站我们拿它没办法）」。前者等一等就有答案，
+              #   后者连中三夜就该撤模板。混着数，复盘永远分不清该修哪边。
+              复核限速=rev.get("throttled"),
+              反复没结论撤掉=rev.get("missed_dropped"),
               可搜源=len(registry.searchable_sites()),
               耗时=round(time.monotonic() - t0, 1))
     return {"ok": True, "targets": targets, **rep, "reverify": rev,

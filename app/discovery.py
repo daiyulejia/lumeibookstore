@@ -306,9 +306,9 @@ def _learn_budget(n_targets: int) -> float:
 #   复核跑不完本身不致命（没结论的站会留在 `reverify_candidates()` 里，
 #   下一轮接着查），但**总时长必须有个头**，而且撞了预算要如实报 `pending`
 #   —— 跟学站那段同一条纪律：收手可以，不许沉默地收手。
-_REVERIFY_BUDGET_PER_SITE = 12.0
-_REVERIFY_BUDGET_MIN = 12.0
-_REVERIFY_BUDGET_MAX = 60.0
+_REVERIFY_BUDGET_PER_SITE = 26.0
+_REVERIFY_BUDGET_MIN = 26.0
+_REVERIFY_BUDGET_MAX = 100.0
 
 # 一个站最多问几遍（没结论才问下一遍），两遍之间退开多久。
 # 为什么值得多问一遍：复核**一晚只有一次机会**，碰上限速就"明天再说"，
@@ -316,6 +316,31 @@ _REVERIFY_BUDGET_MAX = 60.0
 # 退 1 秒是给同域限速让路（`utils` 里本来就按 0.3s 排队，这里是"换个节奏再问"）。
 _REVERIFY_ATTEMPTS = 2
 _REVERIFY_RETRY_WAIT = 1.0
+
+# 站点回「搜索间隔 N 秒」时，最多等它几秒。
+#
+# ⚠ 这个数不是拍的，是**两档实测**定出来的（2026-11-12 深夜，线上）：
+#   · 10 秒档（`www.bqg5555.cc` / `www.nana00.com`）：隔 11 秒再问 →
+#     第二次拿回 47KB 真结果页（第一次 10KB 是首屏）。**等是有效的**。
+#   · 30 秒档（`350.ooo` / `www.maozhuar.com`）：隔 30.5 秒再问 →
+#     仍然是那句 `alert("搜索间隔: 30 秒")`，连等两次都不放行。
+#     按 32 秒去等的结果是：一个站吃掉 **136.9 秒**，预算当场用光，
+#     同一批里另外 2 个站一次都没被查（`pending=2`）—— 比"不等"更糟。
+# 所以只等便宜的那一档：等得起 12 秒（盖住 10 秒档），30 秒档直接记
+# `throttled`（不算结论、不算没结论），一夜只花 3 个请求。
+_REVERIFY_BUSY_WAIT = 12.0
+
+# 「没结论」连续几夜就算这个模板对我们没用 —— **这条是终点**（2026-11-12）。
+#
+# 线上实证：6 个站（350.ooo / m.kudushu / bqg5555 / hodei / maozhuar / nana00）
+# 每夜 03:18 / 03:40 / 04:00 各被复核一轮，每站 2 个探测词 × 2 次尝试，
+# 连着 3 天名单一字不差，总计 ≈36+ 请求/夜、零信息。
+# 病根不是判据不对，而是**判据只有两个终点（判假撤、判真盖章），
+# 「没结论」没有终点** —— 它只是 `unjudged += 1` 然后留在队列里等明天。
+# 3 夜的量是拍的：真站碰上偶发限速不会连中三夜（限速现在也会被认出来、
+# 单独记 `throttled`，不算 miss）；连中三夜说明这个站**我们拿它没办法**
+# （搜不到自己库里的书名 / 整站 403 / 结论永远打架）。
+_REVERIFY_MISS_MAX = 3
 
 
 def _reverify_budget(n_targets: int) -> float:
@@ -516,7 +541,8 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None,
     todo = [h for h in dict.fromkeys(h or "" for h in hosts) if h]
     if not todo:
         return {"checked": 0, "dropped": 0, "kept": 0, "canary_only": 0,
-                "unjudged": 0, "pending": 0}
+                "unjudged": 0, "throttled": 0, "missed_dropped": 0,
+                "pending": 0}
 
     # 这一趟的总时限（见 `_REVERIFY_BUDGET_*` 的注释：原来一秒钟上限都没有）。
     # `budget` 显式传 0/负数 = 不限（测试里造"一定跑不完"的场景时用得上，
@@ -525,6 +551,7 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None,
     deadline = time.monotonic() + budget if budget > 0 else None
 
     checked = dropped = kept = canary_only = unjudged = 0
+    throttled_n = missed_dropped = 0
     pending = 0
     for idx, host in enumerate(todo):
         # ⚠ 判据是「还有没有时间开始下一个站」，不是"这个站跑完了没"——
@@ -577,30 +604,58 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None,
         #   于是"明天再说"，而明天大概率又是同样的一次机会。
         #   一次瞬时失败 = 假站多活 24 小时、每次搜索都陪它等。
         #   所以：整轮没结论就退开一秒再问一遍，问到了就当场定案。
-        fake = real = False
+        fake = real = throttled = False
+        wait = 0
+        # ⚠ 一个站**最多睡一次**（2026-11-12 实测）：判据里有「两轮重试」和
+        #   「两个探测词」，若每处都等 12 秒，一个站能吃掉 48 秒，
+        #   6 个站就把 100 秒预算吃光 —— 后面的站一次都查不到。
+        #   睡过一次就把额度清零，剩下的按 `throttled` 收尾。
+        wait_budget = _REVERIFY_BUSY_WAIT
         for attempt in range(_REVERIFY_ATTEMPTS):
             for probe in probes:
                 try:
                     with fast_mode(retries=0, timeout=10.0):
-                        n, urls = sitelearn._fetch_hits(tpl, host, probe, enc=enc,
-                                                        scheme=scheme, method=method,
-                                                        body=body)
+                        n, urls, state, wait = sitelearn._fetch_hits_state(
+                            tpl, host, probe, enc=enc, scheme=scheme,
+                            method=method, body=body)
+                        # ⚠ 真实探测撞上限速页时**不能当成"这站搜不到"**（2026-11-12）：
+                        #   原来 `if not n: continue` 会把它算成「真词 0 条」，
+                        #   于是好站被记成"没结论"、反复排队。等一次再问。
+                        if state == "busy" and wait and wait <= wait_budget:
+                            time.sleep(min(wait + 0.5, wait_budget))
+                            wait_budget = 0.0
+                            n, urls, state, wait = sitelearn._fetch_hits_state(
+                                tpl, host, probe, enc=enc, scheme=scheme,
+                                method=method, body=body)
+                        if state == "busy":
+                            # 这个站今晚问不动了：换第二个探测词只会再撞同一次限速，
+                            # 白白多花一个请求（实测 6 个 → 3 个）。
+                            throttled = True
+                            break
                         if not n:
                             continue
                         verdict = sitelearn.judge_by_control(
                             tpl, host, enc=enc, scheme=scheme, method=method,
-                            body=body, urls=urls, hits=n, rounds=2)
+                            body=body, urls=urls, hits=n, rounds=2,
+                            busy_wait=wait_budget)
+                        wait_budget = 0.0
                 except Exception as e:  # noqa: BLE001
                     logger.info("复核 %s（探测词《%s》）出错，继续试下一个：%s",
                                 host, probe, e)
                     continue
+                if verdict == "throttled":
+                    # 限速不是结论：既不算"没结论"（会把它推向撤模板），
+                    # 也不盖章。记下来，下次再说 —— 但现在**会把话说清楚**。
+                    # 同样直接收手：换探测词还是同一次限速。
+                    throttled = True
+                    break
                 if verdict == "fake":
                     fake = True
                     break
                 if verdict == "real":
                     real = True
                     break
-            if fake or real:
+            if fake or real or throttled:
                 break
             # 还有下一轮机会才等：最后一轮等完也没用。
             if attempt + 1 < _REVERIFY_ATTEMPTS:
@@ -613,27 +668,56 @@ def reverify_sites(hosts: list[str], *, log: Optional[LogFn] = None,
         if real:
             # 每一轮都有结论、且都判真 → 盖上新版本号，下次不再复核
             registry.note_site(host, ok=True, search_ver=registry.LEARN_VER)
+            registry.clear_reverify_miss(host)
             kept += 1
+            continue
+        if throttled:
+            # ⚠ 单独一档，不记 miss：这是我们连发两个请求撞了站点的间隔限制，
+            #   不是"这个模板判不了"。把它算成没结论会用**我们自己的速度**
+            #   把一个可能很正常的站推向"撤模板"。
+            # ⚠ 不在这里报秒数：限速可能来自控制实验内部，那个秒数在这一层
+            #   取不到，写 `wait or 0` 会打出「要求 0s 间隔」这种假话。
+            #   秒数就写在上一行 `sitelearn` 的 `站点要求搜索间隔 Ns` 里。
+            throttled_n += 1
+            logger.info("复核 %s 撞上站点限速（秒数见上一行），本轮不做结论", host)
             continue
         # ⚠ **没有结论时不许盖"已核实"的章**。探测词搜不到东西、或者两轮
         #   结论打架，都说明这次没法判断真假 —— 盖上章它就永远不再被查了。
         #   实测代价：`www.xxsy.net` 上一轮就是这么被盖了章（当时只有站上
         #   那本书可探、而它搜不到），于是它带着"永远返回同一批书"的假模板
         #   活到了下一轮，再也不会被检查。不盖章的代价只是每晚多查两次。
+        # ⚠ 但"每晚多查两次"必须**有终点**（2026-11-12）：连中 `_REVERIFY_MISS_MAX`
+        #   夜就撤模板并记进站级判死账 —— 否则没有结论的站会在队列里待一辈子。
+        miss = registry.note_reverify_miss(host)
+        if miss >= _REVERIFY_MISS_MAX:
+            if registry.clear_search_tpl(
+                    host, why="复核：连续 %d 夜拿不到结论" % miss):
+                dropped += 1
+                missed_dropped += 1
+                logger.info("撤掉复核不出结论的模板：%s %s —— 连续 %d 夜、"
+                            "%d 个探测词都判不了真假（已记进判死账，"
+                            "%d 天内不再为它花学站预算）",
+                            host, tpl, miss, len(probes),
+                            registry.TPL_DEAD_COOLDOWN // 86400)
+            continue
         unjudged += 1
-        logger.info("复核 %s 没拿到结论（%d 个探测词都搜不到、或两轮结论不一致），下次再查",
-                    host, len(probes))
+        logger.info("复核 %s 没拿到结论（%d 个探测词都搜不到、或两轮结论不一致），"
+                    "下次再查（连续第 %d/%d 夜）",
+                    host, len(probes), miss, _REVERIFY_MISS_MAX)
     if dropped:
         say("撤掉假的可搜源", f"{dropped} 个站其实没在按关键词搜，已撤掉", False)
     if pending:
         # ⚠ 跟学站那段一样：撞预算收手时**必须说出来**，否则调用方以为
         #   "这批都复核完了，只是没结论" —— 实际还欠着一批。
         say("模板复核未跑完", f"还剩 {pending} 个站没复核，下次继续", False)
-    logger.info("模板复核完成：查了 %d（其中 %d 个只能靠通用书名），撤掉 %d，"
-                "留下 %d，没结论 %d%s", checked, canary_only, dropped, kept, unjudged,
-                f"，没跑完 {pending}" if pending else "")
+    logger.info("模板复核完成：查了 %d（其中 %d 个只能靠通用书名），撤掉 %d"
+                "（其中反复没结论 %d），留下 %d，没结论 %d，限速 %d%s",
+                checked, canary_only, dropped, missed_dropped, kept, unjudged,
+                throttled_n, f"，没跑完 {pending}" if pending else "")
     return {"checked": checked, "dropped": dropped, "kept": kept,
-            "canary_only": canary_only, "unjudged": unjudged, "pending": pending}
+            "canary_only": canary_only, "unjudged": unjudged,
+            "throttled": throttled_n, "missed_dropped": missed_dropped,
+            "pending": pending}
 
 
 def discover(
