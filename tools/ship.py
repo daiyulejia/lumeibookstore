@@ -143,6 +143,15 @@ STATIC_SUITES = [
     # 同期别的搜索就偶发「一个源都没答话」→ 0 条。
     # ⚠ 判据不看耗时（随机器负载漂），看**请求次数**和「第二次查询发没发」。
     ("test_source_budget.py", "源墙钟上限"),
+    # 启动横幅的编码加固：**Linux 上永远测不出来**的一条。
+    # 线上实测（2026-11-13）本地守护脚本每 60 秒重启一次、一上午 542 次、
+    # 557KB 同一条栈：Windows 把 stdout 接到管道时编码是 cp936，横幅里的
+    # `⇄` 编码不了 → 进程在 uvicorn.run() 之前就被一个装饰字符打死 →
+    # 用户侧「双击之后窗口一直滚 traceback，网页打不开」。
+    # ⚠ 云服务器是 UTF-8，ship 的真机套件也跑在本地服务上，都碰不到这条；
+    #   判据必须自己构造 GBK 流（PYTHONIOENCODING=gbk / open(encoding="gbk")），
+    #   并且覆盖「编码得了的流一点不许改」—— 全量 replace 会把真错误吞掉。
+    ("test_startup_encoding.py", "启动编码加固"),
     # 收手判据不许被**噪声**骗：没有确切命中就再等一会儿。
     # 线上实测（2026-10-24 真机复现）搜《兄弟》：扇出 1.76s 收手、候选 4 条
     # 全是「嘿兄弟/兄弟盟/兄弟恩仇/盛唐兄弟」，而 kunnu8 恰好在 1.76s 回来、
@@ -443,19 +452,52 @@ class LocalServer:
         #   下次真实搜索时账本里躺着一堆根本不存在的源名。
         env["NOVEL_HEALTH"] = str(Path(_tmpstats) / "sourcehealth.json")
         self._stats_dir = _tmpstats
+        # ⚠ 子进程的 stderr **必须留下来**。原来两路都指向 DEVNULL，
+        #   于是"服务没起来"只有一个端口号 —— 而起不来的原因（缺依赖、
+        #   端口被占、编码崩、配置错）全在那一行里。
+        #   2026-11-13 为此白查了一上午：本地实例被横幅里的 `⇄` 打死
+        #   （GBK 编码不了）542 次，而自动化这边只会说"没起来"。
+        #   这和 run_suite 里那条「✗ 落在倒数 30 行外、原因看不见」是同一个教训。
+        self._errlog = Path(_tmpstats) / "server-stderr.log"
+        self._errfh = open(self._errlog, "w", encoding="utf-8", errors="replace")
         self.proc = subprocess.Popen(
             [PY, str(ROOT / "run.py"), "--host", "127.0.0.1",
              "--port", str(self.port), "--no-check"],
             cwd=ROOT, env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=self._errfh,
         )
         if not wait_up(self.base + "/api/health"):
+            why = self._stderr_tail()
             self.__exit__(None, None, None)
-            raise SystemExit(f"✗ 本地服务没起来（端口 {self.port}）")
+            raise SystemExit(f"✗ 本地服务没起来（端口 {self.port}）"
+                             + (f"\n  子进程最后输出：\n{why}" if why else ""))
         print(f"  · 测试服务已就绪 {self.base}")
         return self
 
+    def _stderr_tail(self, n: int = 1200) -> str:
+        """子进程 stderr 的尾巴。编码先按 utf-8 读、读花了再按 gbk 试 ——
+        子进程的 stdio 编码取决于调用方的 locale，两种都可能。"""
+        try:
+            self._errfh.flush()
+            raw = self._errlog.read_bytes()[-n:]
+        except Exception:  # noqa: BLE001
+            return ""
+        text = raw.decode("utf-8", "replace")
+        if "\ufffd" in text:
+            try:
+                text = raw.decode("gbk", "replace")
+            except Exception:  # noqa: BLE001
+                pass
+        return text.strip()
+
     def __exit__(self, *exc) -> None:
+        # 先关 stderr 文件句柄：Windows 上句柄没关时 rmtree 删不掉那个目录。
+        fh = getattr(self, "_errfh", None)
+        if fh is not None and not fh.closed:
+            try:
+                fh.close()
+            except Exception:  # noqa: BLE001
+                pass
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:

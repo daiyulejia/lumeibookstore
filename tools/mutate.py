@@ -108,6 +108,10 @@ REVERIFY_TEST = ROOT / "tools" / "test_reverify.py"
 REGSRC_TEST = ROOT / "tools" / "test_registry_source.py"
 # 源熔断（含「源自己吞了异常也要熔断」，见 app/sources/base.py::note_error）
 HEALTH_TEST = ROOT / "tools" / "test_source_health.py"
+# 启动横幅的编码加固（2026-11-13）—— Windows GBK 控制台下 `⇄` 会打死进程，
+# Linux 上永远复现不出来，只能靠这条判据守着。
+RUN_PY = ROOT / "run.py"
+STARTUP_TEST = ROOT / "tools" / "test_startup_encoding.py"
 # 熔断器本体（冷却退避 + 跨重启落盘）
 HEALTH_PY = ROOT / "app" / "sourcehealth.py"
 # 源自己的墙钟上限（tools/test_source_budget.py）
@@ -2166,6 +2170,35 @@ MUTATIONS: list[Mutation] = [
              '    h = (host or "").strip().lower()\n'
              "    return at",
              REGISTRY_TEST),
+
+    # ------------------------------------------------------------------
+    # 启动阶段的输出编码（tools/test_startup_encoding.py）
+    # ------------------------------------------------------------------
+    # 2026-11-13：本地守护脚本每 60 秒重启一次，一上午 542 次、557KB
+    # traceback。死因是横幅里的 `⇄` 在 GBK 管道里编码不了 —— 进程在
+    # `uvicorn.run()` 之前就被一个装饰字符打死了，网页根本打不开。
+    # 这类 bug 的阴险处：**Linux（UTF-8）上永远看不见，只有 Windows 用户
+    # 双击时中招**，而栈里那行还是乱码，看不出是哪个字符。
+    Mutation("启动编码", "main() 不做输出加固（GBK 控制台下 ⇄ 打死进程）",
+             RUN_PY,
+             "    _harden_stdio()\n",
+             "",
+             STARTUP_TEST),
+    Mutation("启动编码", "编码不了也照旧 strict（加固等于没加）",
+             RUN_PY,
+             '            st.reconfigure(errors="replace")',
+             '            st.reconfigure(errors="strict")',
+             STARTUP_TEST),
+    Mutation("启动编码", "探测用的符号改成编码得了的（永远不认为需要加固）",
+             RUN_PY,
+             "        _STARTUP_GLYPHS.encode(enc)",
+             '        "ok".encode(enc)',
+             STARTUP_TEST),
+    Mutation("启动编码", "编码得了也强行 replace（为了一个箭头吞掉全程序的编码错误）",
+             RUN_PY,
+             "            continue  # 编码得了，别动它\n",
+             "            pass\n",
+             STARTUP_TEST),
 ]
 
 

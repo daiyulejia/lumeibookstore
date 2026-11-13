@@ -119,6 +119,64 @@ def _firewall_hint(port: int) -> str:
     )
 
 
+# 启动阶段会打印的装饰符号（就是全部：⇄ → ⚠ ✓ ·）。加固要判断的
+# 就是「这个流能不能表示它们」—— 能表示的流一个字节都不动。
+_STARTUP_GLYPHS = "\u21c4\u2192\u26a0\u2713\u00b7"
+
+
+def _harden_stdio(streams=None) -> None:
+    """标准输出/错误编码不了启动横幅里的符号时，把 errors 放宽到 replace。
+
+    这个函数存在的唯一理由是：**一个装饰字符不该让服务起不来**。
+    实测（2026-11-13）：`tools/serve.py` 用管道接 stdout，Windows 上
+    管道默认 cp936，横幅里那个 `⇄`（U+21C4）编码不了 →
+    `print()` 抛 UnicodeEncodeError → 进程在监听端口之前就退了 →
+    守护脚本每 60 秒重启一次，一上午 542 次、557KB traceback，
+    而窗口里只有一串栈，看不出是哪个字符惹的。
+
+    **只放宽 errors，不换 encoding**：换了会把中文变成乱码，而那些字
+    正是用户要看的（地址、令牌、防火墙提示）。**编码得了的流一点不动** ——
+    全量改成 replace 等于为了一个箭头把全程序的编码错误都吞了，
+    以后真出编码 bug 只会看到一个 `?`，连抛都不抛。
+
+    于是判据是「这个流的编码能不能表示 _STARTUP_GLYPHS」：
+    表示得了 → 什么都不做；表示不了 → errors=replace（箭头退化成 `?`）。
+    """
+    for st in (streams if streams is not None else (sys.stdout, sys.stderr)):
+        if st is None:
+            continue
+        enc = getattr(st, "encoding", None)
+        if not enc:
+            continue  # 不是文本流（假流、ByteIO）：不归这里管
+        try:
+            _STARTUP_GLYPHS.encode(enc)
+            continue  # 编码得了，别动它
+        except (UnicodeEncodeError, LookupError):
+            pass
+        try:
+            st.reconfigure(errors="replace")  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            # 没有 reconfigure 能力（测试替身）—— 加固失败不许拦住启动。
+            pass
+
+
+def _borrow_hint(alt: dict) -> str:
+    """借用解释器之前给用户看的那段话。
+
+    单独抽成函数**是为了能被测试直接打印**：这段里的 `⇄` 正是
+    2026-11-13 那次「542 次启动失败」的触发字符 —— 它只藏在
+    `_borrow_exe()` 后半段（要先过防火墙检测才走得到），
+    测试没法在不动防火墙的前提下把那一行打出来。
+    文案留在原处（用户能看见的上下文一个字都没改），只是换了个出口。
+    """
+    return (
+        f"  ⇄ 当前解释器不在防火墙白名单里，改用已放行的解释器启动\n"
+        f"     {alt['exe']}\n"
+        f"     （命中规则「{alt['rule']}」，Python {alt['version']}，"
+        f"无需管理员权限、不修改系统设置）"
+    )
+
+
 def _borrow_exe(port: int) -> str | None:
     """当前解释器没被防火墙放行时，换一个**已经被放行**的解释器重启自己。
 
@@ -158,13 +216,7 @@ def _borrow_exe(port: int) -> str | None:
 
     script = os.path.abspath(sys.argv[0])
     argv = [alt["exe"], script] + sys.argv[1:]
-    print(
-        f"  ⇄ 当前解释器不在防火墙白名单里，改用已放行的解释器启动\n"
-        f"     {alt['exe']}\n"
-        f"     （命中规则「{alt['rule']}」，Python {alt['version']}，"
-        f"无需管理员权限、不修改系统设置）",
-        flush=True,
-    )
+    print(_borrow_hint(alt), flush=True)
     # 用 subprocess 而不是 os.execve：Windows 上 os.execv 系列拼命令行时
     # **不给带空格的参数加引号**，`D:\Program Files (x86)\...` 会被空格切碎，
     # 实测报 "D:\program: can't open file ...files"。
@@ -184,6 +236,10 @@ def _borrow_exe(port: int) -> str | None:
 
 
 def main():
+    # 第一件事就把输出加固：后面的横幅、防火墙提示、借解释器提示
+    # 都带 `⇄ ⚠ →`，在 GBK 管道里能直接要了进程的命（见 _harden_stdio）。
+    _harden_stdio()
+
     ap = argparse.ArgumentParser(description="小说下载器")
     ap.add_argument("--host", default="0.0.0.0", help="监听地址（0.0.0.0 表示局域网可访问）")
     ap.add_argument("--port", type=int, default=8000, help="端口")
