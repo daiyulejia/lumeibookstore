@@ -261,4 +261,26 @@
   ② 复核「没结论」的 6 站每晚重查、永不终止（≈36 请求/夜），同一母题第二处；
   ③ 99csw/qidian 老账。
 
+## 2026-11-13（第十六跑）
+- 窗口 11-12 23:00 → 11-13 09:16。**没有真实用户搜索**：63 条 `search.done` 全是自测探针
+  （8 个 XSS 注入串 ×2、`__测试用书A/B/C__`、`__统计测试热词甲/乙__`）；28 条 `候选=0`
+  全是这些 → `known-missing` 不新增。冒烟《三体》22/《斗破苍穹》7/《赵氏嫡女》4 全部有结果。
+- **线上实例整体不可达（未结，最高优先）**：本机 22/80/443/8000 全 timeout（不是 refused）、
+  ping 100% 丢、tracert 到电信骨干就断；check-host.net 德/伊/日三节点 TCP 8000 全 timeout。
+  最后一次已知可用是本日 00:17:54（`6adaf5a` 部署重启）→ 主机级，不是产品挂了。
+  无控制台凭证，**不猜是哪一种**（停机/欠费/安全组/IP 变更），只能报给用户。
+  未部署，线上仍跑 `6adaf5a`。
+- 主线：本地实例被启动横幅里的 `⇄` 打死 —— GBK 管道下 `print` 抛 UnicodeEncodeError，
+  进程在 `uvicorn.run()` 之前就退，守护脚本每 60 秒重启，**542 次 / 557KB 同一条栈**
+  （11-12 已有 108 次）。修 `run.py::_harden_stdio()`（只放宽 errors、编码得了的流不动）
+  + 文案抽 `_borrow_hint()`；新增 `test_startup_encoding.py` 13 项；mutate 新组 4 条 4/4 全抓。
+- 顺带补诊断洞：`LocalServer` 原来 `stderr=DEVNULL`，起不来只报"端口 N"（今天为此白查一上午），
+  现在落临时文件、失败贴尾巴，正常/失败两路都验过。
+- `ship.py --only-test` 全绿 1631.0s（静态 40 套 + 真机 19 套）。commit `a6d6336` 已推送
+  （`b47644a..a6d6336`，顺带补上昨晚没推的 `6adaf5a`）。
+- 开工即踩：工作区里有**没还原的突变注入**（`app/engine.py` 的 `tight_streamed`→`streamed`），
+  先 `git checkout` 还原再动。以后每天第一件事就是 `git status`。
+- 日报 `docs/search-review/2026-11-13.md`。欠账：① 实例恢复后先核对线上 md5 是否还等于
+  `6adaf5a`，再决定要不要补 ship；② 99csw/qidian 403/202 老账；③ wyshu 是否也声明 `budget_s`。
+
 
