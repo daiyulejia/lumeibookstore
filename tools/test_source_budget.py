@@ -31,6 +31,7 @@
 """
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -40,6 +41,7 @@ sys.path.insert(0, str(ROOT))
 
 import app.sources.wikisource as WS  # noqa: E402
 import app.sources.wyshu as WY  # noqa: E402
+from app.utils import current_timeout  # noqa: E402
 
 ok_n = 0
 fail_n = 0
@@ -302,6 +304,186 @@ def main() -> int:
                 tmp_cache.unlink()
         except Exception:  # noqa: BLE001
             pass
+
+    # ------------------------------------------------------------------
+    # ⑪~⑭ 「声明了 6s，可调用方只等 1.5s」+「预算不是墙钟」（2026-11-15 复盘）
+    # ------------------------------------------------------------------
+    # 线上/本机实测（2026-11-15，直连这个源、不经引擎）：
+    #   12 本真实书名只有 2 本命中，其余全走拼音兜底、**0 命中**、
+    #   每本烧 2.7~4.0s；其中《我的阿勒泰》跑了 **10230ms**（声明 6s）。
+    # 引擎那头：`搜索收手 1.5s 放弃 ...(wyshu)`，6 秒后它才回来 ——
+    # 抓到的 594 本被整批扔掉。并且：8 个分类页串行要 4.25s（并行 3.07s，
+    # 站点会限速），所以同步建**永远**被截断 → 不落盘 → 下一轮还是冷的 →
+    # 它 100% 的时间都在白跑。修法：搜索只读缓存，冷的踢后台。
+    #
+    # ⚠ 判据刻意不看耗时（随机器负载漂），看的是**结构事实**：
+    #   同步路径有没有抓取、后台有没有真的起来并在建完后落盘、
+    #   传给 httpx 的超时是多少、请求次数有没有被预算截住。
+    print("\n—— ⑪ 冷索引：搜索不许同步建，踢后台 ——")
+    _old_fetch2 = WY.fetch_text
+    _old_cache2 = WY.CACHE_FILE
+    tmp_cold = ROOT / "cache" / "_test_wyshu_cold.json"
+    WY.CACHE_FILE = tmp_cold                   # type: ignore[assignment]
+    if tmp_cold.exists():
+        tmp_cold.unlink()
+    WY._BUILD_STATE.update({"running": False, "last": 0.0, "thread": None})
+    calls_c: list[str] = []
+
+    def _cat_fetch(url, **kw):
+        calls_c.append(url)
+        return '<a href="/ys/ceshi/">测试书(某人所著小说)_在线阅读</a>'
+
+    WY.fetch_text = _cat_fetch                 # type: ignore[assignment]
+    try:
+        src6 = WY.WyshuSource()
+        # ⚠ 这里必须把 `_kick_build` 换成一个只记账的桩：
+        #   它一起来就会开始抓分类页，直接断言 `calls_c == []` 是在**赌线程启动慢**
+        #   （第一版就这么写，跑第二遍就红了 —— 后台已经抓了两个分类页）。
+        #   判据要问的是"搜索这条同步路径有没有抓取"，不是"机器多快"。
+        kicks: list[int] = []
+        src6._kick_build = lambda: kicks.append(1)   # type: ignore[method-assign]
+        got6 = src6.search("三体")
+        check("★ 冷索引时**同步路径一次抓取都不发**（同步建必然被引擎半路扔掉）",
+              calls_c == [], f"calls={len(calls_c)}")
+        check("★ 冷索引把构建踢出去了（否则永远冷）", kicks == [1], f"kicks={kicks}")
+        check("冷索引返回空，不拿残缺索引冒充结果", got6 == [], str(got6)[:60])
+
+        print("\n—— ⑪b 真的踢一次后台：建完要落盘、抓的是分类页 ——")
+        del src6._kick_build                       # 还原成真实现
+        WY._BUILD_STATE.update({"running": False, "last": 0.0, "thread": None})
+        src6._kick_build()
+        th = WY._BUILD_STATE.get("thread")
+        check("后台构建线程起来了", th is not None, repr(th))
+        if th is not None:
+            th.join(timeout=10)
+        check("后台建完 → 落盘（下一轮才可能是热的）", tmp_cold.exists(),
+              str(tmp_cold))
+        check("后台**真的抓了**分类页（不是空转）",
+              len([u for u in calls_c if u.rstrip("/").endswith(tuple(WY.CATEGORIES))]) >= 1,
+              str(calls_c[:3]))
+
+        print("\n—— ⑫ 热了之后真有产出（它原先 100% 白跑） ——")
+        calls_c.clear()
+        got7 = src6.search("测试书")
+        check("★ 热索引命中（0 抓取、结果里就是那本书）",
+              any("测试书" in b.title for b in got7) and calls_c == [],
+              f"条={len(got7)} calls={len(calls_c)}")
+
+        print("\n—— ⑬ 后台构建单飞：同一时刻只建一份 ——")
+        if tmp_cold.exists():
+            tmp_cold.unlink()
+        WY._BUILD_STATE.update({"running": False, "last": 0.0, "thread": None})
+        calls_c.clear()
+        src6._kick_build()
+        th1 = WY._BUILD_STATE.get("thread")
+        src6._kick_build()
+        th2 = WY._BUILD_STATE.get("thread")
+        check("★ 连踢两次只建一份（第二次被闸门挡掉）",
+              th1 is not None and th1 is th2, f"{th1} vs {th2}")
+        if th1 is not None:
+            th1.join(timeout=10)
+        check("被挡掉的第二次不许另起一批抓取（8 个分类只抓一遍）",
+              len([u for u in calls_c if "/ys/" in u or "/wx/" in u]) <= 3,
+              str(calls_c[:5]))
+
+        print("\n—— ⑭ 拼音兜底：单独预算 + 单请求墙钟 ——")
+        # 这一段每次搜索都会跑（索引没命中时），实测 12/12 空手、每次 2.7~4.0s，
+        # 而引擎 1.5s 就收手 —— 超过它的部分全部是白烧的线程和连接。
+        tmp_cold.write_text(json.dumps(
+            {"_ts": time.time(), "books": {"别的书": {"url": "https://www.wyshu.com/ys/biede/",
+                                                   "author": ""}}},
+            ensure_ascii=False), encoding="utf-8")
+        py_calls: list[str] = []
+        timeouts: list[float | None] = []
+
+        def _slow_py(url, **kw):
+            py_calls.append(url)
+            timeouts.append(current_timeout())
+            time.sleep(0.50)
+            return "not a detail page"
+
+        WY.fetch_text = _slow_py             # type: ignore[assignment]
+        src7 = WY.WyshuSource()
+        src7.PINYIN_BUDGET = 1.6
+        got8 = src7.search("搜不到的书")
+        check("★ 预算到了就不再发（8 个分类被截在 4 个以内）",
+              len(py_calls) <= 4,
+              f"calls={len(py_calls)} —— 8 个全试说明预算没生效"
+              "（1.6s 预算 / 每次 0.5s，允许一个在飞请求的尾巴）")
+        check("拼音兜底没命中时返回空而不是瞎编", got8 == [], str(got8)[:60])
+        check("★ 每次请求都**带着超时**发（不是 None / 不是默认 12s）",
+              bool(timeouts) and all(t is not None and t <= 1.6 for t in timeouts),
+              str(timeouts))
+        # 反面：把「和剩余预算取小」去掉之后，超时会一直是常量上限。
+        # 判据是"最后一次比第一次小"——剩余时间在变少，它必须跟着变。
+        check("★ 超时跟着**剩余预算**缩（去掉 min(剩余,上限) 就变常量）",
+              len(timeouts) >= 2 and max(timeouts) > min(timeouts),
+              str(timeouts))
+    finally:
+        WY.fetch_text = _old_fetch2            # type: ignore[assignment]
+        WY.CACHE_FILE = _old_cache2            # type: ignore[assignment]
+        WY._BUILD_STATE.update({"running": False, "last": 0.0, "thread": None})
+        try:
+            if tmp_cold.exists():
+                tmp_cold.unlink()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ------------------------------------------------------------------
+    # ⑮ 退避睡眠也必须认 deadline（2026-11-15：声明 6s，实测 7.33s）
+    # ------------------------------------------------------------------
+    # wikisource 的请求超时早就夹过剩余预算了，但**两次退避睡眠是无条件的**，
+    # 睡完也不再看表 → 6s 预算实测 7.2~7.3s（3 本真书 3/3 如此、且 3/3 都是 0 条）。
+    # 判据看「睡多久」，不看总耗时（后者随机器负载漂）。
+    print("\n—— ⑮ 退避睡眠不许越过预算（预算是承诺，不是墙钟） ——")
+    _old_ws_client = WS.get_client
+    _old_ws_time = WS.time
+
+    class _FakeTime:
+        """只记录 sleep、不真的睡；sleep 推进**虚拟时钟**（否则"预算用完"永远不来）。
+
+        ⚠ 第一版没推进时钟 → 两次退避各睡 0.3s、加起来 0.6s，判据报红
+          而产品是对的。假时钟必须自己也走，否则测的是假象。
+        """
+
+        def __init__(self) -> None:
+            self.sleeps: list[float] = []
+            self.offset = 0.0
+
+        def time(self) -> float:
+            return time.time() + self.offset
+
+        def sleep(self, s: float) -> None:
+            self.sleeps.append(s)
+            self.offset += s
+
+    shim = _FakeTime()
+    boom2 = _BoomClient()
+    WS.time = shim                              # type: ignore[assignment]
+    WS.get_client = lambda *a, **k: boom2       # type: ignore[assignment]
+    try:
+        try:
+            src._api({"action": "query"}, retries=2, deadline=time.time() + 0.30)
+        except RuntimeError:
+            pass
+        check("★ 退避睡眠不超过剩余预算（不夹 = 6s 预算跑出 7.33s）",
+              bool(shim.sleeps) and sum(shim.sleeps) <= 0.35,
+              f"sleeps={shim.sleeps}")
+        check("预算用完之后不再发请求", boom2.calls <= 2, f"calls={boom2.calls}")
+
+        shim.sleeps.clear()
+        boom3 = _BoomClient()
+        WS.get_client = lambda *a, **k: boom3   # type: ignore[assignment]
+        try:
+            src._api({"action": "query"}, retries=3, deadline=time.time() - 1)
+        except RuntimeError:
+            pass
+        check("★ 预算已过时**一秒都不睡**（老实现会先睡 1.0s 再判）",
+              shim.sleeps == [], f"sleeps={shim.sleeps}")
+        check("预算已过时也不发请求", boom3.calls == 0, f"calls={boom3.calls}")
+    finally:
+        WS.time = _old_ws_time                  # type: ignore[assignment]
+        WS.get_client = _old_ws_client          # type: ignore[assignment]
 
     print(f"\n{'='*60}\n通过 {ok_n} / 失败 {fail_n}\n")
     return 0 if fail_n == 0 else 1

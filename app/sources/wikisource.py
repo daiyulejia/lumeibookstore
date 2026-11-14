@@ -195,6 +195,23 @@ class WikisourceSource(Source):
         return s.replace("_", " ").strip()
 
     # ---------- 内部实现 ----------
+    @staticmethod
+    def _backoff(seconds: float, deadline: float | None) -> bool:
+        """睡一会儿再重试。**预算到了就一秒都不睡**，返回 False 表示该收手了。
+
+        ⚠ 2026-11-15 复盘补的：原来两处退避睡眠都是无条件的，睡完也不再看表 ——
+          于是「声明 6s」实测跑出 **7.33s**（3 本真书各 7.2~7.3s，全部 0 条）。
+          这和 wyshu 那一例同源：**预算是承诺，不是墙钟**。判据是"睡多久"，
+          不是耗时（耗时随机器负载漂）。
+        """
+        if deadline is not None:
+            left = deadline - time.time()
+            if left <= 0.05:
+                return False
+            seconds = min(seconds, left)
+        time.sleep(seconds)
+        return True
+
     def _api(self, params: dict, retries: int = 5,
              deadline: float | None = None) -> dict:
         """发一次 API 请求。
@@ -225,13 +242,16 @@ class WikisourceSource(Source):
                     if "error" in data:
                         code = data["error"].get("code", "")
                         last = RuntimeError(f"API error: {code}")
-                        time.sleep(1.5 * (i + 1))
+                        if not self._backoff(1.5 * (i + 1), deadline):
+                            break
                         continue
                     return data
                 last = RuntimeError(f"非 JSON 响应({r.status_code}): {r.text[:80]}")
             except Exception as e:  # noqa: BLE001
                 last = e
-            time.sleep(1.0 * (i + 1) + 0.5 * i * i)  # 递增退避
+            # 递增退避（1.0 / 2.5 / 4.5 / 7.0 …）—— 同样不许越过 budget。
+            if not self._backoff(1.0 * (i + 1) + 0.5 * i * i, deadline):
+                break
         raise RuntimeError(f"API 请求失败: {last}")
 
     def _subpages(self, title: str) -> list[str]:

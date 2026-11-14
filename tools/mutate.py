@@ -120,6 +120,7 @@ BUDGET_SRC_TEST = ROOT / "tools" / "test_source_budget.py"
 # wyshu 是第二条「没有自带上限」的源 —— 建索引 8 次 + 拼音兜底 8 次
 # 串行无上限，卡住时能把整轮搜索拖满 20s（见 tools/test_source_budget.py ⑥~⑩）
 WYSHU = ROOT / "app" / "sources" / "wyshu.py"
+WIKISOURCE = ROOT / "app" / "sources" / "wikisource.py"
 # 收手判据不许被噪声骗（tools/test_search_recall.py）
 RECALL_TEST = ROOT / "tools" / "test_search_recall.py"
 # 目录识别：slug 章节 id / 散文集目录（tools/test_toc_anchor.py）
@@ -1161,10 +1162,42 @@ MUTATIONS: list[Mutation] = [
              BUDGET_SRC_TEST),
     Mutation("源墙钟", "拼音兜底不认 deadline（第二段还是 8 次请求）",
              WYSHU,
-             "            if deadline is not None and time.time() >= deadline:\n"
+             "            if left is not None and left <= 0.05:\n"
              "                logger.info(\"拼音兜底到点收手",
              "            if False:\n"
              "                logger.info(\"拼音兜底到点收手",
+             BUDGET_SRC_TEST),
+    # ------- 「声明了 6s，调用方只等 1.5s」+「预算不是墙钟」（2026-11-15） -------
+    # 实测 12 本真实书名只 2 本命中；同步建索引 4.25s 而引擎 1.5s 就收手 →
+    # 每轮都被截断 → 不落盘 → 永远冷 → 100% 白跑。修法：搜索只读缓存 + 后台建。
+    Mutation("源墙钟", "冷索引改回同步建（必然被引擎 1.5s 收手整批扔掉，且永不落盘）",
+             WYSHU,
+             "        index = self._cached_index()\n"
+             "        if index is None:\n"
+             "            self._kick_build()\n",
+             "        index = self._cached_index()\n"
+             "        if index is None:\n"
+             "            index = self._load_index(deadline=time.time() + self.SEARCH_BUDGET)\n"
+             "        if False:\n",
+             BUDGET_SRC_TEST),
+    Mutation("源墙钟", "后台建索引没有单飞闸门（每轮搜索各起一份，同时压 8 个分类页）",
+             WYSHU,
+             '        if _BUILD_STATE["running"] or now - _BUILD_STATE["last"] < BUILD_RETRY:',
+             "        if False:",
+             BUDGET_SRC_TEST),
+    Mutation("源墙钟", "单请求超时不跟剩余预算缩（常量上限 = 预算又变成纸糊的）",
+             WYSHU,
+             "                    with fast_mode(retries=0,\n"
+             "                                   timeout=max(0.2, min(left, self.PINYIN_REQ_TIMEOUT))):",
+             "                    with fast_mode(retries=0,\n"
+             "                                   timeout=self.PINYIN_REQ_TIMEOUT):",
+             BUDGET_SRC_TEST),
+    # wikisource 同一母题的第二处：请求超时夹过了，但**退避睡眠**没夹 ——
+    # 于是 6s 预算实测 7.33s（3 本真书 3/3，且 3/3 都是 0 条）。
+    Mutation("源墙钟", "退避睡眠不夹剩余预算（声明 6s 实测 7.33s）",
+             WIKISOURCE,
+             "            seconds = min(seconds, left)",
+             "            seconds = seconds",
              BUDGET_SRC_TEST),
     Mutation("源墙钟", "残缺索引也写缓存（缺口被固化 24 小时，而且最难被怀疑）",
              WYSHU,
