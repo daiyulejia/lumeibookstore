@@ -56,6 +56,11 @@ class _Scheduler:
         self.last_started: Optional[float] = None
         self.last_finished: Optional[float] = None
         self.last_result: Optional[dict[str, Any]] = None
+        # 「撞总预算没跑完的类别」必须单独记 —— 它**既不是成功也不是失败**。
+        # 不记的话，`成功 6 / 失败 0` 会把"少更新了一类"藏成一句好消息
+        # （见 run_once 里那段注释）。
+        self.last_pending: int = 0
+        self.last_pending_kinds: list[str] = []
         self.last_error: str = ""
 
     # -- 运行 ---------------------------------------------------------------
@@ -94,23 +99,45 @@ class _Scheduler:
             rep = _rk.refresh(force=True)
             with self._lock:
                 self.last_result = rep
+                # ⚠ `pending` 是这个接口最容易漏掉的一档：撞总预算收手时，
+                #   那些类别**既没成功也没失败**（缓存里保留旧值）。原来的
+                #   统计只数 ok+failed，于是 6 类成功 1 类被放弃 =
+                #   「成功 6 / 失败 0 / last_error 空」，读起来是"一切正常"。
+                #   2026-11-15 本地实例一晚上就这样了 3 次（另一次 5/7），
+                #   日志里连"少了哪一类"都没有 —— 判据压根没埋这个点。
+                self.last_pending = int(rep.get("pending") or 0)
+                self.last_pending_kinds = list(rep.get("pending_kinds") or [])
+                names = "、".join(self.last_pending_kinds) or "-"
                 # ⚠ refresh() 内部**吞掉**了单类异常（它把失败的类计数进
                 # `failed`），所以这里不会抛 —— 如果不主动把「全灭」翻成
                 # last_error，运维看到的就是「跑过了、错误字段空着」，
                 # 明明一类都没抓到却像一切正常。这是实测踩出来的。
-                total = rep.get("ok", 0) + rep.get("failed", 0)
-                if total and rep.get("ok", 0) == 0:
-                    self.last_error = f"全部 {rep['failed']} 类都没抓到（站点可能都挂了）"
-                elif rep.get("failed"):
-                    self.last_error = f"{rep['failed']} 类抓取失败"
+                ok, bad, pend = rep.get("ok", 0), rep.get("failed", 0), self.last_pending
+                if pend and not ok and not bad:
+                    # 全被预算放弃：没有一个"失败"，但一条也没更新 —— 最像成功
+                    self.last_error = f"{pend} 类全部撞预算没跑完（{names}）"
+                elif ok == 0 and bad:
+                    self.last_error = f"全部 {bad} 类都没抓到（站点可能都挂了）"
                 else:
-                    self.last_error = ""
+                    parts = []
+                    if bad:
+                        parts.append(f"{bad} 类抓取失败")
+                    if pend:
+                        parts.append(f"{pend} 类撞预算没跑完（{names}）")
+                    self.last_error = "；".join(parts)
+            # 「收手可以，不许沉默地收手」：欠了几类、是哪几类，必须落这一行。
+            pend_part = (f" / 没跑完 {self.last_pending}"
+                         f"（{'、'.join(self.last_pending_kinds)}）"
+                         if self.last_pending else "")
             print(f"  [sched] 榜单刷新完成：成功 {rep['ok']} / 失败 {rep['failed']}"
-                  f"，耗时 {rep['elapsed']}s", flush=True)
+                  f"{pend_part}，耗时 {rep['elapsed']}s", flush=True)
             return rep
         except Exception as e:  # noqa: BLE001
             with self._lock:
                 self.last_error = str(e)
+                # 这一轮连账都没有，留着上一轮的 pending 只会误导
+                self.last_pending = 0
+                self.last_pending_kinds = []
             print(f"  [sched] 榜单刷新出错（下个周期重试）：{e}", flush=True)
             return {"ok": 0, "failed": -1, "error": str(e)}
         finally:
@@ -157,6 +184,10 @@ class _Scheduler:
                 "last_finished": int(self.last_finished) if self.last_finished else None,
                 "last_ok": (self.last_result or {}).get("ok"),
                 "last_failed": (self.last_result or {}).get("failed"),
+                # 「没跑完」也要能从接口看见 —— 只靠眼睛读日志的话，
+                # 一旦没人看就永远是「成功 N / 失败 0」。
+                "last_pending": self.last_pending,
+                "last_pending_kinds": list(self.last_pending_kinds),
                 "last_elapsed": (self.last_result or {}).get("elapsed"),
                 "last_error": self.last_error,
             }

@@ -25,6 +25,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -40,6 +42,7 @@ _TMP = Path(tempfile.mkdtemp(prefix="novel-ranks-test-"))
 os.environ["NOVEL_RANKS"] = str(_TMP / "ranks.json")
 
 from app import ranks as R  # noqa: E402
+from app import utils as U  # noqa: E402
 
 ok_n = 0
 fail_n = 0
@@ -143,7 +146,12 @@ def main() -> int:
         # 预算比"每类耗时 × 类别数 / 并发度"小得多 → 必然跑不完
         p = Probe(delay=0.4)
         use(p, budget=0.25)
-        rep = R.refresh(force=True)
+        # 收手那行日志必须点名「还欠哪几类」—— 原来是「已完成 0/7」，
+        # 而字段只在返回值里，真实调用方（定时任务）根本不看返回值。
+        cap = io.StringIO()
+        with contextlib.redirect_stdout(cap):
+            rep = R.refresh(force=True)
+        out = cap.getvalue()
         print(f"     ok={rep['ok']} pending={rep.get('pending')} "
               f"pending_kinds={rep.get('pending_kinds')}")
         check("报出了 pending（没跑完的不许装作跑完了）",
@@ -158,6 +166,10 @@ def main() -> int:
         check("一个都没跑完时缓存必须是空的（不是「反正有 ok 就算过」）",
               rep["ok"] == 0 and len(R._CACHE) == 0,
               f"ok={rep['ok']} cache={list(R._CACHE)}")
+        missed = rep.get("pending_kinds") or []
+        check("收手日志点名了还欠哪几类（不是只报个数）",
+              "还欠" in out and all(k in out for k in missed),
+              f"日志里没有全部名字：{sorted(set(missed))}")
 
         # -------------------------------------------------------------
         print("\n—— 后台正在刷的类要跳过，不重复抓 ——")
@@ -173,6 +185,36 @@ def main() -> int:
         check("后台正在刷的类别被跳过", busy not in p.calls,
               f"还是抓了：{busy}")
         check("跳过也计数（skipped 不是沉默）", rep["skipped"] >= 1, str(rep))
+
+        # -------------------------------------------------------------
+        # 2026-11-15：单源抓取没夹墙钟 → 一次默认超时(25s) = 整轮预算(25s)。
+        # 本地实例一晚三次「刷新超预算 25s，已完成 6/7」，慢的那个源
+        # 连一行 `抓取失败` 都没有。判据问的是**结构**（传下去的 timeout /
+        # retries），不是耗时 —— 耗时随机器负载漂。
+        print("\n—— 单源抓取必须夹墙钟（默认 25s 就吃掉整轮 25s 预算）——")
+        seen: list[tuple] = []
+
+        def rec(url, **kw):        # noqa: ANN001, ARG001
+            seen.append((U.current_timeout(), U.current_retries()))
+            return "<html></html>"
+
+        fake_src = {"key": "__wallclock__", "display": "x",
+                    "url": "https://example.invalid/{kind}", "kinds": {"allvisit"},
+                    "parser": lambda html, kind: []}
+        orig_fetcher = R.fetch_text
+        R.fetch_text = rec                     # noqa: SLF001
+        try:
+            R._fetch_source(fake_src, "allvisit")   # noqa: SLF001
+        finally:
+            R.fetch_text = orig_fetcher        # noqa: SLF001
+        check("真的抓了一次（判据不是空转）", len(seen) == 1, str(seen))
+        t = seen[0][0] if seen else None
+        r = seen[0][1] if seen else None
+        check(f"单源超时被夹住（{t}s < 整轮预算 {R.RANKS_REFRESH_BUDGET:.0f}s）",
+              isinstance(t, (int, float)) and 0 < t < R.RANKS_REFRESH_BUDGET,
+              f"拿到 {t!r} —— None 就是「没夹」，会跑满 25s 的默认超时")
+        check("重试次数压到 ≤1（3 次重试能跑出 3×超时，照样吃满预算）",
+              isinstance(r, int) and r <= 1, f"retries={r!r}")
 
         print("\n" + "=" * 62)
         if fail_n == 0:

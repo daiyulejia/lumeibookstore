@@ -991,6 +991,10 @@ def learn_site(
 _SCRIPT_SRC_RE = re.compile(
     r"""<script\b[^>]*\bsrc\s*=\s*(?:\\?["'])([^"'\\]+)(?:\\?["'])""", re.I)
 
+# 「外部 JS 里找搜索表单」这条加分线的单请求上限（秒）。
+# 只影响这一条线：抓不到 = 这条线不成立，form / 爆破两条照常跑。
+JS_FETCH_TIMEOUT = 6.0
+
 
 def _learn_from_external_js(html: str, page_url: str, host: str,
                             budget: int = 2) -> list[dict]:
@@ -998,8 +1002,13 @@ def _learn_from_external_js(html: str, page_url: str, host: str,
 
     只挑「名字像搜索」的 JS 先抓（`search*.js` / `book.js` / `common.js`），
     抓不到就算了 —— 这只是一条**加分线**，不成立也不影响 form/爆破那两条。
+
+    ⚠ 每个 JS 必须夹墙钟。这条线最多抓 `budget` 个文件，原来用的是**全站默认
+      超时（25s）+ 3 次重试** —— 两个文件都卡住就是 50s，全从「学站任务」的
+      120s 预算里扣（`app/discovery.py` 的 `_LEARN_FETCH_TIMEOUT` 讲的是同一件事）。
+      一条加分线的价值远小于 50 秒，所以给 6s + 不重试：抓不到就当这条线不成立。
     """
-    from .utils import fetch_text
+    from .utils import fast_mode, fetch_text
     out: list[dict] = []
     srcs: list[str] = []
     for src in _SCRIPT_SRC_RE.findall(html or ""):
@@ -1016,7 +1025,8 @@ def _learn_from_external_js(html: str, page_url: str, host: str,
     )
     for u in srcs[:max(0, budget)]:
         try:
-            code = fetch_text(u)
+            with fast_mode(retries=0, timeout=JS_FETCH_TIMEOUT):
+                code = fetch_text(u)
         except Exception:  # noqa: BLE001
             continue
         if not code or "search" not in code.lower():

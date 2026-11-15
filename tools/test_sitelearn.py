@@ -138,6 +138,40 @@ def test_script_without_search_is_ignored() -> None:
        "没有 search 痕迹的脚本不认")
 
 
+def test_external_js_has_wallclock() -> None:
+    """抓外部 JS 必须夹墙钟 —— 这是一条**加分线**，不能吃掉学站的预算。
+
+    原来用的是全站默认超时（25s）+ 3 次重试：`budget=2` 时两个文件都卡住
+    就是 50 秒以上，全从「学站任务」的 120s 里扣（`app/discovery.py`
+    的 `_LEARN_FETCH_TIMEOUT` 讲的是同一件事，只是这里漏了）。
+    判据问的是**结构事实**（传下去的 timeout / retries），不看耗时 ——
+    耗时随机器负载漂，这正是本项目反复写坏过的判据类型。
+    """
+    print("\n[抓外部 JS 必须夹墙钟]")
+    from app import utils as ut
+    seen: list[tuple] = []
+
+    def fake(url, **kw):                      # noqa: ANN001, ARG001
+        seen.append((ut.current_timeout(), ut.current_retries()))
+        return ("function s(){document.writeln(\"<form action='/search.php'>"
+                "<input type='text' name='kw'></form>\");}")
+
+    html = '<script src="/js/search.js"></script>'
+    orig = ut.fetch_text
+    ut.fetch_text = fake
+    try:
+        sitelearn._learn_from_external_js(html, "https://j.com/", "j.com", 1)  # noqa: SLF001
+    finally:
+        ut.fetch_text = orig
+    ok(len(seen) == 1, f"真的去抓了那个 JS（抓了 {len(seen)} 次）")
+    t = seen[0][0] if seen else None
+    r = seen[0][1] if seen else None
+    ok(isinstance(t, (int, float)) and 0 < t <= 10,
+       f"单请求超时被夹住（拿到 {t!r}，None 就是没夹 → 25s）")
+    ok(isinstance(r, int) and r == 0,
+       f"加分线不重试（拿到 retries={r!r}）")
+
+
 # ---------------------------------------------------------------------------
 # 3) 搜索链接
 # ---------------------------------------------------------------------------
@@ -310,6 +344,7 @@ def main() -> int:
     test_inline_script_form()
     test_bare_js_file()
     test_script_without_search_is_ignored()
+    test_external_js_has_wallclock()
     test_search_link()
     test_external_link_ignored()
     test_kwless_template_rejected()

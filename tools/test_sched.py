@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -196,6 +198,58 @@ def main() -> int:
     check("错误被记进 last_error", bool(sched.status()["last_error"]))
     sched.stop()
     time.sleep(0.3)
+
+    # =====================================================================
+    print()
+    print("== F. 撞预算收手：日志 / status / last_error 都必须点名 ==")
+    # 2026-11-15 本地实例实测：一晚三次「刷新超预算（25s），先收手：已完成 6/7」，
+    # 而调用方那行写的是「成功 6 / 失败 0，耗时 25.01s」——
+    # 少了哪一类、到底有没有少，一个字都没有。`pending` 只存在于
+    # refresh() 的返回值里，而定时任务是**直接调它**的（不走 /api/ranks/refresh
+    # 那条带日志的入口），于是这层信息在唯一的真实调用路径上被丢掉了。
+    N = len(ranks.SUPPORTED)
+    slow_kind = ranks.SUPPORTED[-1]["kind"]
+
+    def one_slow(kind):
+        if kind == slow_kind:
+            time.sleep(0.6)
+        return [item(f"{kind}-书")]
+
+    orig_budget = ranks.RANKS_REFRESH_BUDGET
+    ranks._fetch_one = one_slow
+    ranks.RANKS_REFRESH_BUDGET = 0.25
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rep = sched.run_once()
+    finally:
+        ranks.RANKS_REFRESH_BUDGET = orig_budget
+    out = buf.getvalue()
+    st = sched.status()
+    pend = int(rep.get("pending") or 0)
+    print(f"     pending={pend} kinds={rep.get('pending_kinds')} "
+          f"status={ {k: st.get(k) for k in ('last_pending', 'last_pending_kinds', 'last_error')} }")
+    check(f"确实有一类撞预算没跑完（pending={pend}）", pend == 1)
+    check(f"日志里点名了欠的那一类（{slow_kind}）",
+          "没跑完" in out and slow_kind in out)
+    check("status 能看见 pending（不只在日志里）",
+          st.get("last_pending") == pend)
+    check("status 能看见是哪几类",
+          st.get("last_pending_kinds") == [slow_kind])
+    check("last_error 不再空着（「成功 6 / 失败 0」不许说没事）",
+          slow_kind in (st.get("last_error") or ""))
+
+    # 反向：没有欠账时不许恒真地报 pending / 报错
+    ranks._fetch_one = fake_fetch({k: [item("都好")] for k in
+                                   [d["kind"] for d in ranks.SUPPORTED]})
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        sched.run_once()
+    st = sched.status()
+    check("没有欠账时 pending=0", st.get("last_pending") == 0
+          and not st.get("last_pending_kinds"))
+    check("没有欠账时 last_error 清空", st.get("last_error") == "")
+    check("没有欠账时日志不提「没跑完」", "没跑完" not in buf.getvalue())
 
     # =====================================================================
     print()

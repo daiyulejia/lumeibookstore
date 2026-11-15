@@ -100,7 +100,7 @@ from typing import Any, Optional
 # 复用现有的抓取器：它已经处理了编码猜测（GBK→gb18030）、
 # 同域限速、指数退避重试。自己再写一套只会两边不一致。
 from .sourcehealth import HEALTH
-from .utils import fetch_text
+from .utils import fast_mode, fetch_text
 
 # 缓存落盘的位置。为什么要落盘：进程一重启内存缓存就没了，
 # 而「榜单」是那种**没人点也该是热的**东西 —— 用户打开发现页
@@ -881,7 +881,10 @@ def _fetch_source(src: dict[str, Any], kind: str) -> list[dict[str, Any]]:
 
     if html is None:
         try:
-            html = fetch_text(url)
+            # ⚠ 必须夹墙钟：见 `RANKS_FETCH_TIMEOUT` 的注释 —— 不夹的话
+            #   一个慢源能吃掉整轮预算，代价是"某一类榜单这一轮不更新"。
+            with fast_mode(retries=1, timeout=RANKS_FETCH_TIMEOUT):
+                html = fetch_text(url)
         except Exception as e:  # noqa: BLE001
             print(f"  [ranks] {src['key']} {kind} 抓取失败：{e}", flush=True)
             _note_fail(src["key"], kind, e)
@@ -1092,6 +1095,23 @@ def _kick_bg_refresh(kind: str) -> None:
 RANKS_REFRESH_BUDGET = 25.0
 RANKS_REFRESH_WORKERS = 3
 
+# 单个来源的墙钟上限。
+# ⚠ **一次抓取的默认超时（25s）等于整轮刷新的预算（25s），所以只要一个源慢，
+#   整轮就必然少更新一类** —— 2026-11-15 本地实例实测：同一台机器上 13 个
+#   （来源×类目）里正常的 0.2~2.4s（最慢 384g 的 lastupdate 2.39s），
+#   但间歇性有源卡住，那一刻日志只有两行：
+#       [ranks] 刷新超预算（25s），先收手：已完成 6/7
+#       [sched] 榜单刷新完成：成功 6 / 失败 0，耗时 25.01s
+#   —— 慢的那一元凶既不报错、也没名字（`抓取失败` 一行都没有），
+#   而"成功 6 / 失败 0"读起来像是好消息。
+#   取 6.0：是实测最慢源（2.39s）的 2.5 倍，且远小于「25s 预算 ÷ 3 并发 = 8.3s/类」。
+#   配 `retries=1`：最坏 6 + 0.8 退避 + 6 = 12.8s < 25s，仍然回得来 ——
+#   把"少一类"换成"慢 10 秒但七类都在"。榜单页是公开的列表页，
+#   少一次重试的代价远小于让一整类榜单停更一轮。
+#   同一类判断在 `app/discovery.py`（`_LEARN_FETCH_TIMEOUT`）早已如此，
+#   这里只是漏了 —— 别把"声明了预算"当成"真的有上限"。
+RANKS_FETCH_TIMEOUT = 6.0
+
 
 def refresh(kinds_: Optional[list[str]] = None, force: bool = True) -> dict[str, Any]:
     """主动刷新榜单。给定时任务和「立即刷新」按钮用。
@@ -1153,8 +1173,14 @@ def refresh(kinds_: Optional[list[str]] = None, force: bool = True) -> dict[str,
                 except Exception:  # noqa: BLE001
                     done[k] = False
         except Exception:  # noqa: BLE001  超预算（含 futures.TimeoutError）
+            # ⚠ 必须点名：这句原来是「已完成 6/7」，而"还欠哪一类"只有
+            #   `refresh()` 的返回值里有，而定时任务是**直接调本函数**的
+            #   （不经过 /api/ranks/refresh），那一层日志也被丢掉了
+            #   —— 于是线上看到"成功 6 / 失败 0"，谁也不知道少了哪一类。
+            left = [k for k in targets if k not in done]
             print(f"  [ranks] 刷新超预算（{RANKS_REFRESH_BUDGET:.0f}s），先收手："
-                  f"已完成 {len(done)}/{len(targets)}", flush=True)
+                  f"已完成 {len(done)}/{len(targets)}，还欠 {len(left)} 类"
+                  f"（{'、'.join(left)}）", flush=True)
         finally:
             # 不等没回来的慢源 —— 它们在后台自然结束（每次抓取都有 timeout），
             # 这一轮的调用方不该陪着它们等。

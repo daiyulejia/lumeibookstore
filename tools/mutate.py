@@ -153,6 +153,14 @@ CHAIN_TEST = ROOT / "tools" / "test_ship_chain.py"
 # 同一个查询的**在飞**请求合并（tools/test_search_flight.py）
 FLIGHT = ROOT / "app" / "searchflight.py"
 FLIGHT_TEST = ROOT / "tools" / "test_search_flight.py"
+# 榜单定时任务的「撞预算收手」账本 —— 2026-11-15 纳入反证。
+# ⚠ 这个文件**早就存在、断言也写得不差，但一直没登记进 ship 的 STATIC_SUITES**
+#   → 每天都不跑，等于不存在。今天补登记，连同这套反证一起钉住。
+SCHED_TEST = ROOT / "tools" / "test_sched.py"
+RANKS_REFRESH_TEST = ROOT / "tools" / "test_ranks_refresh.py"
+SITELEARN_TEST = ROOT / "tools" / "test_sitelearn.py"
+# 定时刷新那一层（`run_once` 的账目）
+SCHED = ROOT / "app" / "sched.py"
 
 
 @dataclass
@@ -2232,6 +2240,67 @@ MUTATIONS: list[Mutation] = [
              "            continue  # 编码得了，别动它\n",
              "            pass\n",
              STARTUP_TEST),
+
+    # ------------------------------------------------------------------
+    # 榜单「撞预算」账本（tools/test_sched.py 的 F 组 / test_ranks_refresh.py）
+    # ------------------------------------------------------------------
+    # 2026-11-15 本地实例实测：一晚三次 `[ranks] 刷新超预算（25s），先收手：
+    # 已完成 6/7`，紧跟一行 `[sched] 榜单刷新完成：成功 6 / 失败 0，耗时 25.01s`。
+    # 「少了一类」这件事在日志里**一个字都没有**，因为 `pending` 只存在于
+    # `refresh()` 的返回值里，而定时任务是直接调 `refresh()` 的。
+    # 这一组反证盯的就是「收手可以，不许沉默地收手」这条规矩。
+    Mutation("榜单账目", "sched 不记 pending（6 类成功 1 类放弃 → 报「全部成功」）",
+             SCHED,
+             '                self.last_pending = int(rep.get("pending") or 0)',
+             "                self.last_pending = 0",
+             SCHED_TEST),
+    Mutation("榜单账目", "sched 记数不记名字（知道少了一类，不知道是哪一类）",
+             SCHED,
+             '                self.last_pending_kinds = list(rep.get("pending_kinds") or [])',
+             "                self.last_pending_kinds = []",
+             SCHED_TEST),
+    Mutation("榜单账目", "pending 不算进 last_error（状态接口说「一切正常」）",
+             SCHED,
+             "                    if pend:\n"
+             '                        parts.append(f"{pend} 类撞预算没跑完（{names}）")',
+             "                    if False:\n"
+             '                        parts.append(f"{pend} 类撞预算没跑完（{names}）")',
+             SCHED_TEST),
+    Mutation("榜单账目", "sched 日志不提没跑完（收手变成静默）",
+             SCHED,
+             '            pend_part = (f" / 没跑完 {self.last_pending}"\n'
+             "                         f\"（{'、'.join(self.last_pending_kinds)}）\"\n"
+             "                         if self.last_pending else \"\")",
+             '            pend_part = ""',
+             SCHED_TEST),
+    Mutation("榜单账目", "status 不暴露 pending（只有读日志的人知道）",
+             SCHED,
+             '                "last_pending": self.last_pending,',
+             '                "last_pending": None,',
+             SCHED_TEST),
+    Mutation("榜单账目", "ranks 收手只报个数、不点名（还欠哪几类查不出）",
+             RANKS,
+             '                  f"已完成 {len(done)}/{len(targets)}，还欠 {len(left)} 类"\n'
+             "                  f\"（{'、'.join(left)}）\", flush=True)",
+             '                  f"已完成 {len(done)}/{len(targets)}", flush=True)',
+             RANKS_REFRESH_TEST),
+    # ⚠ 「单源墙钟」这条：默认超时 25s 正好等于整轮预算 25s，于是
+    #   一个慢源 = 一整类榜单停更一轮，而且不报错（连 `抓取失败` 都没有）。
+    #   注意靶点必须落在**实参**上 —— 改 `RANKS_FETCH_TIMEOUT` 这个常量
+    #   是恒真的（默认参数在 def 时已求值），只有把 `fast_mode(...)` 整个
+    #   拿掉，判据才会真的红。
+    Mutation("榜单账目", "单源抓取不夹墙钟（默认 25s = 整轮预算，慢一个源少一类）",
+             RANKS,
+             "            with fast_mode(retries=1, timeout=RANKS_FETCH_TIMEOUT):\n"
+             "                html = fetch_text(url)",
+             "            html = fetch_text(url)",
+             RANKS_REFRESH_TEST),
+    Mutation("榜单账目", "外部 JS 发现不夹墙钟（一条加分线吃掉学站 50 秒）",
+             SITELEARN,
+             "            with fast_mode(retries=0, timeout=JS_FETCH_TIMEOUT):\n"
+             "                code = fetch_text(u)",
+             "            code = fetch_text(u)",
+             SITELEARN_TEST),
 ]
 
 
