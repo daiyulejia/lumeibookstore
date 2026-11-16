@@ -313,5 +313,26 @@
 - 反证 8/8；`ship --only-test` 全绿 1660.4s；`04438d1` + `2b62be9` 已推送。
 - 日报 `docs/search-review/2026-11-15.md` 第二部分。欠账：实例恢复后核对 md5 并补 ship。
 
+## 2026-11-16（第十八跑）
+- 线上**第 5 天不可达**：本机 22/80/443/8000 全 TimeoutError、ICMP 4/4 丢、
+  check-host.net 8 节点 TCP8000 全超时 → 写「**没有数据可判**」，不写"没有新案例"。
+  本地今日零真实用户搜索（67 次全是探针/冒烟）→ known-missing 不新增。
+- 主线（不依赖线上流量，证据在本地实例日志 09:51:31~48 当场复发）：
+  **我们自己把站限流了，却记成"源挂了"** → 冷却 120s 却熔断 300s、streak 累计到 8h，
+  越保护越死；日报写 `挂=xbqg5200`（读起来是"站坏了"），处置正好相反。
+- 修：`errors.LocalCooldown` + `is_local_cooldown()`（认异常对象**和** take_error 字符串，
+  两个入口）；engine 两处失败记账先判它（不 note_fail、不进挂、走新事件 `source.skip`）；
+  `search.done` 第六格 `自限=`；`ranks._fetch_source` 同母题第二处一起修。
+- 副线：榜单调度算术不平 → 3 批 × 单类最坏 12.8s = 38.4s ≫ 25s 必然少一类 →
+  `RANKS_FETCH_RETRIES=0`（最坏 18s），判据写成「批数 × 单类最坏 ≤ 预算」。
+- 反证：`自限流` 5/5、`榜单账目` 10/10；**全量 308 条 0 问题**，源码逐字节还原。
+  `ship --only-test` 全绿 1833.2s（静态 41 + 真机 19，含新套件）。
+- commit `afe8db6` + 日报 `7977368` 已推送 GitHub；**未部署**（ssh 22 超时，上传两次失败）。
+- 日报 `docs/search-review/2026-11-16.md`。欠账：实例恢复后先核对线上 md5=6adaf5a 再补 ship；
+  `xbqg5200` 历史熔断记录要重看（至少部分是自限流误记）。
+- 工具坑：`env -u http_proxy … python …` 在本机 Git Bash 下**静默无输出且 exit=0**
+  （连脚本文件也中招）→ 一律用 `unset … ; python …`。check-host.net 要带 UA。
+
+
 
 
