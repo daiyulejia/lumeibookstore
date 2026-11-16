@@ -161,6 +161,11 @@ RANKS_REFRESH_TEST = ROOT / "tools" / "test_ranks_refresh.py"
 SITELEARN_TEST = ROOT / "tools" / "test_sitelearn.py"
 # 定时刷新那一层（`run_once` 的账目）
 SCHED = ROOT / "app" / "sched.py"
+# 「我们自己的限流冷却」被当成「源挂了」（tools/test_self_throttle.py）——
+# 2026-11-16。⚠ 失败方式：冷却期内每次搜索记一次失败 → 熔断 5 分钟 >
+# 冷却 2 分钟 → 一个健康的站被自己的保护机制越封越久，且日报写"这个站坏了"。
+THROTTLE_TEST = ROOT / "tools" / "test_self_throttle.py"
+ERRORS = ROOT / "app" / "errors.py"
 
 
 @dataclass
@@ -2291,9 +2296,23 @@ MUTATIONS: list[Mutation] = [
     #   拿掉，判据才会真的红。
     Mutation("榜单账目", "单源抓取不夹墙钟（默认 25s = 整轮预算，慢一个源少一类）",
              RANKS,
-             "            with fast_mode(retries=1, timeout=RANKS_FETCH_TIMEOUT):\n"
+             "            with fast_mode(retries=RANKS_FETCH_RETRIES,"
+             " timeout=RANKS_FETCH_TIMEOUT):\n"
              "                html = fetch_text(url)",
              "            html = fetch_text(url)",
+             RANKS_REFRESH_TEST),
+    # ⚠ 靶点必须落在**实参**上：只改 `RANKS_FETCH_RETRIES` 那个常量的话，
+    #   测试里"读常量算不等式"那条会红，但"实参真的是几"看不出来 ——
+    #   把调用点写成 `retries=1`（常量仍是 0）就能绕过全部判据。
+    Mutation("榜单账目", "单源重试一次（两批各拖长 6.8s → 必然少一类）",
+             RANKS,
+             "fast_mode(retries=RANKS_FETCH_RETRIES, timeout=RANKS_FETCH_TIMEOUT)",
+             "fast_mode(retries=1, timeout=RANKS_FETCH_TIMEOUT)",
+             RANKS_REFRESH_TEST),
+    Mutation("榜单账目", "重试常量改成 1（调度算术不再平）",
+             RANKS,
+             "RANKS_FETCH_RETRIES = 0",
+             "RANKS_FETCH_RETRIES = 1",
              RANKS_REFRESH_TEST),
     Mutation("榜单账目", "外部 JS 发现不夹墙钟（一条加分线吃掉学站 50 秒）",
              SITELEARN,
@@ -2301,6 +2320,35 @@ MUTATIONS: list[Mutation] = [
              "                code = fetch_text(u)",
              "            code = fetch_text(u)",
              SITELEARN_TEST),
+    # ⚠ 「自限流」这组有**两个入口**（2026-11-11 的教训：闸门装在一个入口上
+    #   等于没装）：抛出来的（exactly 这条）和自己 catch 掉只留一句话的
+    #   （`take_error()` 那条）。两条必须各有一条突变，否则漏掉的那条
+    #   会静默继续把"我们打太快"记成"站坏了"。
+    Mutation("自限流", "抛出来的那条不认自限流（冷却中又被记成源故障）",
+             ENGINE,
+             "                if is_local_cooldown(e):",
+             "                if False:",
+             THROTTLE_TEST),
+    Mutation("自限流", "吞异常的那条不认自限流（另一条入口漏了）",
+             ENGINE,
+             "                elif is_local_cooldown(err):",
+             "                elif False:",
+             THROTTLE_TEST),
+    Mutation("自限流", "只按异常类型认（take_error 交回来的是字符串 → 漏判）",
+             ERRORS,
+             "    return LOCAL_COOLDOWN_MARK in str(x or \"\")",
+             "    return False",
+             THROTTLE_TEST),
+    Mutation("自限流", "统计里不报自限流（账上凭空少一个源）",
+             ENGINE,
+             '                "sources_selfthrottle": len(_throttle_names),',
+             '                "sources_selfthrottle": 0,',
+             THROTTLE_TEST),
+    Mutation("自限流", "榜单侧也把自限流记成故障（同一母题第二处）",
+             RANKS,
+             "            if is_local_cooldown(e):",
+             "            if False:",
+             THROTTLE_TEST),
 ]
 
 

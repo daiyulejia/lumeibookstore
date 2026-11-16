@@ -213,8 +213,35 @@ def main() -> int:
         check(f"单源超时被夹住（{t}s < 整轮预算 {R.RANKS_REFRESH_BUDGET:.0f}s）",
               isinstance(t, (int, float)) and 0 < t < R.RANKS_REFRESH_BUDGET,
               f"拿到 {t!r} —— None 就是「没夹」，会跑满 25s 的默认超时")
-        check("重试次数压到 ≤1（3 次重试能跑出 3×超时，照样吃满预算）",
-              isinstance(r, int) and r <= 1, f"retries={r!r}")
+        # ⚠ 判据盯的是**实参**（`current_retries()` 是 `_fetch_source` 真传下去的值），
+        #   不是模块常量 —— 只断言常量的话，把调用点写成 `retries=1` 仍然全绿。
+        check("重试次数必须为 0（重试一次 = 3.8s×批数，能把整轮顶过预算）",
+              r == 0, f"实参 retries={r!r}")
+
+        # -------------------------------------------------------------
+        # 2026-11-16：**调度算术**必须平 —— 否则"少一类"是必然，不是意外。
+        # 本地实例日志（22:47）：
+        #   两个源各走一次「6s 超时 + 重试」→ 7 类 / 3 并发分 3 批
+        #   → 撞满 25s 预算 → `还欠 1 类（lastupdate）`
+        # 同机逐类实测正常只要 0.39~3.97s（7 类串起来 13.5s），说明不是站慢，
+        # 是重试把两批各拖长 6.8s。
+        #
+        # ⚠ 判据只看**常量之间的关系**，不碰耗时（耗时随机器负载漂）：
+        #     批数 × 单类最坏 ≤ 整轮预算
+        #   这条一红就说明有人调大超时/重试、或调小并发/预算 ——
+        #   而那些改动**不会报错**，只会让某一类榜单悄悄停更一轮。
+        import math
+        _batches = math.ceil(len(R._KINDS) / R.RANKS_REFRESH_WORKERS)
+        _worst = R.RANKS_FETCH_TIMEOUT * (R.RANKS_FETCH_RETRIES + 1)
+        check(f"★ 调度算术要平：{_batches} 批 × 单类最坏 {_worst:.1f}s "
+              f"= {_batches * _worst:.1f}s ≤ 预算 {R.RANKS_REFRESH_BUDGET:.0f}s",
+              _batches * _worst <= R.RANKS_REFRESH_BUDGET,
+              f"{len(R._KINDS)} 类 / {R.RANKS_REFRESH_WORKERS} 并发 = {_batches} 批；"
+              f"单类最坏 = {R.RANKS_FETCH_TIMEOUT:.1f}s × "
+              f"({R.RANKS_FETCH_RETRIES}+1) 次 = {_worst:.1f}s —— "
+              "超了就是必然少一类（而且不报错）")
+        check("重试为 0（重试一次的代价 = 让另一整类榜单停更一轮，不值）",
+              R.RANKS_FETCH_RETRIES == 0, f"retries={R.RANKS_FETCH_RETRIES}")
 
         print("\n" + "=" * 62)
         if fail_n == 0:

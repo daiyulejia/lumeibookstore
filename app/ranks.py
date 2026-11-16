@@ -100,6 +100,7 @@ from typing import Any, Optional
 # 复用现有的抓取器：它已经处理了编码猜测（GBK→gb18030）、
 # 同域限速、指数退避重试。自己再写一套只会两边不一致。
 from .sourcehealth import HEALTH
+from .errors import is_local_cooldown
 from .utils import fast_mode, fetch_text
 
 # 缓存落盘的位置。为什么要落盘：进程一重启内存缓存就没了，
@@ -883,9 +884,18 @@ def _fetch_source(src: dict[str, Any], kind: str) -> list[dict[str, Any]]:
         try:
             # ⚠ 必须夹墙钟：见 `RANKS_FETCH_TIMEOUT` 的注释 —— 不夹的话
             #   一个慢源能吃掉整轮预算，代价是"某一类榜单这一轮不更新"。
-            with fast_mode(retries=1, timeout=RANKS_FETCH_TIMEOUT):
+            with fast_mode(retries=RANKS_FETCH_RETRIES, timeout=RANKS_FETCH_TIMEOUT):
                 html = fetch_text(url)
         except Exception as e:  # noqa: BLE001
+            # ⚠ 同一母题的第二处（2026-11-16）：被**我们自己的**同域限流冷却
+            #   挡住时，`fetch_text` 抛的是 `LocalCooldown`，一个请求都没发。
+            #   把它记成"榜单来源连续失败"会喂熔断器（5 分钟 > 冷却 2 分钟），
+            #   于是同一轮刷新里这个源的所有类目一起被判死 ——
+            #   而我们真正该做的是"等它"，不是"封它"。
+            if is_local_cooldown(e):
+                print(f"  [ranks] {src['key']} {kind} 本地限流冷却中，跳过"
+                      f"（不算故障）：{e}", flush=True)
+                return []
             print(f"  [ranks] {src['key']} {kind} 抓取失败：{e}", flush=True)
             _note_fail(src["key"], kind, e)
             return []
@@ -1111,6 +1121,26 @@ RANKS_REFRESH_WORKERS = 3
 #   同一类判断在 `app/discovery.py`（`_LEARN_FETCH_TIMEOUT`）早已如此，
 #   这里只是漏了 —— 别把"声明了预算"当成"真的有上限"。
 RANKS_FETCH_TIMEOUT = 6.0
+
+# 单源的重试次数。**必须是 0**（2026-11-16 复盘，本地实例日志算出来的）。
+#
+# 上面那段"最坏 6 + 0.8 退避 + 6 = 12.8s < 25s，仍然回得来"只算对了**一类**。
+# 一次全量刷新是 7 类、3 个并发 → 分 **3 批**，所以真正的最坏值是
+#
+#     3 批 × (6 + 0.8 + 6) = 38.4s  ≫  25s 预算
+#
+# 一个源抖一下，后面那一批就别想开始了。本地实例实测（2026-11-16 22:47）：
+#
+#     [ranks] xbiquge allvisit 抓取失败：…(The read operation timed out)
+#     [ranks] xbiquge-lastpost postdate 抓取失败：…(The read operation timed out)
+#     [ranks] 刷新超预算（25s），先收手：已完成 6/7，还欠 1 类（lastupdate）
+#     —— 同机逐类实测正常只要 0.39~3.97s，全 7 类串起来 13.5s。
+#
+# 也就是说：**不是站慢，是"重试一次"把两批各拖长了 6.8s**。
+# 拿掉重试，最坏 3 × 6 = 18s < 25s —— 账才真的平。
+# 代价：单源一次抖就少它这一类的贡献（下轮 30 分钟后还会再来），
+# 收益：不会因为一个源抖而让**另一整类榜单停更一轮**。后者更贵。
+RANKS_FETCH_RETRIES = 0
 
 
 def refresh(kinds_: Optional[list[str]] = None, force: bool = True) -> dict[str, Any]:

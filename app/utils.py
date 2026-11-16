@@ -14,6 +14,7 @@ from typing import Optional
 import httpx
 
 from .security import BlockedURL
+from .errors import LocalCooldown
 
 logger = logging.getLogger("novel.utils")
 
@@ -345,7 +346,10 @@ def fetch_text(url: str, *, encoding: Optional[str] = None, retries: int | None 
 
     left = cooldown_left(url)
     if left > 0:
-        raise RuntimeError(f"该站点刚被限流，冷却中（还剩 {left:.0f}s）")
+        # ⚠ 必须是 `LocalCooldown` 而不是裸 RuntimeError：这是**本地保护**
+        #   （我们主动不再撞），不是"站挂了"。引擎按类型分开处置
+        #   （跳过 / 不喂熔断器），见 `errors.LocalCooldown` 那段注释。
+        raise LocalCooldown(left, host_of(url))
 
     last_err: Optional[Exception] = None
     # 本请求是否已经因为证书问题降级过一次（见 _cert_error / _TLS_STRICT）

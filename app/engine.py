@@ -21,7 +21,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
 from .aggregate import group as group_books
-from .errors import SourceBlocked
+from .errors import SourceBlocked, is_local_cooldown
 from .library import Library, book_id as lib_book_id
 from .logging_setup import log_event
 from .models import Book, BookResult, Chapter
@@ -230,6 +230,10 @@ def source_ledger(stats: dict) -> dict:
 
         答=真的答了话   挂=返回了但挂了   未回=到点没回来   熔断=该搜没搜   到点=是否撞满墙钟
 
+    2026-11-16 补第五格 `自限`：「被我们自己的同域限流冷却挡住」。它原本落在
+    `挂` 里 —— 日报于是把"我们打太快"写成"这个站坏了"，而且会喂熔断器
+    （熔断 5 分钟 > 冷却 2 分钟），越封越久。见 `errors.LocalCooldown`。
+
     `未回` 尤其重要：线上真机 10 次搜索里有 9 次 `未回=1~2`，
     而那些源只是慢、并没有死。没有名字就永远查不出"到底是谁在拖"。
 
@@ -243,6 +247,7 @@ def source_ledger(stats: dict) -> dict:
     names_fail = list(stats.get("failed_returned_sources") or [])
     names_unret = list(stats.get("unreturned_sources") or [])
     names_brk = list(stats.get("breaker_sources") or [])
+    names_thr = list(stats.get("selfthrottle_sources") or [])
 
     def _pack(n: int, names: list[str]) -> str:
         return f"{n}" + (f"({','.join(names)})" if names else "")
@@ -252,6 +257,13 @@ def source_ledger(stats: dict) -> dict:
         "挂": _pack(stats.get("sources_failed", 0), names_fail),
         "未回": _pack(stats.get("sources_unreturned", 0), names_unret),
         "熔断": _pack(stats.get("sources_breaker", 0), names_brk),
+        # ⚠ 第六格（2026-11-16）：被**我们自己的**限流冷却挡住的源。
+        #   它原来混在 `挂` 里，于是日报上写的是"xbqg5200 挂了"，
+        #   而事实是"我们打太快，自己把它关进 120s 冷却"。
+        #   两者的处置正好相反：前者该换源，后者该降速/等它。
+        #   而且混进 `挂` 还会**喂熔断器**（熔断 5 分钟 > 冷却 2 分钟），
+        #   一个健康的站被自己的保护机制越封越久。
+        "自限": _pack(stats.get("sources_selfthrottle", 0), names_thr),
         # ⚠ 判「是不是慢到没结果」不能用 `耗时ms>=20000`：耗时是环境量，
         #   机器一忙就漂，同一本书能差 5 倍。这个布尔量只取决于机制。
         #
@@ -681,6 +693,14 @@ class Engine:
                 if items or not err:
                     _mark(src.name, "ok")
                     HEALTH.note_ok(src.name)
+                elif is_local_cooldown(err):
+                    # ⚠ 我们自己把它限流了，不是它挂了。见 `errors.LocalCooldown`：
+                    #   这条路径拿到的是**字符串**（源内部吞了异常），所以按文本认。
+                    #   不 note_fail —— 否则冷却期内每被调一次就记一次"连续失败"，
+                    #   3 次就把一个健康的站全局封 5 分钟（比冷却期还长）。
+                    _mark(src.name, "throttle")
+                    log_event(logger, "source.skip", 源=src.name,
+                              原因=f"本地限流冷却，不算故障：{str(err)[:100]}")
                 else:
                     _mark(src.name, "fail")
                     failed_sources.add(src.name)
@@ -690,6 +710,17 @@ class Engine:
                         _log_trip(src.name, cd, err)
                 return items
             except Exception as e:  # noqa: BLE001
+                # ⚠ 「本地限流冷却」必须**先于**通用失败分支判断：
+                #   它是我们自己的保护机制在起作用（不发请求 = 省得被封 IP），
+                #   把它记成"源挂了"会造出一个自噬循环 ——
+                #   冷却期内每轮搜索记一次失败 → 熔断 5 分钟 > 冷却 2 分钟
+                #   → 熔断期比冷却期还长，且 streak 累计到 8 小时封顶。
+                #   本地实例 2026-11-16 09:51:48 实测就发生了这一次。
+                if is_local_cooldown(e):
+                    _mark(src.name, "throttle")
+                    log_event(logger, "source.skip", 源=src.name,
+                              原因=f"本地限流冷却，不算故障：{e}")
+                    return []
                 # 单个来源挂掉是常态（站点会抽风、会改版、会拦爬虫），
                 # 不该升级成"搜索失败"。但要留下可筛的记录：
                 #   grep 'source.fail' logs/app.log  就能看出哪个源最近老出问题
@@ -1303,16 +1334,22 @@ class Engine:
             _fail_names = sorted(n for n, v in _snap.items() if v == "fail")
             _unret_names = sorted(n for n, v in _snap.items() if v == "hang")
             _skip_names = sorted(n for n, v in _snap.items() if v == "skip")
-            _accounted = _ok_n + len(_fail_names) + len(_unret_names) + len(_skip_names)
+            # 「我们自己把它限流了」——既不是"答了"，也不是"它挂了"。
+            # 单独一格的原因见 `errors.LocalCooldown`：混进 `挂` 会让
+            # 日报得出"这个站坏了"的错误结论（它多半只是我们打太快）。
+            _throttle_names = sorted(n for n, v in _snap.items() if v == "throttle")
+            _accounted = (_ok_n + len(_fail_names) + len(_unret_names)
+                          + len(_skip_names) + len(_throttle_names))
             # 应搜 = 真的扇出出去的 + 熔断被跳过的（后者也是"该搜而没搜"）
             _expect = len(targets) + len(skipped)
             if _accounted + len(skipped) != _expect:
                 # 账对不上就当场说，别让日报拿着一个加不起来的数字下结论
                 logger.info(
                     "源账对不上：应搜 %d 个源（扇出 %d + 熔断 %d），记账 %d 个"
-                    "（答=%d 挂=%d 未回=%d 未跑=%d）",
+                    "（答=%d 挂=%d 未回=%d 未跑=%d 自限=%d）",
                     _expect, len(targets), len(skipped), _accounted + len(skipped),
-                    _ok_n, len(_fail_names), len(_unret_names), len(_skip_names))
+                    _ok_n, len(_fail_names), len(_unret_names), len(_skip_names),
+                    len(_throttle_names))
             stats.update({
                 "raw": len(raw),
                 "kept": len(results),
@@ -1383,6 +1420,9 @@ class Engine:
                 # 返回了但挂了的（403 / 握手超时 / 吞异常）—— 与"未回"互斥
                 "sources_failed": len(_fail_names),
                 "failed_returned_sources": _fail_names,
+                # 被**我们自己的**限流冷却挡住的（不是源挂了，见 errors.LocalCooldown）
+                "sources_selfthrottle": len(_throttle_names),
+                "selfthrottle_sources": _throttle_names,
                 # 到点还没回来的（hang）+ 压根没轮到跑的（skip）
                 "sources_unreturned": len(_unret_names) + len(_skip_names),
                 "unreturned_sources": _unret_names + _skip_names,
