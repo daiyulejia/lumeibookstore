@@ -333,6 +333,26 @@
 - 工具坑：`env -u http_proxy … python …` 在本机 Git Bash 下**静默无输出且 exit=0**
   （连脚本文件也中招）→ 一律用 `unset … ; python …`。check-host.net 要带 UA。
 
+## 2026-11-17（第十九跑）
+- 线上**第 6 天不可达**（22/80/443/8000 全 TimeoutError、ICMP 4/4 丢）→ 写「**没有数据可判**」。
+  本地 11-17 零搜索，11-16 的 32 次全是上一轮探针 → `known-missing` 不新增。
+- 主线：**可搜源池单向缩水**。`sites_searchable=0`（334 站 / 211 健康），而自有来源靠它扇出。
+  库里 4 个有模板的站 **4/4** 全停在 `down == 2*ok+1`（60/121、386/773、6/13、7/15）
+  —— 「越线即冻结」的指纹，不是巧合。
+- 两层病根：① 同一份判据在 **6 个入口**手写，`LocalCooldown` 被记成 `FAIL_DOWN`
+  （11-16 只修 engine/ranks，因为 grep 的是 `note_fail` 而不是 `classify_fetch_error`）；
+  ② `is_healthy` 只有死亡线、没有复活通道。
+- 修：唯一判据 `registry.site_fault_why()` + 试用通道 `probation_sites()` + 降级点名
+  `site.demote/revive`；新套件 `test_site_fault.py`（40 条，含 AST 闸门）已进 ship。
+- 反证 5/5 + 3/3 + `srchdead` 重锚 9/9；手工注入第七个入口当场报红。
+  `ship --only-test` 全绿 1864.9s（静态 42 + 真机 19 + 突变 316 条 0 问题）；`a2aa430` 已推送。
+- **未部署**（实例不可达），线上仍 `6adaf5a`。日报 `docs/search-review/2026-11-17.md`。
+- 新欠账：① 线上恢复后按 `site.*` 与「其中试用 N 个」验收；② `is_healthy` 终身累计比值
+  要改时间衰减（会动召回基线，需线上可验证）；③ 库里 ~300 个非小说站待清理（11-06 起）。
+- 工具坑：改动会顶掉 mutate 的靶点（今天 `srchdead` 2 条脱节，被 `test_ship_chain` 第 1 分钟抓到）；
+  `GIT_SSH_COMMAND` 会顶掉仓库 `core.sshCommand` 的 `-i` → push publickey denied，直接 `git push`。
+
+
 
 
 
