@@ -49,7 +49,7 @@ from ..models import Book, BookResult, Chapter
 # 「这一条结果是不是在说这本书」只有 `normalize` 认得全（繁转简/去标点/
 # 剥 SEO 尾巴）。用裸 `in` 比对会把「三體」「《三体》（全集）」判成不匹配。
 from ..relevance import kw_terms, normalize as _norm
-from ..utils import (classify_fetch_error, fast_mode, fetch_text, host_of,
+from ..utils import (fast_mode, fetch_text, host_of,
                      normalize_title)
 from .base import Source, tidy_content
 
@@ -127,7 +127,12 @@ class RegistrySource(Source):
             return []
 
         sites = registry.searchable_sites()
-        if not sites:
+        # 试用通道（2026-11-17）：越过健康死亡线的站会同时被 `searchable_sites()`
+        # 和 `discovery._verify` 排除，**永远拿不到下一次成功**去记 `ok` ——
+        # 计数冻结在 `down == 2*ok+1`（库里 4/4 个模板站都停在这个值上）。
+        # 每次带极少量出来试，一次成功就够复活（见 `registry.probation_sites`）。
+        prob = registry.probation_sites()
+        if not sites and not prob:
             return []
 
         # 按「这个站历史上成功过几次」排，老大难的站放后面 ——
@@ -136,6 +141,12 @@ class RegistrySource(Source):
             sites.items(),
             key=lambda kv: (-int(kv[1].get("ok", 0)), kv[0]),
         )
+        # 试用站一律排在正常站**之后**：它们是待证的假设，不许挤掉已确认的资产。
+        if prob:
+            ordered += sorted(
+                prob.items(),
+                key=lambda kv: (-int(kv[1].get("ok", 0)), kv[0]),
+            )
 
         results: list[BookResult] = []
         seen: set[tuple[str, str]] = set()
@@ -143,7 +154,10 @@ class RegistrySource(Source):
 
         if self.log:
             try:
-                self.log("自有来源", f"拿关键词去 {len(ordered)} 个已学会的站里搜", True)
+                extra = (f"（其中试用 {len(prob)} 个：{', '.join(sorted(prob))}）"
+                         if prob else "")
+                self.log("自有来源",
+                         f"拿关键词去 {len(ordered)} 个已学会的站里搜{extra}", True)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -229,10 +243,18 @@ class RegistrySource(Source):
             # ⚠ 超时 ≠ 站点挂了。单站只给 `SEARCH_SITE_TIMEOUT` 秒，慢站必然
             #   超时；记成 FAIL_DOWN 会让 `is_healthy` 的
             #   `down >= 3 and down > ok*2` 把"只是慢"的站判死（线上 350.ooo
-            #   当时差一次超时就越线）。两类分开记账，见 utils.classify_fetch_error。
-            slow = classify_fetch_error(e) == "slow"
-            registry.note_site(host, ok=False,
-                               why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
+            #   当时差一次超时就越线）。
+            # ⚠ **本地限流冷却**（`fetch_text` 一个请求都没发）更不算故障：
+            #   这条路径原来手写 `classify_fetch_error(e)=="slow"`，把我们的
+            #   保护记成了站挂了，还顺手 `note_search_result` + `note_error`
+            #   —— 等于用"我们自己不打"去喂熔断器、去作废模板。
+            #   判据收在 `registry.site_fault_why()` 一处（2026-11-17）。
+            why = registry.site_fault_why(e)
+            if why is None:
+                logger.info("自有来源 %s 本轮被本地限流冷却挡住（不发请求、不记账）",
+                            host)
+                return []
+            registry.note_site(host, ok=False, why=why)
             # ⚠ 「抓取就打不开」和「打开发现存的不是搜索页」是同一件事的两种表现，
             #   要汇到同一条生命线上。线上实测 `m.kudushu.org` 每次都 403：
             #   它走的是异常分支（不算 search_shape），而 0 命中又让夜间复核
@@ -240,7 +262,7 @@ class RegistrySource(Source):
             #   于是它既不会被判假、也不会被作废，**永久赖在可搜源里**，
             #   每次搜索白占一个并发名额、还把"综合 N 站"这个数字撑大。
             #   超时（slow）不算：那是我们等得不够，不是站打不开。
-            if not slow:
+            if why != registry.FAIL_SLOW:
                 registry.note_search_result(host, hits=0, raw=0)
             # 留口条给熔断器 + 让 search() 数得出"有几个站失败"。
             # 只在**整批**都失败时才上抛成"这个源挂了"（见 search() 末尾）。
@@ -397,11 +419,10 @@ class RegistrySource(Source):
         try:
             html = fetch_text(url)
         except Exception as e:  # noqa: BLE001
-            # 取正文失败 —— 只有**连不上**才算站的账；读超时是我们这边等得不够
-            # （长章节 + 慢站很常见），记 FAIL_SLOW，不推进 is_healthy 的死亡比值。
-            slow = classify_fetch_error(e) == "slow"
-            registry.note_site(host, ok=False,
-                               why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
+            # 取正文失败 —— 只有**连不上/5xx**才算站的账；读超时是我们这边等得
+            # 不够（长章节 + 慢站很常见）记 FAIL_SLOW；本地限流冷却**不记**
+            # （一个请求都没发）。判据收在 `registry.site_fault_why()` 一处。
+            registry.note_fetch_fail(host, e)
             raise
 
         site = registry.known_site(host)

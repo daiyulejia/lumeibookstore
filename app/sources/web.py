@@ -19,7 +19,7 @@ import time
 
 from .. import discovery, registry, webfetch
 from ..models import Book, BookResult, Chapter
-from ..utils import classify_fetch_error, fetch_text, host_of
+from ..utils import fetch_text, host_of
 from .base import Source, check_content_quality, note_for_exception, tidy_content
 
 
@@ -107,10 +107,9 @@ class DiscoveredSource(Source):
             try:
                 html = fetch_text(u)
             except Exception as e:  # noqa: BLE001
-                slow = classify_fetch_error(e) == "slow"
-                registry.note_site(
-                    host, ok=False,
-                    why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
+                # 判据收在 `registry.site_fault_why()` 一处：连不上才算站的账，
+                # 读超时记 slow，**本地限流冷却不记**（一个请求都没发）。
+                registry.note_fetch_fail(host, e)
                 raise
             last["html"] = html
             site = registry.known_site(host_of(u))
@@ -183,10 +182,8 @@ class DiscoveredSource(Source):
         try:
             text = self.fetch_chapter(chapters[idx]) or ""
         except Exception as e:  # noqa: BLE001
-            slow = classify_fetch_error(e) == "slow"
-            registry.note_site(
-                host_of(result.url), ok=False,
-                why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
+            # 同 `fetch_chapter`：判据在 `registry.site_fault_why()`，这里只负责记账。
+            registry.note_fetch_fail(host_of(result.url), e)
             return {"ok": False, "chars": 0,
                     "note": note_for_exception(e), "ms": _ms(t0)}
 

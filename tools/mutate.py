@@ -166,6 +166,10 @@ SCHED = ROOT / "app" / "sched.py"
 # 冷却 2 分钟 → 一个健康的站被自己的保护机制越封越久，且日报写"这个站坏了"。
 THROTTLE_TEST = ROOT / "tools" / "test_self_throttle.py"
 ERRORS = ROOT / "app" / "errors.py"
+# 「这次失败该记谁的账」+「越线之后能不能回来」（tools/test_site_fault.py）——
+# 2026-11-17。⚠ 失败方式：把我方限流记成站挂了 → 可搜源单向缩水；
+# 越过死亡线即永久冻结（`down == 2*ok+1`）→ 缩到 0 之后没有自动化能找回来。
+SITE_FAULT_TEST = ROOT / "tools" / "test_site_fault.py"
 
 
 @dataclass
@@ -1625,14 +1629,18 @@ MUTATIONS: list[Mutation] = [
              "            items = keyed + rest",
              "            items = rest + keyed",
              REGSRC_TEST),
+    # ⚠ 靶点重锚（2026-11-17）：异常分支里的 `if not slow:` 已换成
+    #   `if why != registry.FAIL_SLOW:`（判据收进 `registry.site_fault_why()`），
+    #   旧片段当场脱节 —— 由 `test_ship_chain` 的「★ 没有脱节的突变」提前发现，
+    #   否则要等 17 分钟全量跑完才看见。
     Mutation("srchdead", "「抓取就打不开」不记形态失败（403 站永久赖在可搜源里）",
              REGISTRY_SOURCE,
-             "            if not slow:\n                registry.note_search_result(host, hits=0, raw=0)",
+             "            if why != registry.FAIL_SLOW:\n                registry.note_search_result(host, hits=0, raw=0)",
              "            if False:\n                registry.note_search_result(host, hits=0, raw=0)",
              REGSRC_TEST),
     Mutation("srchdead", "超时也记形态失败（我们自己等得不够，却把站作废了）",
              REGISTRY_SOURCE,
-             "            if not slow:\n                registry.note_search_result(host, hits=0, raw=0)",
+             "            if why != registry.FAIL_SLOW:\n                registry.note_search_result(host, hits=0, raw=0)",
              "            if True:\n                registry.note_search_result(host, hits=0, raw=0)",
              REGSRC_TEST),
     # 换个新模板 = 换了一次假设，旧模板的账不能接着算（否则新模板一定被挡死/护死）
@@ -2349,6 +2357,56 @@ MUTATIONS: list[Mutation] = [
              "            if is_local_cooldown(e):",
              "            if False:",
              THROTTLE_TEST),
+
+    # ---------------- 站点记账 / 试用复活（2026-11-17） ----------------
+    # ⚠ 这一组的靶点**必须落在行为行上**，不能落常量：`site_fault_why` 的判据
+    #   是一次函数调用，改常量（比如 PROBATION_MAX）测不出"冷却有没有被认出来"。
+    Mutation("站点记账", "判据不认自限流（6 个入口又把我们的保护记成站挂了）",
+             REGISTRY,
+             "    if is_local_cooldown(exc):\n        return None",
+             "    if False:\n        return None",
+             SITE_FAULT_TEST),
+    Mutation("站点记账", "记账那条把 None 也当成失败（冷却仍然涨 fail）",
+             REGISTRY,
+             "    if why is None:",
+             "    if False:",
+             SITE_FAULT_TEST),
+    Mutation("站点记账", "降级/复活不点名（可搜源少了一个，日志里一个字都没有）",
+             REGISTRY,
+             "        if was_ok != now_ok:",
+             "        if False:",
+             SITE_FAULT_TEST),
+    Mutation("站点记账", "核实入口写回老写法（最常走的那条路漏了冷却判断）",
+             DISCOVERY,
+             "        registry.note_fetch_fail(host, e)\n        return None",
+             "        registry.note_site(host, ok=False, why=registry.FAIL_DOWN)\n        return None",
+             SITE_FAULT_TEST),
+    Mutation("站点记账", "冷却时直接把异常抛出去（熔断器被我们自己的保护喂饱）",
+             REGISTRY_SOURCE,
+             '            if why is None:\n'
+             '                logger.info("自有来源 %s 本轮被本地限流冷却挡住（不发请求、不记账）",\n'
+             '                            host)\n'
+             '                return []',
+             "            if False:\n"
+             "                return []",
+             SITE_FAULT_TEST),
+
+    # ---------------- 试用通道（越线之后能不能回来） ----------------
+    Mutation("站点复活", "试用通道不接进扇出（可搜源为 0 时整条资产直接空转）",
+             REGISTRY_SOURCE,
+             "        prob = registry.probation_sites()",
+             "        prob = {}",
+             SITE_FAULT_TEST),
+    Mutation("站点复活", "试用不筛模板（没学过搜索的站也去试，白烧超时）",
+             REGISTRY,
+             "            if not has_search_tpl(s) or is_healthy(s):",
+             "            if is_healthy(s):",
+             SITE_FAULT_TEST),
+    Mutation("站点复活", "试用不认冷却（一轮搜索里同一个站被反复挑中）",
+             REGISTRY,
+             "            if now - int(s.get(\"probation_at\") or 0) < PROBATION_COOLDOWN:",
+             "            if False:",
+             SITE_FAULT_TEST),
 ]
 
 

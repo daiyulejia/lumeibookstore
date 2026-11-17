@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 from . import registry, sitelearn, webfetch, websearch
 from .models import BookResult
 from .relevance import score as score_result
-from .utils import classify_fetch_error, fast_mode, fetch_text, host_of
+from .utils import fast_mode, fetch_text, host_of
 
 logger = logging.getLogger("novel.discovery")
 
@@ -185,11 +185,12 @@ def _verify(cand: dict, keyword: str, tally: Optional[dict] = None) -> Optional[
     except Exception as e:  # noqa: BLE001
         logger.info("候选核实失败 %s: %s", host, e)
         _bump(tally, "fetch_fail", host)
-        # why：连不上/5xx 才算"站点可能挂了"；**读超时**是我们等得不够
-        # （核实阶段只给 10 秒），记 FAIL_SLOW，别把慢站推进 is_healthy 的死亡比值。
-        slow = classify_fetch_error(e) == "slow"
-        registry.note_site(host, ok=False,
-                           why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
+        # 记账交给 `registry.note_fetch_fail()` 一处判：连不上/5xx 才算"站点可能
+        # 挂了"；**读超时**是我们等得不够（核实只给 10 秒）记 FAIL_SLOW；
+        # 而**本地限流冷却**（`fetch_text` 一个请求都没发）根本不该记账 ——
+        # 这一处原来手写 `classify_fetch_error(e)=="slow"`，把我们的保护记成了
+        # 站点故障（2026-11-17 复盘：6 个入口漏了 6 个）。
+        registry.note_fetch_fail(host, e)
         return None
 
     if data.get("kind") != "toc":
@@ -990,11 +991,12 @@ def _check_book(url: str, meta: dict) -> bool:
             data = page_of(url, force=True)
     except Exception as e:  # noqa: BLE001
         # 网络层失败：站可能真的挂了 → 记站的账。
-        # 但**读超时**是我们给的时间不够（sweep 只给 12 秒），单独记 slow。
-        slow = classify_fetch_error(e) == "slow"
+        # 但**读超时**是我们给的时间不够（sweep 只给 12 秒），单独记 slow；
+        # **本地限流冷却**更不该记 —— `fetch_text` 一个请求都没发。
+        # ⚠ 书和站要一起跳过：只跳站不跳书，这本书会被 health_check 当坏书删掉。
+        if not registry.note_fetch_fail(host, e):
+            return False
         registry.note_book(url, host=host, ok=False)
-        registry.note_site(host, ok=False,
-                           why=registry.FAIL_SLOW if slow else registry.FAIL_DOWN)
         return False
 
     toc = data.get("toc") or []

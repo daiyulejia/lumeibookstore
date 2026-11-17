@@ -60,6 +60,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+from .logging_setup import log_event
+
 logger = logging.getLogger("novel.registry")
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -672,6 +674,11 @@ def note_site(host: str, *, ok: bool = True, name: str = "", why: str = "",
     with _lock:
         db = _load()
         cur = db["sites"].setdefault(host, {})
+        # 「降级 / 复活」是一次**全局状态变更**，必须点名落日志（2026-11-17）。
+        # 原来跨过死亡线是**完全静默**的：可搜源从 16 变 15 没有任何一行日志，
+        # 只能事后 diff 库文件才看得出来 —— 和 10-30「源池 22→15 零字段」、
+        # 11-11「删站删书零字段」是同一个病。
+        was_ok = is_healthy(cur)
         # 站名只在「还没学过」时填。**`name` 等于 host 也算没学过** ——
         # 早先发现流程拿 host 当占位名写进去过，那种值是没信息量的，
         # 遇到真名字要让它覆盖掉，否则界面上永远是 `www.xxx.com`。
@@ -703,9 +710,74 @@ def note_site(host: str, *, ok: bool = True, name: str = "", why: str = "",
         if "first_seen" not in cur:
             cur["first_seen"] = _now()
         cur["updated"] = _now()
+        now_ok = is_healthy(cur)
+        if was_ok != now_ok:
+            # ⚠ 事件名写成字面量、两支分开：`tools/test_events_registry.py` 是
+            #   按字面量扫调用点的，写成 `"a" if x else "b"` 会让它只看见前一个，
+            #   把另一个判成"登记了但没人发"的死条目（踩过一次）。
+            try:
+                if now_ok:
+                    log_event(logger, "site.revive", 域=host,
+                              名=cur.get("name") or host,
+                              成功=cur.get("ok", 0), 挂=cur.get("fail_down", 0),
+                              原因="成功一次")
+                else:
+                    log_event(logger, "site.demote", 域=host,
+                              名=cur.get("name") or host,
+                              成功=cur.get("ok", 0), 挂=cur.get("fail_down", 0),
+                              原因=why or "-")
+            except Exception:  # noqa: BLE001
+                pass
         global _dirty
         _dirty = True
         _maybe_save()
+
+
+def site_fault_why(exc: BaseException) -> Optional[str]:
+    """这次抓取失败该记成「站点的账」吗？返回 `FAIL_*`，或 `None` = **不记账**。
+
+    ⚠ 为什么必须收敛成一处（2026-11-17 复盘）：
+      下面这两行原本在 **6 个地方**各写了一遍 ——
+      `discovery._verify` / `discovery` 的坏源排查（sweep） /
+      `registry_source._search_one` / `registry_source.fetch_chapter` /
+      `web.fetch_chapter` / `web.probe`：
+
+          slow = classify_fetch_error(e) == "slow"
+          why  = FAIL_SLOW if slow else FAIL_DOWN
+
+      2026-11-16 给引擎装了「本地限流冷却不是源故障」（`errors.LocalCooldown`），
+      只改了 engine 和 ranks —— 上面 6 处**一处都没改**。于是同一件事在
+      6 个入口上得出相反结论：`fetch_text` 在同域冷却期里**一个请求都不发**
+      （我方保护），`classify_fetch_error` 把它归到 "other"（不是 slow）
+      → 记 `FAIL_DOWN`「站点网络层失败」。闸门装在两个入口上，等于没装。
+
+    `None` 的语义是「**我们自己决定不做这个动作**」：
+      没发请求，就谈不上"对方坏了"；不记账，也不许喂熔断器。
+    """
+    from .errors import is_local_cooldown     # 函数内 import：避免顶层环依赖
+    from .utils import classify_fetch_error
+
+    if is_local_cooldown(exc):
+        return None
+    if classify_fetch_error(exc) == "slow":
+        return FAIL_SLOW
+    return FAIL_DOWN
+
+
+def note_fetch_fail(host: str, exc: BaseException) -> bool:
+    """抓取失败时记账。返回 `True` = 记了站的账，`False` = 不该记（我方保护）。
+
+    把「判原因」和「记账」也收进一处：调用方拿不到 `why` 就没法再手写一遍。
+    `False` 时**只留痕不涨账** —— 留痕是为了复盘时看得见"这一轮少了一个站
+    是限流还是真挂"，涨账则是把好站往死亡线上推。
+    """
+    why = site_fault_why(exc)
+    if why is None:
+        log_event(logger, "site.skip", 域=host,
+                  原因="本地限流冷却（我方保护，不记站的账）")
+        return False
+    note_site(host, ok=False, why=why)
+    return True
 
 
 def known_site(host: str) -> dict:
@@ -737,6 +809,70 @@ def searchable_sites() -> dict:
       界面说"能搜 6 个"，实际搜索只问 3 个，用户看到的资产是虚的。
     """
     return {h: s for h, s in sites().items() if is_searchable(s)}
+
+
+# ---------------------------------------------------------------------------
+# 「试用」通道：越过死亡线的站靠一次成功就能回来（2026-11-17）
+# ---------------------------------------------------------------------------
+# 为什么必须有（这是今天最强的一条证据）：
+#   `is_healthy` 只有**死亡线**（`down >= 3 and down > ok*2`），没有复活路径。
+#   一旦越线，站同时被两处排除 —— `searchable_sites()`（不再扇出）
+#   和 `discovery._verify`（"跳过已失效站点"）—— 于是**永远拿不到下一次成功**
+#   来记 `ok`，计数就冻结在越线那一刻。
+#   冻结时的取值必然是 `down == 2*ok + 1`（刚好越过 `down > ok*2` 的最小整数）。
+#   实测库里 4 个有搜索模板的站 **4/4** 都停在这个值上：
+#       www.tadu.com      ok= 60 down=121   (2*60+1=121)
+#       www.384g.com      ok=386 down=773   (2*386+1=773)
+#       www.biqugela.cc   ok=  6 down= 13   (2*6+1=13)
+#       www.ldxs1.net     ok=  7 down= 15   (2*7+1=15)
+#   四个数量级完全不同的站分子分母都恰好落在这个式子上 —— 这是"越线即冻结"
+#   的指纹，不是巧合。后果是「可搜源」只会**单向缩水**，缩到 0 之后没有任何
+#   自动化能把它找回来（本地库现在就是 `sites_searchable=0`，自有来源整条
+#   资产对每次搜索的贡献是零）。
+#
+# 代价控制（为什么要限额）：
+#   · 每次搜索最多带 `PROBATION_MAX` 个，排在正常站**之后**；
+#   · 同一个站 `PROBATION_COOLDOWN` 内只试一次 —— 一次成功就够
+#     （`ok+1` 就能让 `down <= 2*ok` 重新成立：386/773 只要一次 387 就回来）；
+#   · 只放「有模板、非影视/非小说站否决」的站，没学过搜索的站不占名额。
+PROBATION_MAX = 2
+PROBATION_COOLDOWN = 6 * 3600
+
+
+def probation_sites(limit: int = PROBATION_MAX) -> dict:
+    """挑几个「有模板但不健康」的站出来试用。**
+
+    ⚠ 它们**不算进** `searchable_sites()` / `stats["sites_searchable"]`：
+      那个数字是「已确认的资产」，试用站是「待证的假设」。混进去就又变成
+      11-01 那种"账面 16 个、实际能搜的没几个"的虚高。
+
+    被选中即记 `probation_at`（而不是等结果回来再记）：否则一轮搜索里
+    同一个站会被反复挑中，"限额"等于没有。
+    """
+    now = _now()
+    picked: dict[str, dict] = {}
+    global _dirty
+    with _lock:
+        db = _load()
+        cands = []
+        for host, s in db["sites"].items():
+            if not has_search_tpl(s) or is_healthy(s):
+                continue
+            if s.get("video_blocked") or s.get("offtopic_blocked"):
+                continue
+            if now - int(s.get("probation_at") or 0) < PROBATION_COOLDOWN:
+                continue
+            cands.append((host, s))
+        # 成功次数多的先试：它们更可能是"被一次坏天气误杀"，不是真死。
+        cands.sort(key=lambda kv: (-int(kv[1].get("ok", 0)), kv[0]))
+        for host, s in cands[:max(0, int(limit))]:
+            s["probation_at"] = now
+            picked[host] = dict(s)
+        if picked:
+            _dirty = True
+            _maybe_save()
+    return picked
+
 
 
 def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
