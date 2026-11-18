@@ -88,6 +88,17 @@ PER_SITE = 6
 # 总候选上限
 TOTAL_LIMIT = 40
 
+# ---- 「这个模板认不认关键词」的控制实验（2026-11-18）--------------------
+# 用一个**肯定没有任何一本书叫这个名字**的词再问一次：
+#   · 真站（tadu / 384g 实测）回 0 条书链接 —— 它按关键词过滤；
+#   · 假模板（ldxs1 实测）回 62 条，跟真词的 65 条没区别 —— 它把 `?q=` 当空气。
+# 只在 `raw > 0 且零命中` 这个**两义**分支里问，而且只问从来没搜出过书的站
+# （`registry.needs_keyword_control`），所以每轮搜索至多几个额外请求，
+# 且判中三次模板就作废 —— 成本自终止。
+_CONTROL_KW = "zzqqxxbukCunZaiDeShu"
+# 比真词短：它只是对照组，别让"控制词太怪"本身触发一套不同的模板逻辑。
+_CONTROL_TIMEOUT = 3.0
+
 # 候选条目的标题看起来「太不干净」就丢：纯导航、太短、太长
 _BAD_TITLE = re.compile(
     r"^(首页|登录|注册|书架|排行|全部小说|小说大全|搜索|下一页|上一页|"
@@ -360,7 +371,23 @@ class RegistrySource(Source):
                          host, keyword)
             return []
 
-        if out:
+        # ---- 「抽到一屏链接、却一条都不含关键词」是哪种 0 条？（2026-11-18）----
+        # 绝大多数情况是「这站真的没有这本书」（页面还带着最新更新侧栏），
+        # 记 `empty` 是对的 —— 10-29 的教训：把它记成形态失败，一天废掉 8 个模板。
+        # 但**从来没搜出过一本书**的站里混着一类：模板压根不按关键词过滤，
+        # 收下 `?q=` 回一整页最新更新。它会让 `raw > 0` 恒成立，
+        # 于是永远记 `empty`、模板永不作废、每 6 小时被试用通道白打一次。
+        # 对这类站花一个请求问一句「换个肯定不存在的词，你还能抽回一屏吗」。
+        kwblind = False
+        if items and not out and not empty_page and registry.needs_keyword_control(host):
+            kwblind = self._ignores_keyword(host, meta, keyword, len(items))
+
+        if kwblind:
+            # 判中了：这不是"没这本书"，是模板坏了 —— 走形态失败那条账，
+            # 连记 3 次就作废重学（`note_search_result` 里 raw 必须是 0，
+            # 否则它只会被记成一次 `search_miss`）。
+            registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)
+        elif out:
             registry.note_site(host, ok=True)
         elif items:
             # 结果页里**有**书链接，但过滤（导航词/长度）后一条不剩 ——
@@ -380,9 +407,69 @@ class RegistrySource(Source):
             #   作废模板、让它重学。
             registry.note_site(host, ok=False, why=registry.FAIL_SHAPE)
         # 无论成败都把「这次真实产出」记一笔：hits 与 raw 必须分开（见函数注释）
-        registry.note_search_result(host, hits=len(out), raw=len(items),
-                                    empty_page=empty_page)
+        # ⚠ `kwblind` 时 raw 报 0：这时候"抽到几条链接"根本不是产出，
+        #   而是模板不认词的证据（页面把整站最新更新都吐了出来）。
+        #   报真值的话 `note_search_result` 只会记一次 `search_miss`，
+        #   模板永远作废不了 —— 今天要修的就是这件事。
+        registry.note_search_result(host, hits=len(out),
+                                    raw=0 if kwblind else len(items),
+                                    empty_page=empty_page, kwblind=kwblind)
         return out
+
+    # ------------------------------------------------------------------
+    # 「换个关键词，你还抽得回一屏吗？」
+    # ------------------------------------------------------------------
+    def _ignores_keyword(self, host: str, meta: dict, keyword: str,
+                         real_n: int) -> bool:
+        """拿一个**肯定没有这本书**的词再问一次，看它还抽不抽得回书链接。
+
+        返回 True = **这个模板不按关键词过滤**（假模板 / 参数被吞 / 回的是
+        整站最新更新）：控制词抽到的条数 ≥ 真词的 `CONTROL_RATIO`，
+        且不少于 `CONTROL_MIN_LINKS`。
+
+        ⚠ 三条保守线，一个都不能少：
+          · 控制请求失败 / 被本地限流冷却挡住 → 返回 False（"没结论"，继续按
+            empty 记账）。"我判不出来"绝不能等于"判假" —— 那是 10-21 复核
+            让假站躲过一整轮的同一条教训；
+          · 只能对 `search_hit == 0` 的站调（`needs_keyword_control` 把关），
+            否则每本冷门书的搜索都会给每个站多打一个请求；
+          · 阈值是「比例 + 下限」，不是"抽到 > 0 条就判假"：真站的"没这本书"
+            页面上常带一屏推荐位（线上 `www.biqusa.com` 就是这样），
+            那种页面抽到的条数远小于真词，`ratio=0.8` 会放过它。
+        """
+        tpl = (meta.get("search_tpl") or "").strip()
+        if not tpl:
+            return False
+        enc = (meta.get("search_enc") or "utf-8").strip()
+        scheme = (meta.get("search_scheme") or "https").strip()
+        method = (meta.get("search_method") or "get").strip().lower()
+        body_tpl = meta.get("search_body") or None
+        try:
+            with fast_mode(retries=0, timeout=_CONTROL_TIMEOUT):
+                if method == "post":
+                    url = sitelearn.build_url(tpl, host, "", enc=enc, scheme=scheme)
+                    data = {k: str(v).replace("{kw}", _CONTROL_KW)
+                            for k, v in (body_tpl or {"s": "{kw}"}).items()}
+                    html, final = fetch_text(url, with_url=True, data=data)
+                else:
+                    url = sitelearn.build_url(tpl, host, _CONTROL_KW,
+                                              enc=enc, scheme=scheme)
+                    html, final = fetch_text(url, with_url=True)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("控制实验抓取失败 %s: %s（按「没结论」处理，不判假）",
+                         host, e)
+            return False
+        if not html:
+            return False
+        ctrl_n = len(_extract_book_links(html, final or url))
+        need = max(registry.CONTROL_MIN_LINKS,
+                   int(real_n * registry.CONTROL_RATIO))
+        ignored = ctrl_n >= need
+        logger.info("关键词控制实验 %s（搜《%s》）：真词抽出 %d 条、"
+                    "控制词 %d 条（判据 ≥%d）→ %s",
+                    host, keyword, real_n, ctrl_n, need,
+                    "模板不认关键词" if ignored else "模板按关键词过滤")
+        return ignored
 
     @classmethod
     def _note_speed(cls, ms: float) -> None:

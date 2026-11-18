@@ -311,6 +311,14 @@ def main() -> int:
     def shape_fetch(url, **kw):
         if "shape0.com" in url:
             return (nav_only, url)
+        # ⚠ 假站必须**认关键词**（2026-11-18）：原来这里不管 URL 一律回
+        #   `junk_books`，于是"换个肯定没人写过的词再问一次"也回 8 条链接 ——
+        #   真实世界里这就是「模板不认关键词」的定义（`www.ldxs1.net` 实测：
+        #   真词 65 条、控制词 62 条）。新判据会把这种站判成形失效，
+        #   于是这条用例会红在一个**它本来就不该覆盖**的行为上。
+        #   真站对"肯定没有这本书"回的是空结果页，这里就照实造。
+        if "zzqq" in url:
+            return ("<html><body>没有找到</body></html>", url)
         return (junk_books, url)
 
     R.note_site("shape0.com", ok=True, search_tpl="/?s={kw}")

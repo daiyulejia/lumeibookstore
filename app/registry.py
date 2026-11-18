@@ -874,6 +874,51 @@ def probation_sites(limit: int = PROBATION_MAX) -> dict:
     return picked
 
 
+# ---------------------------------------------------------------------------
+# 「这个模板到底认不认关键词」—— 只在**可疑站**上问（2026-11-18）
+# ---------------------------------------------------------------------------
+# 为什么需要（这是 10-28「假站过滤」留下的口子）：
+#   `_search_one` 把「结果页里抽到一堆书链接、但按关键词过滤后一条不剩」
+#   记成 `FAIL_EMPTY`（＝"这个站只是没有这本书"）。对**真搜索页**这是对的 ——
+#   10-29 的教训就是错判成形态失败，一天之内废掉 8 个模板（可搜源 22→14）。
+#   但有一类站长得一模一样：它**根本不按关键词过滤**，收下 `?q=` 却回一整页
+#   「最新更新」。这时 `raw > 0`，于是既不记 `shape`（模板永不作废）、
+#   也不涨任何能触发处置的计数 —— 它就永远赖在库里，每 6 小时被试用通道
+#   拖出来打一次，永远救不回来。可搜源越缩越少的时候，这种站占的就是
+#   别人的名额。
+#
+# 判得出来吗？今天（本机 11-18）实测，差别是断崖式的：
+#     www.ldxs1.net  真词抽出 65 条 / 控制词 zzqqxxv 抽出 62 条（95%）→ 不认词
+#     www.tadu.com   真词抽出 88 条 / 控制词 0 条                     → 认词
+#     www.384g.com   真词抽出 100 条 / 控制词 0 条                    → 认词
+#   真站的"没这本书"页**一条书链接都没有**，假站照吐一页 —— 这与
+#   `sitelearn.judge_by_control` 判不出来的那种（轮换列表）不同：
+#   轮换列表换词也换页，而这里问的是"**控制词能不能也抽回一屏**"。
+#
+# 成本与风险（为什么只对 `search_hit == 0` 的站做）：
+#   · 这辈子没搜出过一本书的站才是可疑资产，真资产不做 —— 不为"偶尔没这本书"
+#     多打一个请求；
+#   · 判中三次 `search_shape` 模板就作废 → 成本**自终止**，不会每轮都多打；
+#   · 阈值取「控制词 ≥ 真词的 80% 且至少 8 条」，保守方向：宁可留一个坏模板
+#     （白打一次请求），也别把好模板作废（召回直接消失）。
+CONTROL_MIN_LINKS = 8
+CONTROL_RATIO = 0.8
+
+
+def needs_keyword_control(host: str) -> bool:
+    """这个站要不要做一次「换掉关键词，还抽得回一屏吗」的控制实验。
+
+    条件只有一条：**有搜索模板、且 `search_hit == 0`**（从来没搜出过一本书）。
+
+    ⚠ 不许放宽成"所有零命中的站"：线上一次搜索会问十几个站，冷门书让
+      大多数站零命中，那样每轮会凭空多出十几个请求，而它们中的绝大多数
+      只是"真的没有这本书"。
+    """
+    s = known_site(host)
+    if not (s.get("search_tpl") or "").strip():
+        return False
+    return int(s.get("search_hit") or 0) <= 0
+
 
 def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
                     method: str = "get", body: Optional[dict] = None) -> bool:
@@ -985,7 +1030,7 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
 
 
 def note_search_result(host: str, *, hits: int, raw: int,
-                       empty_page: bool = False) -> None:
+                       empty_page: bool = False, kwblind: bool = False) -> None:
     """记一次「拿关键词去这个站搜」的**真实产出**（只由 `_search_one` 调）。
 
     参数是两个不同层次的数量，**不能合成一个**：
@@ -1026,6 +1071,13 @@ def note_search_result(host: str, *, hits: int, raw: int,
         cur = db["sites"].setdefault(host, {})
         hits = max(0, int(hits or 0))
         raw = max(0, int(raw or 0))
+        if kwblind:
+            # 单独一格：这个模板「换一个肯定没人写过的词，也抽回一屏书」——
+            # 那不是"站里没这本书"，是模板压根不按关键词过滤（见
+            # `needs_keyword_control` 的实测）。不计这一格的话，
+            # "零命中" 里两种完全不同的病因在库里长得一模一样，
+            # 复盘只能猜，而处置正好相反（补书 vs 作废模板重学）。
+            cur["search_kwblind"] = int(cur.get("search_kwblind") or 0) + 1
         if hits > 0:
             cur["search_hit"] = int(cur.get("search_hit") or 0) + 1
             cur["search_shape"] = 0

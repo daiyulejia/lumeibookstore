@@ -336,6 +336,108 @@ def main() -> int:
           len(sites_used) == 1, str(sites_used))
 
     # ------------------------------------------------------------------
+    print("\n—— ⑩ 模板认不认关键词：「抽到一屏、一条都不含词」是哪种 0 条 ——")
+    # 现场（2026-11-18 本机实测，真站真请求）：
+    #   www.ldxs1.net 搜「斗破苍穹」抽出 65 条书链接，换成肯定没人写过的词
+    #   `zzqqxxv` 抽出 **62 条（95%）** —— 它把 `?q=` 当空气，回的是整站最新更新。
+    #   而真站 www.tadu.com / www.384g.com 对同一个控制词都是 **0 条**。
+    #   旧代码把这类站一律记 `search_miss`（＝"这站只是没这本书"）：
+    #   模板永不作废、也永远学不到新模板，于是每 6 小时被试用通道白打一次，
+    #   还长期占着一个"名义上能搜"的名额。
+    def _links(n: int, prefix: str = "某书") -> str:
+        return "<html><body>" + "".join(
+            f'<a href="/book/{prefix}{1000 + i}.html">{prefix}第{i}卷</a>'
+            for i in range(n)) + "</body></html>"
+
+    def _run(host: str, *, real_html: str, ctrl_html: str = "",
+             ctrl_exc: BaseException | None = None, kw: str = "斗破苍穹"):
+        """跑一次单站搜索，fetch 全是假的。返回 (请求到的 URL, 结果)。"""
+        seen: list[str] = []
+
+        def fake(url, *a, **kw_):
+            seen.append(url)
+            is_ctrl = "zzqq" in url or "zzqq" in str(kw_.get("data") or "")
+            if is_ctrl:
+                if ctrl_exc is not None:
+                    raise ctrl_exc
+                return (ctrl_html, url)
+            return (real_html, url)
+
+        real = RS.fetch_text
+        RS.fetch_text = fake
+        try:
+            got = RS.RegistrySource()._search_one(host, R.known_site(host), kw)
+        finally:
+            RS.fetch_text = real
+        return seen, got
+
+    hb = "kwblind.example"
+    R.note_site(hb, ok=True, search_tpl="/search.php?q={kw}")
+    check("从没搜出过书的站 → 要问它认不认词",
+          R.needs_keyword_control(hb))
+    seen, got = _run(hb, real_html=_links(10), ctrl_html=_links(10, "推荐"))
+    sb = R.known_site(hb)
+    check("控制词也抽回一屏（10/10）→ 判「模板不认关键词」", not got and len(seen) == 2,
+          f"seen={seen} got={len(got)}")
+    check("判中记的是**形态失败**（模板才有机会被作废）",
+          int(sb.get("search_shape") or 0) == 1, str(sb))
+    check("不许同时记成「这站没这本书」（两个病因处置相反）",
+          int(sb.get("search_miss") or 0) == 0, str(sb))
+    check("单独留一格 `search_kwblind`（复盘要看得出是谁不认词）",
+          int(sb.get("search_kwblind") or 0) == 1, str(sb))
+
+    print("\n—— ⑩b 反向判据：真站的「没这本书」页不许误伤 ——")
+    hr = "kwreal.example"
+    R.note_site(hr, ok=True, search_tpl="/search.php?q={kw}")
+    seen, got = _run(hr, real_html=_links(10), ctrl_html=_links(0))
+    sr = R.known_site(hr)
+    check("控制词 0 条（真站按关键词过滤）→ 判「这站没这本书」",
+          int(sr.get("search_miss") or 0) == 1, str(sr))
+    check("**不许**涨 search_shape（涨了就等着被作废，10-29 一天废 8 个）",
+          int(sr.get("search_shape") or 0) == 0, str(sr))
+    check("也不许记 kwblind", int(sr.get("search_kwblind") or 0) == 0, str(sr))
+
+    hq = "kwratio.example"
+    R.note_site(hq, ok=True, search_tpl="/search.php?q={kw}")
+    _run(hq, real_html=_links(20), ctrl_html=_links(10, "推荐"))
+    sq = R.known_site(hq)
+    check("控制词只有真词的一半（10 < 20×0.8）→ 当推荐位，不判假",
+          int(sq.get("search_shape") or 0) == 0 and int(sq.get("search_miss") or 0) == 1,
+          str(sq))
+
+    he = "kwerr.example"
+    R.note_site(he, ok=True, search_tpl="/search.php?q={kw}")
+    _run(he, real_html=_links(10), ctrl_exc=RuntimeError("抓取失败: 限流"))
+    se = R.known_site(he)
+    check("控制请求打不通 → 按「没结论」处理（判不出来 ≠ 判假）",
+          int(se.get("search_shape") or 0) == 0 and int(se.get("search_miss") or 0) == 1,
+          str(se))
+
+    print("\n—— ⑩c 成本闸门：真资产不许被多打一个请求 ——")
+    hhit = "kwhit.example"
+    R.note_site(hhit, ok=True, search_tpl="/search.php?q={kw}")
+    R.note_search_result(hhit, hits=1, raw=3)
+    check("搜出过书的站不做控制实验", not R.needs_keyword_control(hhit))
+    seen, _ = _run(hhit, real_html=_links(10), ctrl_html=_links(10, "推荐"))
+    check("它这一轮只发了 1 个请求（没被额外地多打）", len(seen) == 1, f"seen={seen}")
+
+    print("\n—— ⑩d 判中三次 → 模板作废，回到重学队列（流程要能出去） ——")
+    hd = "kwdead.example"
+    R.note_site(hd, ok=True, search_tpl="/search.php?q={kw}")
+    for _ in range(3):
+        _run(hd, real_html=_links(10), ctrl_html=_links(10, "推荐"))
+        # 「连续 3 次」必须是三次**独立观察**（11-01 的教训），
+        # 所以把去重窗口的时间戳挪开，模拟隔几天各搜一次。
+        R.note_site(hd, search_shape_at=0)
+    sd = R.known_site(hd)
+    check("连中三次 → `search_tpl` 被清空（否则它永远赖在库里）",
+          not (sd.get("search_tpl") or "").strip(), str(sd))
+    check("作废后不再做控制实验（闸门跟着模板一起关）",
+          not R.needs_keyword_control(hd))
+    check("站级判死账 +1（`tpl_dead` 才是放弃门槛读的数）",
+          int(sd.get("tpl_dead") or 0) == 1, str(sd))
+
+    # ------------------------------------------------------------------
     print(f"\n{'=' * 60}\n通过 {OK} / 失败 {BAD}\n")
     return 0 if BAD == 0 else 1
 

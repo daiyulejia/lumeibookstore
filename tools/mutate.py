@@ -1849,9 +1849,8 @@ MUTATIONS: list[Mutation] = [
              REGSRC_TEST),
     Mutation("空结果页", "判出来了却不告诉记账（等于没判）",
              REGSRC,
-             "        registry.note_search_result(host, hits=len(out), raw=len(items),\n"
-             "                                    empty_page=empty_page)",
-             "        registry.note_search_result(host, hits=len(out), raw=len(items))",
+             "                                    empty_page=empty_page, kwblind=kwblind)",
+             "                                    kwblind=kwblind)",
              REGSRC_TEST),
     Mutation("空结果页", "记账函数不认 empty_page（raw=0 一律记形态失败）",
              REGISTRY,
@@ -2406,6 +2405,42 @@ MUTATIONS: list[Mutation] = [
              REGISTRY,
              "            if now - int(s.get(\"probation_at\") or 0) < PROBATION_COOLDOWN:",
              "            if False:",
+             SITE_FAULT_TEST),
+
+    # ---------------- 「模板认不认关键词」（2026-11-18）----------------
+    # 现场：`www.ldxs1.net` 搜「斗破苍穹」抽出 65 条书链接、换控制词 `zzqqxxv`
+    # 抽出 62 条（95%），而真站 tadu/384g 对同一个词都是 0 条。
+    # 旧代码把这种站记成 `search_miss`（"这站没这本书"）→ 模板永不作废。
+    # 五条突变对应五个要害：闸门是否够窄、判中了有没有真的走形态账、
+    # 阈值够不够保守、判不出来时会不会当判假、以及有没有留下能复盘的那一格。
+    Mutation("认词", "闸门放宽成「所有站都做控制实验」（冷门书会给每个站多打一个请求）",
+             REGISTRY,
+             '    return int(s.get("search_hit") or 0) <= 0',
+             "    return True",
+             SITE_FAULT_TEST),
+    Mutation("认词", "判中了仍按真实条数记 raw（只会记成 search_miss，模板永远作废不了）",
+             REGISTRY_SOURCE,
+             "                                    raw=0 if kwblind else len(items),",
+             "                                    raw=len(items),",
+             SITE_FAULT_TEST),
+    Mutation("认词", "阈值退化成「控制词抽到 >0 条就判假」（真站的推荐位会被误杀）",
+             REGISTRY_SOURCE,
+             "        ignored = ctrl_n >= need",
+             "        ignored = ctrl_n > 0",
+             SITE_FAULT_TEST),
+    Mutation("认词", "控制请求打不通也照样判假（把「没结论」当成「判假」）",
+             REGISTRY_SOURCE,
+             '            logger.debug("控制实验抓取失败 %s: %s（按「没结论」处理，不判假）",\n'
+             "                         host, e)\n"
+             "            return False",
+             '            logger.debug("控制实验抓取失败 %s: %s（按「没结论」处理，不判假）",\n'
+             "                         host, e)\n"
+             "            return True",
+             SITE_FAULT_TEST),
+    Mutation("认词", "判中了不记 `search_kwblind`（复盘看不出这个站是不认词，还是没这本书）",
+             REGISTRY,
+             '            cur["search_kwblind"] = int(cur.get("search_kwblind") or 0) + 1',
+             '            cur["search_kwblind"] = 0',
              SITE_FAULT_TEST),
 ]
 
