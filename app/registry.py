@@ -678,6 +678,17 @@ def note_site(host: str, *, ok: bool = True, name: str = "", why: str = "",
         # 原来跨过死亡线是**完全静默**的：可搜源从 16 变 15 没有任何一行日志，
         # 只能事后 diff 库文件才看得出来 —— 和 10-30「源池 22→15 零字段」、
         # 11-11「删站删书零字段」是同一个病。
+        #
+        # ⚠ 但**第一次见到这个站**不是升降级（2026-11-19）。`is_healthy({})`
+        #   返回 False，于是新站的第一笔账只要不是失败，就会被判成"越过死亡线
+        #   回来了"，打出一行
+        #       site.revive 域=m.laidula.com 成功=0 挂=1 原因=成功一次
+        #   —— 成功 0 次、挂 1 次，却说"靠一次成功复活"，自相矛盾。
+        #   线上 11-18 23:06 那一批里就有三条（还有两条 成功=0 挂=0 的）。
+        #   危害不只是日志难看：11-17 的试用通道就是拿 `site.revive` 当验收
+        #   判据的（"站点靠哪一次成功回来的"），新站噪声一多，这条判据就废了。
+        #   正常解法是**先判断有没有旧账**，有旧账才谈得上"变了"。
+        is_new = not cur
         was_ok = is_healthy(cur)
         # 站名只在「还没学过」时填。**`name` 等于 host 也算没学过** ——
         # 早先发现流程拿 host 当占位名写进去过，那种值是没信息量的，
@@ -711,7 +722,7 @@ def note_site(host: str, *, ok: bool = True, name: str = "", why: str = "",
             cur["first_seen"] = _now()
         cur["updated"] = _now()
         now_ok = is_healthy(cur)
-        if was_ok != now_ok:
+        if not is_new and was_ok != now_ok:
             # ⚠ 事件名写成字面量、两支分开：`tools/test_events_registry.py` 是
             #   按字面量扫调用点的，写成 `"a" if x else "b"` 会让它只看见前一个，
             #   把另一个判成"登记了但没人发"的死条目（踩过一次）。

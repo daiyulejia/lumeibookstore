@@ -170,7 +170,12 @@ ok("搜索引擎自家域名仍被滤掉", all(g["host"] != "www.baidu.com" for 
 got6 = run([], [])
 ok("都没结果 → 空列表", got6 == [], str(got6))
 # 一个引擎抛异常不影响另一个
+# ⚠ 这里必须**两个都还原**。原来只还原了 `_bing`，`_baidu` 的桩就一路泄漏
+#   到后面所有组 —— 2026-11-19 加 H 组时踩到：`W._baidu` 还是这里的 lambda，
+#   于是"百度被反爬"那组测的是假货，"正常页抽 2 条"拿回来的是真网络的 7 条。
+#   桩不还原 = 后面所有判据都在测上一组的残骸，且**不会报错**。
 old = W._bing
+old_baidu = W._baidu
 try:
     def boom(kw):
         raise RuntimeError("blocked")
@@ -179,6 +184,7 @@ try:
     got7 = W.find_book_pages("情欲超市全集", limit=12)
 finally:
     W._bing = old
+    W._baidu = old_baidu
 ok("一个引擎挂了，另一个照常出候选", len(got7) == len(BOOKS), f"取 {len(got7)} 条")
 
 print("=" * 62)
@@ -255,6 +261,228 @@ ok("核实账那行确实打出 12 个不是目录", _led and "不是目录=12" 
    _led[-1] if _led else "（没有这行日志）")
 ok("多于 6 个时要明写还剩几个", _led and "(+6)" in _led[-1],
    _led[-1] if _led else "（没有这行日志）")
+
+print("=" * 62)
+print("G. 候选太薄 → 换一种问法再问一次（2026-11-19）")
+print("=" * 62)
+# 现场：《遥远的救世主》书名单独问 Bing 只捞回 1 个可用站，百度又被反爬，
+# 3 个候选全判"不是目录" → 用户看到 `候选=0`。加问「书名 小说」第一屏就有
+# fanqienovel（实抓 33 章）。这条判据量的是**问了几次**和**合并后有几条**，
+# 全部用假引擎，不碰网络、不算耗时。
+
+
+def _one(host: str, path: str, title: str = "遥远的救世主") -> list[dict]:
+    out: list[dict] = []
+    W._add(out, f"https://{host}{path}", title, "bing")
+    return out
+
+
+def _blocked(kw):
+    raise W.EngineBlocked("被反爬（HTTP 302，474 字节验证页）")
+
+
+_old_bing, _old_baidu = W._bing, W._baidu
+_calls: list[str] = []
+try:
+    def _bing_thin(kw):
+        _calls.append(kw)
+        if kw.endswith(W.SECOND_QUERY_SUFFIX):
+            return _one("www.fanqie.test", "/page/1")
+        return _one("www.youyiyan.test", "/book/1")
+
+    W._bing = _bing_thin
+    W._baidu = _blocked
+    got_thin = W.find_book_pages("遥远的救世主", limit=14)
+finally:
+    W._bing, W._baidu = _old_bing, _old_baidu
+
+ok("第一轮只有 1 条 → 真的加问了一次",
+   _calls == ["遥远的救世主", "遥远的救世主" + W.SECOND_QUERY_SUFFIX], str(_calls))
+ok("加问找回来的站进了候选（不只是多问一句）",
+   any(g["host"] == "www.fanqie.test" for g in got_thin),
+   str([g["host"] for g in got_thin]))
+ok("两轮结果合并在一个列表里（第一轮的没被挤掉）",
+   {g["host"] for g in got_thin} == {"www.youyiyan.test", "www.fanqie.test"},
+   str([g["host"] for g in got_thin]))
+
+# 反向①：候选够多就不许再问（否则每个搜索都白多一个请求 + 一堆噪声）
+_calls2: list[str] = []
+_old_bing, _old_baidu = W._bing, W._baidu
+try:
+    def _bing_rich(kw):
+        _calls2.append(kw)
+        rows: list[dict] = []
+        for i in range(4):
+            rows += _one(f"www.b{i}.test", f"/b/{i}")
+        return rows
+
+    W._bing = _bing_rich
+    W._baidu = _blocked
+    got_rich = W.find_book_pages("遥远的救世主", limit=14)
+finally:
+    W._bing, W._baidu = _old_bing, _old_baidu
+
+ok("第一轮已有 4 条 → **不**加问（只问一次）", len(_calls2) == 1, str(_calls2))
+ok("并且结果就是第一轮那 4 条", len(got_rich) == 4, str(len(got_rich)))
+
+# 反向②：两轮都命中同一个站时，名额不许翻倍（per_host 是全局上限）
+# 这条是第二轮的**副作用**判据：把第二轮当成"新的一轮"重新数名额，
+# 同一个站就能占走两倍的位置 —— 那正是 11-04「一个站刷满列表」的原病。
+_old_bing, _old_baidu = W._bing, W._baidu
+try:
+    def _bing_same(kw):
+        rows: list[dict] = []
+        if kw.endswith(W.SECOND_QUERY_SUFFIX):
+            rows += _one("www.same.test", "/s/3")
+            rows += _one("www.same.test", "/s/4")
+        else:
+            rows += _one("www.same.test", "/s/1")
+            rows += _one("www.same.test", "/s/2")
+        return rows
+
+    W._bing = _bing_same
+    W._baidu = _blocked
+    got_same = W.find_book_pages("遥远的救世主", limit=6, per_host=2)
+finally:
+    W._bing, W._baidu = _old_bing, _old_baidu
+
+ok("跨两轮仍然 per_host=2（同一个站不靠两次问法占 4 个名额）",
+   len([g for g in got_same if g["host"] == "www.same.test"]) == 2,
+   str([g["url"] for g in got_same]))
+
+# 账本：第二轮必须留下「第一轮几条 / 加问了什么 / 新增几条」
+_ws_lines: list[str] = []
+
+
+class _WsCap(logging.Handler):
+    def emit(self, rec):
+        _ws_lines.append(rec.getMessage())
+
+
+_wlog = logging.getLogger("novel.websearch")
+_wcap = _WsCap()
+_wlog.addHandler(_wcap)
+_wlvl = _wlog.level
+_wlog.setLevel(logging.INFO)
+_old_bing, _old_baidu = W._bing, W._baidu
+try:
+    W._bing = lambda kw: _one("www.only.test", "/o/1")
+    W._baidu = _blocked
+    W.find_book_pages("遥远的救世主", limit=14)
+finally:
+    W._bing, W._baidu = _old_bing, _old_baidu
+    _wlog.removeHandler(_wcap)
+    _wlog.setLevel(_wlvl)
+
+_sec = [ln for ln in _ws_lines if "第二次问法" in ln]
+ok("账本点名「第一轮=1 / 加问了什么 / 新增=0」",
+   _sec and "第一轮=1" in _sec[-1] and W.SECOND_QUERY_SUFFIX in _sec[-1]
+   and "新增=0" in _sec[-1], _sec[-1] if _sec else "（没有这行日志）")
+
+print("=" * 62)
+print("H. 百度被反爬 ≠ 百度没有结果（2026-11-19）")
+print("=" * 62)
+# 现场（本机）：`www.baidu.com/s` 回 HTTP 200 + 2649 字节「百度安全验证」，
+# 换 cookie、换 UA、换 m.baidu 都一样 → 这个 IP 被判定成机器人。
+# 旧代码把它和"没搜到"一起 `return []`，全链路只剩聚合行 `百度=0`，
+# 读起来就是"百度没这本书"。于是"少了一半候选"这件事三天没人看见。
+
+MU_HTML = ('<html><body>' + ('x' * 6000) +
+           '<a mu="https://www.realbook.test/b/1">a</a>'
+           '<a mu="https://www.realbook2.test/b/2">b</a></body></html>')
+
+
+class _Resp:
+    def __init__(self, text: str, status: int = 200, url: str = "https://www.baidu.com/s"):
+        self.text = text
+        self.status_code = status
+        self.url = url
+
+
+_old_client = W.get_client
+_hits = {"n": 0}
+
+
+def _fake_client(resp):
+    def _get(url, **kw):
+        _hits["n"] += 1
+        return resp
+    return type("C", (), {"get": staticmethod(_get)})()
+
+
+W._baidu_blocked_until = 0.0
+try:
+    W.get_client = lambda: _fake_client(_Resp("百度安全验证", 200))
+    _e = None
+    try:
+        W._baidu("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e = exc
+    ok("验证页 → 抛 EngineBlocked（不是返回空列表）",
+       isinstance(_e, W.EngineBlocked), type(_e).__name__)
+    ok("错误里点明是「被反爬」，不是「没结果」",
+       _e is not None and "反爬" in str(_e), str(_e))
+    ok("而且没被当成「正常返回 0 条」混过去",
+       not isinstance(_e, type(None)))
+
+    _before = _hits["n"]
+    W.get_client = lambda: _fake_client(_Resp("百度安全验证", 200))
+    _e2 = None
+    try:
+        W._baidu("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e2 = exc
+    ok("冷却期内**不再发请求**（越打越死，也免得刷满日志）",
+       _hits["n"] == _before, f"{_before} → {_hits['n']}")
+    ok("冷却期内的错误说清还剩几秒",
+       _e2 is not None and "冷却中" in str(_e2), str(_e2))
+
+    W._baidu_blocked_until = 0.0
+    W.get_client = lambda: _fake_client(_Resp('<html>正常结果页</html>' + "y" * 5000, 200))
+    _e3 = None
+    try:
+        W._baidu("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e3 = exc
+    ok("正常大页面但一条 mu 都没有 → 空列表，**不抛**（这才是「没这本书」）",
+       _e3 is None, str(_e3))
+
+    W._baidu_blocked_until = 0.0
+    W.get_client = lambda: _fake_client(_Resp(MU_HTML, 200))
+    got_b = W._baidu("三体")
+    ok("正常页 → 抽出 2 条候选（判据不是恒抛）",
+       [g["host"] for g in got_b] == ["www.realbook.test", "www.realbook2.test"],
+       str([g["host"] for g in got_b]))
+    ok("没被误判成「被反爬」（抛了就说明判据太松）", W._baidu_blocked_until == 0.0)
+
+    # 反向②：**结果页里恰好出现验证字样**（用户的帖子标题写着「请输入验证码」）
+    # 不许被当成被反爬。真验证页只有 2.6KB，正常结果页 40~100KB ——
+    # 所以判据是「带指纹 **且** 体量明显不是结果页」，缺一不可。
+    W._baidu_blocked_until = 0.0
+    _big = ('<html><body>' + ('x' * 30000) +
+            '<a mu="https://www.realbook3.test/b/3">请输入验证码</a></body></html>')
+    W.get_client = lambda: _fake_client(_Resp(_big, 200))
+    _e5 = None
+    try:
+        _got5 = W._baidu("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e5, _got5 = exc, []
+    ok("大结果页里夹着「请输入验证码」→ 不判被反爬（按体量区分验证页）",
+       _e5 is None and [g["host"] for g in _got5] == ["www.realbook3.test"],
+       str(_e5) if _e5 else str([g["host"] for g in _got5]))
+
+    W._baidu_blocked_until = 0.0
+    W.get_client = lambda: _fake_client(_Resp("x" * 3000, 200))
+    _e4 = None
+    try:
+        W._baidu("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e4 = exc
+    ok("既不是结果页、也不带验证字样的小空壳 → 也抛，且写明字节数",
+       isinstance(_e4, W.EngineBlocked) and "3000" in str(_e4), str(_e4))
+finally:
+    W.get_client = _old_client
+    W._baidu_blocked_until = 0.0
 
 print("=" * 62)
 print(f"{'全部通过' if not fails else '有失败'}（{ok_n} 通过 / {bad_n} 失败）")

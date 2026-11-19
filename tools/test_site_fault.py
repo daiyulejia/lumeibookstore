@@ -221,6 +221,40 @@ def main() -> int:
           set(got) == set(many[:R.PROBATION_MAX]), str(list(got)))
 
     # ------------------------------------------------------------------
+    print("\n—— ⑤d 「复活」只许对**有旧账**的站说（2026-11-19）——")
+    # 现场（线上 11-18 23:06 那一批）：
+    #   site.revive 域=m.laidula.com 成功=0 挂=1 原因=成功一次
+    # 成功 0 次、挂 1 次，却说「靠一次成功复活」。根因是 `is_healthy({})`
+    # 返回 False —— 新站的第一笔账只要不是失败，就被判成"越线回来了"。
+    # 危害不只是日志难看：11-17 的试用通道拿 `site.revive` 当验收判据
+    # （"靠哪一次成功回来的"），新站噪声一多这条判据就废了。
+    _cap.lines.clear()
+    hnew = "brandnew.example"
+    R.note_site(hnew, ok=False, why=R.FAIL_DOWN)
+    check("新站第一笔就是失败 → **不许**喊复活",
+          not [x for x in _lines() if "site.revive" in x], str(_cap.lines[-3:]))
+    check("但它确实被记下来了（别为了不喊就丢掉第一笔账）",
+          int(R.known_site(hnew).get("fail", 0)) == 1, str(R.known_site(hnew)))
+
+    hnew2 = "brandnew2.example"
+    _cap.lines.clear()
+    R.note_site(hnew2, ok=True)
+    check("新站第一笔是成功 → 也不喊复活（它从没「死」过）",
+          not [x for x in _lines() if "site.revive" in x], str(_cap.lines[-3:]))
+
+    # 反向：**老站**靠一次成功回来时，必须喊 —— 否则试用通道没有验收点
+    hrev = "revive.example"
+    _make_site(hrev, ok_n=6, down_n=13)
+    check("前提：它现在确实不健康", not R.is_healthy(R.known_site(hrev)))
+    _cap.lines.clear()
+    R.note_site(hrev, ok=True)
+    _rev = [x for x in _lines() if "site.revive" in x and hrev in x]
+    check("老站越线后被救回来 → 必须打 site.revive 并点名",
+          len(_rev) == 1, str(_cap.lines[-3:]))
+    check("而且那行里的数字必须是自洽的（成功 >= 1，不许 成功=0）",
+          bool(_rev) and "成功=0 " not in _rev[0], _rev[0] if _rev else "")
+
+    # ------------------------------------------------------------------
     print("\n—— ⑥ 接线：可搜源为 0 时，试用站要让扇出**跑起来** ——")
     # 造一个"可搜源全灭、只剩试用站"的局面（本地库现在就是这个状态）。
     for hh in list(R.sites()):

@@ -2068,6 +2068,27 @@ MUTATIONS: list[Mutation] = [
              '    return "not_needed" if not need_web else ""',
              FALLBACK_TEST),
 
+    # ---------------- 候选供给：一个引擎死了 + 只问一句 = 冷门书必挂（11-19）----
+    # ⚠ 失败方式：百度被反爬（整个引擎没了）而日志只写 `百度=0`，
+    #   Bing 又只认书名，第一屏留下 1 个可用站 → 3 个候选全不是目录 →
+    #   `候选=0`，和"网上真的没有这本书"一模一样。实测《遥远的救世主》
+    #   加问一句「书名 小说」就能拿到 fanqienovel 的 33 章。
+    Mutation("候选供给", "候选再薄也只问一句（第二轮问法关掉）",
+             WEBSEARCH,
+             "    if first_n < SECOND_QUERY_MIN:",
+             "    if False:",
+             WEBSEARCH_TEST),
+    Mutation("候选供给", "百度被反爬时当成「没搜到」（两个引擎的死法又混成一笔）",
+             WEBSEARCH,
+             '        raise EngineBlocked(f"被反爬（HTTP {r.status_code}，{len(body)} 字节验证页）")',
+             "        return out",
+             WEBSEARCH_TEST),
+    Mutation("候选供给", "新站第一笔账也判升降级（复活日志又变成噪声）",
+             REGISTRY,
+             "        if not is_new and was_ok != now_ok:",
+             "        if was_ok != now_ok:",
+             SITE_FAULT_TEST),
+
     # ---------------- 「学会 → 被判死」循环要有终点（tools/test_registry.py ⑨）--
     # ⚠ 失败方式（2026-11-06 复盘）：5 个站每天 03:19 学会、22:51 被判死、
     #   次日再学会，连着 6 天一字不差。日志每次都写「已失败 1 次」，像头一回。
@@ -2372,7 +2393,7 @@ MUTATIONS: list[Mutation] = [
              SITE_FAULT_TEST),
     Mutation("站点记账", "降级/复活不点名（可搜源少了一个，日志里一个字都没有）",
              REGISTRY,
-             "        if was_ok != now_ok:",
+             "        if not is_new and was_ok != now_ok:",
              "        if False:",
              SITE_FAULT_TEST),
     Mutation("站点记账", "核实入口写回老写法（最常走的那条路漏了冷却判断）",
