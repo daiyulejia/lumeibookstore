@@ -2080,14 +2080,47 @@ MUTATIONS: list[Mutation] = [
              WEBSEARCH_TEST),
     Mutation("候选供给", "百度被反爬时当成「没搜到」（两个引擎的死法又混成一笔）",
              WEBSEARCH,
-             '        raise EngineBlocked(f"被反爬（HTTP {r.status_code}，{len(body)} 字节验证页）")',
-             "        return out",
+             "                          wall_max=_BAIDU_WALL_MAX, url=str(r.url))\n"
+             "    if why:",
+             "                          wall_max=_BAIDU_WALL_MAX, url=str(r.url))\n"
+             "    if False:",
              WEBSEARCH_TEST),
     Mutation("候选供给", "新站第一笔账也判升降级（复活日志又变成噪声）",
              REGISTRY,
              "        if not is_new and was_ok != now_ok:",
              "        if was_ok != now_ok:",
              SITE_FAULT_TEST),
+
+    # ---------------- 引擎拒绝 ≠ 引擎没结果（11-20 补必应那半个入口）--------
+    # ⚠ 失败方式：11-19 只修了百度，必应那条 `if r.status_code != 200: return out`
+    #   留了一整天。必应一旦 403/被拦，日志只剩 `Bing=0`，和"没这本书"同形。
+    #   今天的闸门是「按 ENGINES 登记表对每个引擎各问一遍」，这四条分别拆掉
+    #   判据的四个面：不判空壳、不判非 200、冷却失效、全员被拦时闭嘴。
+    Mutation("引擎静默", "必应拿到「被拒」的响应也照旧返回空列表（又一个静默入口）",
+             WEBSEARCH,
+             "        _bing_refused(why, r.status_code, len(body))",
+             "        pass",
+             WEBSEARCH_TEST),
+    Mutation("引擎静默", "取消体量判据（3KB 空壳当成「这本书没有」）",
+             WEBSEARCH,
+             "    if size < min_bytes:",
+             "    if False:",
+             WEBSEARCH_TEST),
+    Mutation("引擎静默", "只看指纹不看体量（大结果页里夹着「验证码」就被判被拦）",
+             WEBSEARCH,
+             "    if size < (wall_max or min_bytes) and (in_url or any(m.lower() in low for m in marks)):",
+             "    if in_url or any(m.lower() in low for m in marks):",
+             WEBSEARCH_TEST),
+    Mutation("引擎静默", "被拒之后不冷却（越打越死，还把同一件事刷满日志）",
+             WEBSEARCH,
+             "    if now < until:",
+             "    if False:",
+             WEBSEARCH_TEST),
+    Mutation("引擎静默", "所有引擎都被拦时闭嘴（日志只剩 Bing=0 百度=0）",
+             WEBSEARCH,
+             "    if refused and len(refused) == len(ENGINES):",
+             "    if False:",
+             WEBSEARCH_TEST),
 
     # ---------------- 「学会 → 被判死」循环要有终点（tools/test_registry.py ⑨）--
     # ⚠ 失败方式（2026-11-06 复盘）：5 个站每天 03:19 学会、22:51 被判死、

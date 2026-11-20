@@ -87,7 +87,9 @@ STATIC_SUITES = [
     ("test_discover_fallback.py", "联网兜底"),
     # 联网候选的**名额分配**：一个引擎的撞词噪声不许吃光另一个引擎的真书页。
     # 退化后找不到任何错，只是"搜不到"—— 见 tools/test_websearch.py 的注释。
-    ("test_websearch.py", "联网候选名额"),
+    # 11-20 起还管着「每个引擎都不许静默返回空」（按 W.ENGINES 遍历），
+    # 以后加引擎没接被拦判据就当场报红。
+    ("test_websearch.py", "联网候选名额 / 引擎静默"),
     # 榜单抓不到（被限流）时要回退到过期的旧缓存，不能给空白页。
     # 同样是"不报错、只显空"的那类 —— 见 tools/test_ranks_stale.py 的注释。
     ("test_ranks_stale.py", "榜单兜底"),

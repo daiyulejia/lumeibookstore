@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -483,6 +484,158 @@ try:
 finally:
     W.get_client = _old_client
     W._baidu_blocked_until = 0.0
+
+print("=" * 62)
+print("I. 每个引擎都不许「静默返回空」（2026-11-20）")
+print("=" * 62)
+# 昨天（11-19）只修了百度：`_baidu` 拿到验证页会抛 `EngineBlocked`；而必应那条
+# `if r.status_code != 200: return out` 原地留了一整天 —— 同一件事的第二个入口。
+# 今天能一次盖住，靠的是把它们登记进 `W.ENGINES`，这组测试**按那张表遍历**：
+# 以后加第三个引擎，没接这条判据就当场报红（不是"记得还有一处"）。
+#
+# 判据三问：
+#   ① 会不会只因环境变？—— 全用假客户端，不碰网络、不看耗时；
+#      冷却只断言"是否 >0 / ≤常量"，不是量墙钟。
+#   ② 把功能拆掉还绿吗？—— `tools/mutate.py`「引擎静默」组 3 条。
+#   ③ 只验正向吗？—— 反向在「大页面 0 链接不许抛」「正常页照旧出结果」
+#      和「夹着验证字样的大结果页不许误判」三条。
+
+BING_SHELL = '<html><body>' + ('x' * 3000) + '</body></html>'
+BING_PAGE = ('<html><body>' + ('x' * 20000) +
+             '<h2><a href="https://www.bingbook.test/b/9">三体 全集</a></h2>'
+             '</body></html>')
+
+
+def _reset_cooldowns() -> None:
+    # 不用逐个点名（明天加第三个引擎会漏）；凡是 `*_blocked_until` 一律归零。
+    for k in list(vars(W)):
+        if k.endswith("_blocked_until"):
+            setattr(W, k, 0.0)
+
+
+_old_client4 = W.get_client
+try:
+    for _name, _attr in W.ENGINES:
+        _fn = getattr(W, _attr)
+        # ① 非 200：两个引擎都不许拿 `[]` 冒充"没这本书"
+        _reset_cooldowns()
+        W.get_client = lambda: _fake_client(_Resp("forbidden", 403))
+        _e6 = None
+        try:
+            _fn("三体")
+        except Exception as exc:  # noqa: BLE001
+            _e6 = exc
+        ok(f"[{_name}] HTTP 403 → 抛 EngineBlocked（不是返回空列表）",
+           isinstance(_e6, W.EngineBlocked), f"{type(_e6).__name__}: {_e6}")
+        ok(f"[{_name}] 错误里带状态码，复盘看得出是被拒", _e6 is not None and "403" in str(_e6),
+           str(_e6))
+
+        # ② 200 但只是一层壳：既不是结果页，也不是"没有结果"
+        _reset_cooldowns()
+        W.get_client = lambda: _fake_client(_Resp(BING_SHELL, 200))
+        _e7 = None
+        try:
+            _fn("三体")
+        except Exception as exc:  # noqa: BLE001
+            _e7 = exc
+        ok(f"[{_name}] 200 + 3KB 空壳 → 抛 EngineBlocked 并写明字节数",
+           isinstance(_e7, W.EngineBlocked) and f"{len(BING_SHELL)} 字节" in str(_e7), str(_e7))
+
+    # ③ 必应专属：小页面 + 验证字样 → 点名「被反爬」（区别于"异常空壳"）
+    _reset_cooldowns()
+    W.get_client = lambda: _fake_client(_Resp("验证你是人类", 200))
+    _e8 = None
+    try:
+        W._bing("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e8 = exc
+    ok("必应：验证页 → 点名「被反爬」（不是笼统的「异常页」）",
+       isinstance(_e8, W.EngineBlocked) and "反爬" in str(_e8), str(_e8))
+
+    # ④ 冷却期内不再发请求（越打越死，也免得一天刷出几百行同一件事）
+    _before2 = _hits["n"]
+    _e9 = None
+    try:
+        W._bing("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e9 = exc
+    ok("必应：冷却期内**一个请求都不发**", _hits["n"] == _before2,
+       f"{_before2} → {_hits['n']}")
+    ok("必应：冷却期的错误说清还剩几秒", _e9 is not None and "冷却中" in str(_e9), str(_e9))
+
+    # ⑤ 5xx 是"它自己坏了"，停得比"被拦"短（别把临时故障当永久封禁）
+    _reset_cooldowns()
+    W.get_client = lambda: _fake_client(_Resp("oops", 500))
+    try:
+        W._bing("三体")
+    except Exception:  # noqa: BLE001
+        pass
+    _left = W._bing_blocked_until - time.time()
+    ok("必应：5xx 的冷却 ≤ BING_ERROR_COOLDOWN（且确实 > 0）",
+       0 < _left <= W.BING_ERROR_COOLDOWN + 2, f"{_left:.0f}s")
+    ok("必应：5xx 的冷却比被反爬短（两者没混成一档）",
+       W.BING_ERROR_COOLDOWN < W.BING_BLOCK_COOLDOWN,
+       f"{W.BING_ERROR_COOLDOWN} vs {W.BING_BLOCK_COOLDOWN}")
+
+    # ⑥ 反向：正常大页面但一条链接都没有 → 空列表，**不许抛**
+    #    （这才是"必应上确实没这本书"，抛了就是判据太松）
+    _reset_cooldowns()
+    W.get_client = lambda: _fake_client(_Resp('<html><body>' + "x" * 20000 + '</body></html>', 200))
+    _e10 = None
+    _g10 = None
+    try:
+        _g10 = W._bing("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e10 = exc
+    ok("必应：正常大页面 0 链接 → 返回空列表不抛", _e10 is None and _g10 == [], str(_e10))
+    ok("必应：这种情况不许留下冷却（否则下一本书白等 10 分钟）",
+       W._bing_blocked_until == 0.0, str(W._bing_blocked_until))
+
+    # ⑦ 反向：正常页照旧抽出候选，且不动冷却
+    _reset_cooldowns()
+    W.get_client = lambda: _fake_client(_Resp(BING_PAGE, 200))
+    _g11 = W._bing("三体")
+    ok("必应：正常页 → 抽出 1 条候选（判据不是恒抛）",
+       [g["host"] for g in _g11] == ["www.bingbook.test"],
+       str([g["host"] for g in _g11]))
+    ok("必应：正常结果不许被误判成被拦", W._bing_blocked_until == 0.0,
+       str(W._bing_blocked_until))
+finally:
+    W.get_client = _old_client4
+    _reset_cooldowns()
+
+# ⑧ 全员被拦时必须有一行明写的账 —— 否则日志只剩 `Bing=0 百度=0`，
+#    读起来就是"网上没有这本书"，而事实是"我们两个引擎都没拿到东西"。
+_wlines: list[str] = []
+
+
+class _Cap2(logging.Handler):
+    def emit(self, rec):
+        _wlines.append(rec.getMessage())
+
+
+_wlog = logging.getLogger("novel.websearch")
+_cap2 = _Cap2()
+_wlog.addHandler(_cap2)
+_wlvl = _wlog.level
+_wlog.setLevel(logging.INFO)
+_old_bing2, _old_baidu2 = W._bing, W._baidu
+try:
+    def _refuse(kw):
+        raise W.EngineBlocked("被反爬（HTTP 429，900 字节验证页）")
+
+    W._bing = _refuse
+    W._baidu = _refuse
+    _f, _pe, _nm = W._ask("三体", lambda *a, **k: None)
+finally:
+    W._bing, W._baidu = _old_bing2, _old_baidu2
+    _wlog.removeHandler(_cap2)
+    _wlog.setLevel(_wlvl)
+
+ok("两个引擎都被拦 → 候选确实是 0（不是伪造出来的）", _f == [] and _pe == [[], []], str(_pe))
+ok("但日志里明写「全部拒绝了我们 / 候选供给为 0」",
+   any("全部拒绝了我们" in ln and "候选供给为 0" in ln for ln in _wlines),
+   str(_wlines[-3:]))
 
 print("=" * 62)
 print(f"{'全部通过' if not fails else '有失败'}（{ok_n} 通过 / {bad_n} 失败）")
