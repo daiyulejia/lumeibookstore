@@ -575,6 +575,17 @@ def toc_quality(chapters: list[dict]) -> tuple[float, str]:
       `_looks_like_toc_block()` 判出来，结果写在章节的 `_anchor` 标记上。
       散文集 / 严肃文学（《我的阿勒泰》《乡土中国》《素食者》）的目录
       根本不叫「第N章」，前两条判据会把一份 40 条的真目录判成 0.35。
+
+    ⚠ 第四条证据（2026-11-21 加）：**页面不写「目录」两个字，也算数**。
+      第三条证据要求页面自述 —— 而天涯书库的书目页什么都不说，只是
+      「书名 + 作者 + 一串章节链接」（实测 `/wenhua/8127/`，《乡土中国》
+      15 篇：序言 / 乡土本色 / 文字下乡 … 后记）。于是 2026-11-21 那天
+      这一页仍被判 unknown → 记一次 shape 失败 → 三次之后整站被永久跳过，
+      而**书明明在那里、我们也能读**。
+      判据由 `_own_toc_block()` 给出，写在章节的 `_own` 标记上：整组链接
+      都挂在本页这本书下（≥95%）+ 是页面上的主要链接群（≥50%）
+      + URL 里有单调数字列 + 书本路径至少两段（防分类页）。
+      比第三条**更严**（95%/50% vs 80%/30%），因为它少了页面自述这道旁证。
     """
     q, why = _toc_quality_head(chapters)
     if q >= 0.55 or not chapters:
@@ -583,6 +594,9 @@ def toc_quality(chapters: list[dict]) -> tuple[float, str]:
     anchored = sum(1 for c in head if c.get("_anchor"))
     if anchored / len(head) >= 0.8:
         return 0.9, "目录来自页面自己的「章节列表」区"
+    owned = sum(1 for c in head if c.get("_own"))
+    if owned / len(head) >= 0.8:
+        return 0.85, "页面没写「目录」，但这组链接都挂在本页这本书下"
     return q, why
 
 
@@ -1105,6 +1119,49 @@ def _looks_like_toc_block(html: str, base_url: str,
     return n >= max(8, total * 0.3)
 
 
+def _own_toc_block(html: str, base_url: str,
+                   chapters: list[dict]) -> bool:
+    """**页面不说「目录」**时，靠结构认目录（2026-11-21）。
+
+    现场（线上 + 今天真机复现）：
+      天涯书库 `https://www.tyshu.cc/wenhua/8127/` 是《乡土中国》的真书目页，
+      15 篇散文（序言 / 乡土本色 / 文字下乡 … 后记），地址是连续编号的
+      `/wenhua/8127/33395X.html`。整页**没有任何**「目录 / 章节列表」字样，
+      标题里也没有「第N章」—— 旧判据给 0.35 分、判 unknown。
+      一次 shape 失败记一站，三次之后 `is_healthy()` 判死，
+      `_verify()` 从此直接跳过它：**书在那里，我们却永远不再打开它**。
+
+    四条同时成立才认（比 `_looks_like_toc_block` 更严，因为它少了页面自述）：
+      ① 整组链接 ≥95% 挂在本页这本书的路径下（`_book_prefix`）
+      ② 是页面上的主要链接群（≥50%，`_looks_like_toc_block` 只要 30%）
+      ③ URL 里有单调数字列（章号）
+      ④ 书本路径**至少两段**（`/wenhua/8127/` 而不是 `/wenhua/`）——
+         这是防分类页的关键：分类页的链接同样是"同前缀 + 单调 + 占多数"
+         （实测 `/wenhua/` 有 86 个 `/wenhua/8127/` 式的书链接），
+         但它的前缀只有一段，那批链接指向的是**别人的书**。
+         认错的代价就是"用户点开一本书，目录是别人的书"。
+
+    宁可漏判：任何一条不成立都返回 False，退回旧判据。
+    """
+    n = len(chapters)
+    if n < 8:
+        return False
+    prefix = _book_prefix(urlparse(base_url).path)
+    if len([s for s in prefix.split("/") if s]) < 2:
+        return False
+    urls = [c.get("url", "") for c in chapters]
+    same = sum(1 for u in urls if urlparse(u).path.startswith(prefix))
+    if same / n < 0.95:
+        return False
+    total = len(_A_RE.findall(html))
+    if n < max(8, total * 0.5):
+        return False
+    keys = _chapter_keys(urls)
+    if not keys or _monotonic(keys) == 0:
+        return False
+    return True
+
+
 def extract_toc(
     html: str,
     base_url: str,
@@ -1171,6 +1228,13 @@ def extract_toc(
             chapters.sort(key=lambda c: 0 if _in_block(c) else 1)
             for c in chapters:
                 c["_anchor"] = 1
+            q = toc_quality(chapters)[0]
+        elif q < 0.55 and _own_toc_block(doc, base_url, chapters):
+            # 页面**不说**「目录」，但结构完全是目录（见 `_own_toc_block`）。
+            # 这里不重排：没有锚点就没有「目录区」的位置信息，
+            # 页面上给的顺序就是站点给的顺序。
+            for c in chapters:
+                c["_own"] = 1
             q = toc_quality(chapters)[0]
         # 「这一组链接挂不挂在本页这本书下」—— 排序时要用。
         # ⚠ 为什么必须有它（2026-10-31 踩到）：`toc_quality()` 给「猜你喜欢」的
@@ -1791,6 +1855,7 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
             for c in toc:
                 c.pop("_tpl", None)
                 c.pop("_anchor", None)   # 判目录用的中间标记，别带出去
+                c.pop("_own", None)
             # 目录"看起来不完整"时要**如实说出来**（见 toc_completeness）：
             # 否则界面把「12 章」当全书，用户下完才发现只有零头 —— 那比搜不到更坏。
             partial, chapter_note = toc_completeness(toc, html)

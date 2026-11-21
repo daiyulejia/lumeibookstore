@@ -151,7 +151,10 @@ def main() -> int:
     # ⚠ 2026-10-31：`_verify()` 多了第三个参数（核实账本 tally）。
     #   替身必须跟着签名走 —— 不跟的话它会在 0.3s 内以 TypeError
     #   「核完」,超预算分支永远进不去,而测试会错报成"日志没说清"。
-    def _hang_verify(cand, keyword, tally=None):
+    # ⚠ 2026-11-21：又多了 `force=`（死站复核）。同一个坑第二次踩到 ——
+    #   本轮 grep 过的替身有 3 处，只改第 1 处等于没改，所以统一用 `**k`：
+    #   以后 `_verify` 再加参数，替身也不会静默变成"立刻核完"。
+    def _hang_verify(cand, keyword, tally=None, **k):
         gate.wait(30)
         return None
 
@@ -187,7 +190,7 @@ def main() -> int:
     done_gate = threading.Event()
     calls = {"n": 0}
 
-    def _one_done_two_hang(cand, keyword, tally=None):
+    def _one_done_two_hang(cand, keyword, tally=None, **k):
         calls["n"] += 1
         if calls["n"] == 1:
             return None          # 第一个立刻核完（失败也算核完）

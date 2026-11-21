@@ -39,13 +39,23 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# ⚠ 来源库必须隔离到临时文件（2026-10-30 的教训）：本机的
+#   `cache/registry.json` 是**历史残留**（只有 5 个带模板的站、健康的更少），
+#   断言里的数字一旦来自环境，换个机器就恒真或恒假。
+#   本轮 G 组要真的写站点账，所以必须在 import 之前钉住路径。
+_TMPDIR = Path(tempfile.mkdtemp(prefix="novel-toc-e2e-"))
+os.environ["NOVEL_REGISTRY"] = str(_TMPDIR / "registry.json")
+
 from app import discovery as D                              # noqa: E402
+from app import registry as R                               # noqa: E402
 from app import webfetch as W                               # noqa: E402
 from app.engine import web_ledger                           # noqa: E402
 
@@ -204,6 +214,155 @@ finally:
     D.registry.note_site = _orig_note
     D.registry.known_site = _orig_known
     D.registry.is_healthy = _orig_healthy
+
+print("=" * 62)
+print("F. 页面不写「目录」时，靠结构也必须认出来（2026-11-21）")
+print("=" * 62)
+# 现场：天涯书库 `www.tyshu.cc/wenhua/8127/` 是《乡土中国》的真书目页，
+# 17 篇（序言 / 乡土本色 / 文字下乡 … 后记），地址连续编号。
+# 整页**一个「目录」字样都没有**，标题也没有「第N章」——
+# 第三条证据（页面自述）在这页上永远不成立，于是三次 shape 失败 → 整站判死。
+# 夹具就是那一天抓下来的真实页面，未做任何改动（grep「目录」= 0 次）。
+TY_HTML = (FIX / "tyshu_toc.html").read_text(encoding="utf-8")
+TY_URL = "https://www.tyshu.cc/wenhua/8127/"
+ok("夹具本身不含「目录 / 章节列表」（否则这条测的还是第三条证据）",
+   "目录" not in TY_HTML and "章节列表" not in TY_HTML)
+
+toc5 = W.extract_toc(TY_HTML, TY_URL)
+ok("抽出 17 篇（旧代码 0 条 / 判 unknown）", len(toc5) == 17, f"n={len(toc5)}")
+q5, why5 = W.toc_quality(toc5)
+ok("质量 ≥0.55（旧代码 0.35）", q5 >= 0.55, f"q={q5} why={why5}")
+ok("说明点明「页面没写目录」这条证据来源", "没写" in why5, why5)
+ok("顺序：首篇「序言」、末篇「后记」",
+   bool(toc5) and toc5[0]["title"] == "序言" and toc5[-1]["title"] == "后记",
+   f'{toc5[0]["title"]} … {toc5[-1]["title"]}' if toc5 else "")
+
+_TY_DOC = W._prep(W.unwrap_writeln(TY_HTML))
+ok("同一批链接若挂在分类页 /wenhua/ 下，不给证据（前缀只有一段）",
+   W._own_toc_block(_TY_DOC, "https://www.tyshu.cc/wenhua/", toc5) is False)
+ok("仍留在「书」的路径下时给证据（正例，证明上一条不是恒假）",
+   W._own_toc_block(_TY_DOC, TY_URL, toc5) is True)
+
+# 最像目录的误判源：分类页「一屏全是**别人的书**」——
+# 链接同前缀、地址单调、还占页面多数，只有"书本路径至少两段"能挡住它。
+_CAT_LINKS = [{"url": f"https://a.com/book/{1200 + i}.html", "title": f"某书{i}"}
+              for i in range(12)]
+_CAT_HTML = ("<html><body>" + "".join(
+    f'<a href="/book/{1200 + i}.html">某书{i}</a>' for i in range(12)) + "</body></html>")
+ok("分类页 /book/ 下的 12 本书链接不算目录",
+   W._own_toc_block(_CAT_HTML, "https://a.com/book/", _CAT_LINKS) is False)
+_BOOK_LINKS = [{"url": f"https://a.com/book/1200/{i}.html", "title": f"篇{i}"}
+               for i in range(1, 13)]
+_BOOK_HTML = ("<html><body>" + "".join(
+    f'<a href="/book/1200/{i}.html">篇{i}</a>' for i in range(1, 13)) + "</body></html>")
+ok("同一批地址换到 /book/1200/ 下就是目录（唯一的差别是路径深度）",
+   W._own_toc_block(_BOOK_HTML, "https://a.com/book/1200/", _BOOK_LINKS) is True)
+
+print("=" * 62)
+print("G. 判死的站必须有一次复核机会（只进不出的判据 = 资产单向缩水）")
+print("=" * 62)
+# 12 篇真目录被判死之后，`_verify()` 连请求都不发 —— 书在那里也永远搜不到。
+# 复核通道收窄到三条：只在活候选 <2 时 / 只挑「失败全在形状上」的站 / 每轮 1 个。
+for _i in range(3):
+    R.note_site("shape-dead.test", ok=False, why=R.FAIL_SHAPE)
+for _i in range(3):
+    R.note_site("down-dead.test", ok=False, why=R.FAIL_DOWN)
+for _i in range(3):
+    R.note_site("offtopic-dead.test", ok=False, why=R.FAIL_SHAPE)
+R.note_site("offtopic-dead.test", ok=False, why=R.FAIL_SHAPE,
+            offtopic_blocked=True)
+
+_SD = R.known_site("shape-dead.test")
+ok("形状型死站：`is_healthy` 判死", R.is_healthy(_SD) is False, str(_SD))
+ok("形状型死站：值得复核", R.worth_recheck(_SD) is True)
+ok("网络型死站（fail_down>0）：不值得复核",
+   R.worth_recheck(R.known_site("down-dead.test")) is False)
+ok("被判成非小说站的：不值得复核",
+   R.worth_recheck(R.known_site("offtopic-dead.test")) is False)
+ok("从没失败过的站：不值得复核（没有旧账可结）",
+   R.worth_recheck({"ok": 3, "fail": 0}) is False)
+
+_CANDS = [{"url": "https://shape-dead.test/x/", "host": "shape-dead.test"},
+          {"url": "https://down-dead.test/y/", "host": "down-dead.test"}]
+_t0 = {"recheck": []}
+ok("活候选够多（2 个）时不许复核",
+   D._pick_recheck(_CANDS, D.RECHECK_MAX_LIVE, _t0) is None and not _t0["recheck"],
+   str(_t0))
+_t1 = {"recheck": []}
+_pick = D._pick_recheck(_CANDS, 0, _t1)
+ok("活候选为 0 时挑一个复核", _pick is not None and _pick["host"] == "shape-dead.test",
+   str(_pick))
+ok("复核必须点名进账本（不许静默花掉 10 秒）",
+   _t1["recheck"] == ["shape-dead.test"], str(_t1))
+_t2 = {"recheck": []}
+ok("只剩网络型死站可挑时，宁可不复核",
+   D._pick_recheck([{"url": "https://down-dead.test/y/", "host": "down-dead.test"}],
+                   0, _t2) is None)
+
+# 真实顺序就是 `_verify` 里那两行：先记一次成功，再结掉旧账。
+R.note_site("shape-dead.test", ok=True)
+_n = R.note_recheck_ok("shape-dead.test")
+_after = R.known_site("shape-dead.test")
+ok("复核成功结掉 3 次「不是目录」", _n == 3 and int(_after.get("fail_shape") or 0) == 0,
+   str(_after))
+ok("混装桶 fail 同步扣减（两套口径不许漂）",
+   int(_after.get("fail") or 0) == 0 and int(_after.get("ok") or 0) == 1,
+   f'fail={_after.get("fail")} ok={_after.get("ok")}')
+ok("结账之后站是健康的（旧口径 3>ok*2 永远是死的）",
+   R.is_healthy(_after) is True, str(_after))
+ok("网络型死站的账不许被「复核」碰",
+   R.note_recheck_ok("down-dead.test") == 0
+   and int(R.known_site("down-dead.test").get("fail_down") or 0) == 3)
+
+_orig_page = D.page_of
+_orig_nff = D.registry.note_fetch_fail
+try:
+    D.page_of = lambda u: (_ for _ in ()).throw(RuntimeError("不许打开"))
+    D.registry.note_fetch_fail = lambda host, e: False
+    _tk = {}
+    _r = D._verify({"url": "https://down-dead.test/y/", "host": "down-dead.test"},
+                   "某书", _tk)
+    ok("默认路径：死站连请求都不发（一个请求都没花）",
+       _r is None and _tk.get("skipped_dead") == ["down-dead.test"], str(_tk))
+    _tf = {}
+    D._verify({"url": "https://down-dead.test/y/", "host": "down-dead.test"},
+              "某书", _tf, force=True)
+    ok("force=True：真的去开了（账面上是打开失败，不是跳过）",
+       "fetch_fail" in _tf and "skipped_dead" not in _tf, str(_tf))
+finally:
+    D.page_of = _orig_page
+    D.registry.note_fetch_fail = _orig_nff
+
+_s = web_ledger({"cands": 4, "hit": [], "fetch_fail": [], "not_toc": ["leshu8.com"],
+                 "skipped_dead": ["www.99csw.com"], "recheck": ["www.tyshu.cc"],
+                 "unchecked": 0})["联网核"]
+ok("`联网核` 里有复核那一格，且带名字", "复核=1(www.tyshu.cc)" in _s, _s)
+
+# 上面验的是「账」能不能结；这里验 `_verify` **真的会去结** ——
+# 两件事分开测，因为"函数写好了但没接上"在本项目已经发生过多次
+# （11-11 的 tpl_dead 只装在一条入口上，另一条从没调用过）。
+_orig_page2 = D.page_of
+try:
+    D.page_of = lambda u: {
+        "kind": "toc", "title": "某书", "final_url": "https://shape2.test/b/1/",
+        "host": "shape2.test", "quality": 1.0,
+        "toc": [{"title": f"篇{i}", "url": f"https://shape2.test/b/1/{i}.html"}
+                for i in range(1, 5)]}
+    for _i in range(3):
+        R.note_site("shape2.test", ok=False, why=R.FAIL_SHAPE)
+    ok("shape2 先被判死（前提成立，否则下面两条是空转）",
+       R.is_healthy(R.known_site("shape2.test")) is False)
+    _t3 = {}
+    _r3 = D._verify({"url": "https://shape2.test/b/1/", "host": "shape2.test"},
+                    "某书", _t3, force=True)
+    _s3 = R.known_site("shape2.test")
+    ok("复核命中 → 真的拿到结果", _r3 is not None and _r3.chapter_count == 4,
+       str(_r3 and _r3.chapter_count))
+    ok("复核命中 → 旧账**当场**结掉（不是只写日志不改状态）",
+       int(_s3.get("fail_shape") or 0) == 0 and bool(_s3.get("recheck_ok_at")),
+       str(_s3))
+finally:
+    D.page_of = _orig_page2
 
 print("=" * 62)
 print(f"{'全部通过' if not fails else '有失败'}（{ok_n} 通过 / {bad_n} 失败）")

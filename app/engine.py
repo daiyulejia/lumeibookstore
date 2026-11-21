@@ -375,11 +375,16 @@ def web_ledger(tally: Optional[dict]) -> dict:
     ff = list(tally.get("fetch_fail") or [])
     nt = list(tally.get("not_toc") or [])
     dead = list(tally.get("skipped_dead") or [])
+    rc = list(tally.get("recheck") or [])
     s = (f"{tally.get('cands', 0)}→{len(tally.get('hit') or [])}"
          f" 失败={len(ff)}{_pack(ff)}"
          f" 非目录={len(nt)}{_pack(nt)}")
     if dead:
         s += f" 死站={len(dead)}{_pack(dead)}"
+    if rc:
+        # 明知判死还去开的那一个（2026-11-21）。不写这一格，
+        # 复盘时会看到「这一轮多花了 10 秒」却找不到出处。
+        s += f" 复核={len(rc)}{_pack(rc)}"
     if tally.get("unchecked"):
         s += f" 未核={tally['unchecked']}"
     # 候选是谁给的：分不清「百度一条没返回」和「返回了但被截掉」就复盘不了。

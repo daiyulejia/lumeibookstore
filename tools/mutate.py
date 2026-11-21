@@ -1099,6 +1099,37 @@ MUTATIONS: list[Mutation] = [
              '        return {"联网核": ""}',
              TOC_ANCHOR_TEST),
 
+    # ------- 目录结构证据 + 死站复核（2026-11-21） -------
+    # 线上原样：《乡土中国》在 `www.tyshu.cc/wenhua/8127/` 有 17 篇真目录
+    # （序言/乡土本色/…/后记，地址连续），但那一页**不写「目录」**、
+    # 标题也不叫「第N章」→ 判 unknown → 三次 shape 失败 → 整站永久跳过。
+    # 书在那里、我们也能读，用户搜到的却是 `候选=0`。
+    Mutation("目录结构", "去掉「书本路径至少两段」→ 分类页会被认成目录",
+             WEB,
+             '    if len([s for s in prefix.split("/") if s]) < 2:',
+             "    if False:",
+             TOC_ANCHOR_TEST),
+    Mutation("目录结构", "toc_quality 不认结构证据 → 不写目录的散文集永远 0.35",
+             WEB,
+             '    owned = sum(1 for c in head if c.get("_own"))',
+             "    owned = 0",
+             TOC_ANCHOR_TEST),
+    Mutation("目录结构", "extract_toc 不再走结构证据（页面不写目录就抽不出章节）",
+             WEB,
+             "        elif q < 0.55 and _own_toc_block(doc, base_url, chapters):",
+             "        elif False and _own_toc_block(doc, base_url, chapters):",
+             TOC_ANCHOR_TEST),
+    Mutation("死站复核", "活候选够多时也去复核死站（每轮白花一个槽）",
+             DISCOVERY,
+             "    if live_n >= RECHECK_MAX_LIVE:",
+             "    if False:",
+             TOC_ANCHOR_TEST),
+    Mutation("死站复核", "复核成功也不结账 → 判死的站永远差一次（单向缩水）",
+             REGISTRY,
+             '        cur["fail_shape"] = 0',
+             '        cur["fail_shape"] = n',
+             TOC_ANCHOR_TEST),
+
     # ------- 联网兜底的门：有结果但一条可读都没有（2026-10-27） -------
     # 线上原样（《我的阿勒泰》）：`候选=1 成书=1 确切=1 可读=0 联网发现=0`。
     # 唯一候选是确切命中（100 分）但是个死链，收手门 1.5s 就被它喂饱 →

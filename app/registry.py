@@ -1635,6 +1635,82 @@ def is_healthy(site: dict) -> bool:
     return True
 
 
+def worth_recheck(site: dict) -> bool:
+    """这个被判死的站，**值不值得再打开一次**（2026-11-21）。
+
+    为什么要有它：`is_healthy()` 是一条**只进不出**的判据 ——
+    越线之后，`_verify()` 见到它就 `return None`，一个请求都不发。
+    于是「被判死」等于「永远拿不到下一次机会」，而它当初凭什么被判死，
+    恰恰有一半是**我们自己的解析没认出来**。
+
+    今天的第一例（线上 + 真机复现）：
+      `www.tyshu.cc` 是《乡土中国》的真书目页（15 篇、地址连续），
+      但那一页既不写「目录」，标题也不叫「第N章」→ 三次 `FAIL_SHAPE`
+      → 永久跳过。书在那里，用户搜不到。
+
+    所以这里把「谁判死的原因」分开看：
+      · 失败里**有网络层失败**（`fail_down>0`）→ 站真的连不上，不值得复核；
+      · 被判成影视站 / 非小说站 → 是我们**主动否决**的，不值得复核；
+      · 失败**只在「形状」上**（页打开了、只是没认出目录）→ 值得复核，
+        因为那正是"我们可能判错了"的那一类。
+
+    ⚠ 它只是"值得"，不是"一定做"：`discovery._verify()` 每轮最多放一个进来，
+      而且只在**活候选几乎没有**的时候（见 `RECHECK_MAX_LIVE`）——
+      核一个候选要占一个并发槽和最多 10 秒，不能拿它换掉有希望的候选。
+    """
+    if not site:
+        return False
+    if site.get("video_blocked") or site.get("offtopic_blocked"):
+        return False
+    if int(site.get("fail_down") or 0) > 0:
+        return False
+    if int(site.get("fail_shape") or 0) <= 0:
+        return False
+    return True
+
+
+def note_recheck_ok(host: str) -> int:
+    """复核成功之后，把「形状失败」那笔账**结掉**。返回原本记了几次。
+
+    为什么不是简单 `ok += 1`（2026-11-21）：
+      `www.tyshu.cc` 的《乡土中国》有 17 篇真目录，我们三次没认出来
+      （`fail_shape=3`、`ok=0`）→ 判死。今天认出来了、也核实成功了，
+      但 `ok=1 / fail=4` 仍然 `fail > ok*2` → **还是死的**。
+      于是「复核」变成了每轮都要重花 10 秒的常设开支，
+      而且下一轮若撞上反爬，它就再记一笔形状失败 —— 越试越死。
+
+      `FAIL_SHAPE` 的含义是「**我们**在这一页上没认出目录」，不是「站不行」。
+      既然刚在这一站上认出来了，那些旧账就是**判据自己的错**，该结。
+      这和 11-06「计数被谁清零」不是一回事：那里清的是「放弃门槛」，
+      清了就等于永不放弃；这里清的是「我们判错的次数」，清完还有
+      `ok` 兜着，站再坏三次照样会被重新判死。
+
+    ⚠ 只清 `fail_shape`，且**同步扣减**混装桶 `fail` —— 只清分桶不扣总数，
+      健康判据读的是 `fail`，账就结不掉（两套口径漂移，11-17 吃过一次）。
+      `fail_down` / `fail_video` 一概不碰：那不是我们的错。
+    """
+    host = (host or "").strip().lower()
+    if not host:
+        return 0
+    with _lock:
+        db = _load()
+        cur = db["sites"].get(host)
+        if not cur:
+            return 0
+        n = int(cur.get("fail_shape") or 0)
+        if n <= 0:
+            return 0
+        cur["fail_shape"] = 0
+        cur["fail"] = max(0, int(cur.get("fail") or 0) - n)
+        cur["recheck_ok_at"] = _now()
+        global _dirty
+        _dirty = True
+        _maybe_save()
+    logger.info("站点评级: 复核成功，结掉 %s 的 %d 次「不是目录」（那是我方判据的错）",
+                host, n)
+    return n
+
+
 def is_searchable(site: dict) -> bool:
     """这个站现在**能不能直接站内搜** —— 全项目唯一判据。
 

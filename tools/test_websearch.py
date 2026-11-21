@@ -231,8 +231,12 @@ _lvl = _log.level
 _log.setLevel(logging.INFO)
 
 
-def _fake_verify(cand, keyword, tally=None):
+def _fake_verify(cand, keyword, tally=None, **k):
     # 全部判「不是目录」—— 这样名字堆到 12 个，才测得到「+6」那个尾巴。
+    # ⚠ `**k` 不能省：2026-11-21 discover() 开始给 `_verify` 传 `force=`
+    #   （死站复核），桩签名对不上会抛 TypeError，而那个异常在核实的循环里
+    #   **被吞掉**（该候选直接按未命中计）—— 于是「不是目录=0」，
+    #   两条断言一起红，看着像产品坏了。换桩时签名要跟着改。
     D._bump(tally, "not_toc", cand["host"])
     return None
 

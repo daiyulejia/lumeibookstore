@@ -165,17 +165,78 @@ def _bump(tally: Optional[dict], key: str, name: str) -> None:
     tally.setdefault(key, []).append(name)
 
 
-def _verify(cand: dict, keyword: str, tally: Optional[dict] = None) -> Optional[BookResult]:
-    """核实一个候选：打开它，看有没有目录。"""
+def _host_usable(host: str) -> bool:
+    """这个站现在**会不会被 `_verify` 真的打开**。
+
+    没见过的站算「能用」（`known_site` 返回 None）—— 未知不等于坏。
+    ⚠ 必须和 `_verify` 里那道跳过判据**同一口径**，否则「活候选有几个」
+      会算错，复核名额开关跟着错（这类"两个入口各写一遍"的漂移，
+      11-17 已经在一个更贵的地方吃过一次）。
+    """
+    site = registry.known_site(host)
+    return not site or registry.is_healthy(site)
+
+
+# 手里还有这么多个「能打开的候选」时，就不必去复核被判死的站了。
+# 复核要占一个并发槽、最多 10 秒 —— 有希望的候选还排着队时，它不值。
+RECHECK_MAX_LIVE = 2
+
+
+def _pick_recheck(uniq: list[dict], live_n: int,
+                  tally: Optional[dict]) -> Optional[dict]:
+    """候选几乎全被判死时，挑**一个**来复核（2026-11-21）。
+
+    现场：搜《乡土中国》拿到 6 条候选，其中 5 条是库里的死站、1 条是
+    「有书无目录」的电子书站 —— 于是一个请求都没发就判 0 命中。
+    而那 5 条里有 `www.tyshu.cc`：它的 15 篇目录是真的，只是我们当时
+    没认出来（见 `webfetch._own_toc_block`）→ 三次 shape 失败 → 永久跳过。
+
+    「永久跳过」本来是省预算的设计，代价是**我们判错一次就再也回不来**。
+    11-17 给「学站」那条路补了试用通道（`probation_sites`），
+    但用户真正等的这条路（核实候选）没有 —— 这是同一母题的第二个入口。
+
+    收窄到三条，免得变成"每轮白打一个死站"：
+      · 只在活候选 < `RECHECK_MAX_LIVE` 时做（有希望时先给希望）；
+      · 只挑 `worth_recheck()` 认的（失败全在形状上，从没连不上）；
+      · 每轮最多 1 个，并**点名**进账本（`复核=`）。
+    """
+    if live_n >= RECHECK_MAX_LIVE:
+        return None
+    for c in uniq:
+        site = registry.known_site(c["host"])
+        if not site or registry.is_healthy(site):
+            continue
+        if not registry.worth_recheck(site):
+            continue
+        _bump(tally, "recheck", c["host"])
+        logger.info("活候选只剩 %d 个 → 挑 %s 复核一次（它历史上失败在「不是目录」）",
+                    live_n, c["host"])
+        return c
+    return None
+
+
+def _verify(cand: dict, keyword: str, tally: Optional[dict] = None,
+            *, force: bool = False) -> Optional[BookResult]:
+    """核实一个候选：打开它，看有没有目录。
+
+    `force=True` 只给「复核」用：这个站历史上被判死，但失败**全在形状上**
+    （页打开了、只是没认出目录），而这条判据是我们自己下的 ——
+    见 `registry.worth_recheck()` 与 `_pick_recheck()`。
+    """
     url, host = cand["url"], cand["host"]
 
     # 库里记着这个站已经不行了（连续失败过），就别再花一个并发槽去撞它。
     # 一个候选要占 10 秒超时预算，而整轮核实只有十几秒。
     site = registry.known_site(host)
-    if site and not registry.is_healthy(site):
+    if site and not registry.is_healthy(site) and not force:
         logger.debug("跳过已失效站点 %s", host)
         _bump(tally, "skipped_dead", host)
         return None
+    if site and not registry.is_healthy(site):
+        # 复核：明知它被判死也要开一次。**必须留痕** —— 否则复盘时
+        # 「这一轮多花了 10 秒」在我们自己的账上找不到出处。
+        logger.info("复核被判死的候选 %s（历史上失败在「不是目录」，不是连不上）",
+                    host)
 
     try:
         # retries=0：核实阶段必须**硬性**卡住时间。一个连不上的站
@@ -231,6 +292,10 @@ def _verify(cand: dict, keyword: str, tally: Optional[dict] = None) -> Optional[
         r.chapter_note = str(data["chapter_note"])
 
     registry.note_site(real_host, ok=True, **({"name": site_name} if site_name else {}))
+    if force and real_host == host:
+        # 复核成功 → 结掉「我们没认出目录」那几笔旧账，否则它永远差一次
+        # 才够「不健康」的比值（见 `registry.note_recheck_ok`）。
+        registry.note_recheck_ok(host)
     registry.note_book(real_url, title=r.title, author=r.author, host=real_host,
                        intro=r.intro, chapters=r.chapter_count,
                        # ⚠ 把「目录可能不全」一起记进来源库。
@@ -780,20 +845,34 @@ def discover(
 
     tally: dict = {"cands": len(uniq), "hit": [], "fetch_fail": [],
                    "not_toc": [], "skipped_dead": [], "dup": [], "unchecked": 0,
-                   "engines": engines}
+                   "recheck": [], "engines": engines}
+    # 复核名额：候选几乎全是我们自己判死的站时，放 1 个进来试
+    # （必须在建线程表之前定，不能在线程里抢 —— 那取决于调度顺序，
+    #  同一份输入两次跑出的账会不一样，判据也就没法写）。
+    live_n = sum(1 for c in uniq if _host_usable(c["host"]))
+    recheck = _pick_recheck(uniq, live_n, tally)
     results: list[BookResult] = []
     seen_url: set[str] = set()
     lock = threading.Lock()
     checked = 0        # 已经**核完**（不管成败）的候选数
     pool = ThreadPoolExecutor(max_workers=min(DISCOVER_WORKERS, len(uniq)))
-    futs = {pool.submit(_verify, c, keyword, tally): c for c in uniq}
+    futs = {pool.submit(_verify, c, keyword, tally, force=(c is recheck)): c
+            for c in uniq}
     try:
         for fut in as_completed(futs, timeout=budget):
             checked += 1
             try:
                 r = fut.result()
             except Exception as e:  # noqa: BLE001
-                logger.debug("核实异常: %s", e)
+                # ⚠ 原来这里是 `logger.debug`（2026-11-21）。核实一个候选时
+                #   抛出**意料之外**的异常（不是抓取失败，那在 `_verify` 里
+                #   已经分类记账了），会被完全吞掉 —— 账本上只留下
+                #   「候选=12 命中=0 不是目录=0」，读起来像"这些站都不行"，
+                #   而事实是"我们自己的代码在这几个候选上崩了"。
+                #   今天当场踩到一次：给 `_verify` 加关键字参数后，
+                #   三参数的老桩/调用方全部 TypeError，而测试只看到 0。
+                logger.info("核实异常 %s: %s（该候选按未命中计）",
+                            host_of((futs.get(fut) or {}).get("url", "")), e)
                 r = None
             if not r:
                 continue
@@ -833,11 +912,13 @@ def discover(
         return f"{head}(+{len(names) - 6})" if len(names) > 6 else head
 
     logger.info("联网核实账: 候选=%d 命中=%d 打开失败=%d(%s) 不是目录=%d(%s) "
-                "已死站跳过=%d 重复=%d 未核=%d",
+                "已死站跳过=%d 复核=%d(%s) 重复=%d 未核=%d",
                 tally["cands"], len(results),
                 len(tally["fetch_fail"]), _nm(tally["fetch_fail"]),
                 len(tally["not_toc"]), _nm(tally["not_toc"]),
-                len(tally["skipped_dead"]), len(tally["dup"]),
+                len(tally["skipped_dead"]),
+                len(tally["recheck"]), _nm(tally["recheck"]),
+                len(tally["dup"]),
                 tally["unchecked"])
     _tally_local.tally = tally
 
