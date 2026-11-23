@@ -250,6 +250,54 @@ def main() -> int:
           msrc.index("_save_pending()\n        _write(m.path")
           < msrc.index("_write(m.path, _in_style(patched, src))"))
 
+    # ------------------------------------------------------------------
+    # ⚠ 2026-11-23 真被它吃掉一次：昨天的残留（昨天那版原文）在今天启动时
+    #   被写回去 → `app/discovery.py` 里刚加的单飞改动**静默消失**，
+    #   而工具只打一行「已还原」，接着的报错是"基线就是红的，跳过"
+    #   （读起来像测试烂了）。判据：**过期的残留只点名、不许回写**。
+    # ------------------------------------------------------------------
+    print("\n—— 反证残留：过期的不许回写（否则今天的改动被静默回滚）——")
+    import os
+    import time as _time
+
+    mut = load("mutate")
+    tmp = ROOT / "dist" / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    victim = tmp / "_recover_probe.txt"
+    pend = tmp / "_recover_probe.json"
+    saved_pending = mut._PENDING
+    try:
+        mut._PENDING = pend
+        # ① 新鲜的残留（本轮崩掉的）：必须回写
+        victim.write_text("本轮被改坏的内容\n", encoding="utf-8")
+        pend.write_text(json.dumps({str(victim): "本轮原文\n"}), encoding="utf-8")
+        fixed = mut._recover_pending()
+        check("新鲜的残留（本轮崩掉的）要回写",
+              victim.read_text(encoding="utf-8") == "本轮原文\n" and bool(fixed),
+              f"fixed={fixed}")
+
+        # ② 过期的残留（几小时前）：**不许**回写
+        victim.write_text("今天的改动\n", encoding="utf-8")
+        pend.write_text(json.dumps({str(victim): "昨天的原文\n"}), encoding="utf-8")
+        old = _time.time() - 5 * 3600
+        os.utime(pend, (old, old))
+        # 模拟**新进程启动**：`_PENDING_LAST` 的"上次写过 {}"标志只在进程内有效，
+        # 不清掉它，`_clear_pending()` 会以为已经清过而直接 return。
+        mut._PENDING_LAST = None
+        fixed2 = mut._recover_pending()
+        check("★ 过期残留（5 小时前）不许回写 —— 否则今天的改动被静默回滚",
+              victim.read_text(encoding="utf-8") == "今天的改动\n" and not fixed2,
+              f"fixed={fixed2} 内容={victim.read_text(encoding='utf-8')!r}")
+        check("……并且清单会被清掉（不会每次启动都念一遍）",
+              json.loads(pend.read_text(encoding="utf-8")) == {})
+    finally:
+        mut._PENDING = saved_pending
+        for f in (victim, pend):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
     print("\n" + "=" * 60)
     print(f"通过 {OK} · 失败 {FAIL}")
     return 0 if FAIL == 0 else 1

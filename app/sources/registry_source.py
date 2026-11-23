@@ -480,9 +480,12 @@ class RegistrySource(Source):
     # ------------------------------------------------------------------
     # 目录（复用通用启发式，和联网发现同一条路）
     # ------------------------------------------------------------------
-    def get_chapters(self, result: BookResult) -> list[Chapter]:
+    def read_toc(self, result: BookResult, *, full: bool = False) -> list[Chapter]:
         from .. import discovery
-        data = discovery.page_of(result.url)
+        # `full=True`（下载）：分页目录必须跟到底 —— 核实/探测那份缓存只跟了
+        # 3 页（见 webfetch.TOC_MERGE_PAGES），拿它下载就是「把 1100 章的书
+        # 当 300 章交付」。`full=False`（探测/抽样）：够判定就行，不跟到底。
+        data = discovery.page_of(result.url, full=full)
         if data.get("kind") != "toc":
             raise RuntimeError("这个地址不是目录页（没解析到章节列表）")
         if data.get("title") and not result.title:
@@ -497,6 +500,10 @@ class RegistrySource(Source):
         toc = data.get("toc") or []
         return [Chapter(index=i, title=c["title"], url=c["url"])
                 for i, c in enumerate(toc, 1)]
+
+    def get_chapters(self, result: BookResult) -> list[Chapter]:
+        """交付给用户的目录：整本（分页跟到底）。"""
+        return self.read_toc(result, full=True)
 
     # ------------------------------------------------------------------
     def fetch_chapter(self, chapter: Chapter) -> str:
@@ -542,12 +549,19 @@ class RegistrySource(Source):
 
     # ------------------------------------------------------------------
     def sample(self, result: BookResult, chapters: list | None = None) -> dict:
-        """抽一章正文自己判定，语义同联网发现（不给 ok=None 的余地）。"""
+        """抽一章正文自己判定，语义同联网发现（不给 ok=None 的余地）。
+
+        ⚠ 抽样只读**前面几页**目录，不跟到底（2026-11-22）：
+          抽样只是为了确认"正文读得出来"，不需要全书目录；而下载
+          （`get_chapters`）才需要整本。实测《青叶灵异事务所》目录 21 页，
+          抽样要是跟到底，一次搜索就多花 4 秒，把探测预算吃穿
+          （线上当场出现「探测超预算，剩余候选标记为未验证」）。
+        """
         from .base import check_content_quality, note_for_exception
         t0 = time.time()
         if chapters is None:
             try:
-                chapters = self.get_chapters(result)
+                chapters = self.read_toc(result)   # 抽样只要"够判定"的目录
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "chars": 0,
                         "note": note_for_exception(e), "ms": _ms(t0)}

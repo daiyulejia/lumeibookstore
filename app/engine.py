@@ -1653,6 +1653,11 @@ class Engine:
                         # 「源=xxx」grep 出这个源最近到底怎么挂的，汇总给不了这个。
                         log_event(logger, "verify.ok", 源=r.source,
                                   书名=r.title[:30], 章=r.chapter_count,
+                                  # 「这一份目录是不是只有一部分」必须落字段。
+                                  # 2026-11-22 之前只有 `章=N`：一本 949 章的书
+                                  # 报 109 章，看上去完全正常，只有翻用户提示
+                                  # 才知道"还有几页没跟完" —— 而用户提示不进账本。
+                                  不全=(r.chapter_note[:24] or "-"),
                                   耗时=f"{r.probe_ms}ms")
                         if ok >= PROBE_ENOUGH:
                             # 已经有这么多个可用来源了，剩下的不必再验：

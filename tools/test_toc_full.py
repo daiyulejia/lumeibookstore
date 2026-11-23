@@ -577,6 +577,213 @@ def main() -> int:
     check("反证：真到最后一页（没有「下一页」）→ 不许误报 pending",
           _sgot == 3 and _spend is False, f"got={_sgot} pending={_spend}")
 
+    # ------------------------------------------------------------------
+    # D. 分页目录的三种主流形状（2026-11-22 复盘：原来一种都不认）
+    # ------------------------------------------------------------------
+    # 用户症状：「搜得到、点下载，拿到的是全书的十分之一」。
+    # 实测 384g / wodushu / xbiquge 三家的长书都只给了前 ~100 章，
+    # 而界面上写着"完整"（`toc_completeness` 只看 1..113 连续，看不见分页）。
+    # 根因：`_next_page_url` 只认 `_template` 相等这一种形状，而这三家的
+    # 页码分别长成 `_2` / `/2/` / `index_2.html`。
+    print("\n── D. 分页目录的三种形状：`_2` / `/2/` / `index_2.html` ──")
+
+    def _shape_pages(style: str, n_pages: int = 3, per: int = 3):
+        """造一个三页的目录站，页码写成该站真实的形状。"""
+        if style == "jieke":          # 384g：/html/1/9001_2/
+            base = "https://t.test/html/1/9001/"
+            page = lambda k: f"https://t.test/html/1/9001_{k}/"
+        elif style == "wodushu":      # wodushu：/book/9001/2/
+            base = "https://t.test/book/9001/"
+            page = lambda k: f"https://t.test/book/9001/{k}/"
+        else:                          # xbiquge：/0/9001/index_2.html
+            base = "https://t.test/0/9001/"
+            page = lambda k: f"https://t.test/0/9001/index_{k}.html"
+
+        pages = {}
+        for k in range(1, n_pages + 1):
+            start = (k - 1) * per + 1
+            chap = "".join(
+                f'<dd><a href="/{base.split("/", 3)[3]}{i}.html">第{i}章 喵</a></dd>'
+                for i in range(start, start + per))
+            if style == "xbi":
+                # 这种站的分页器是**纯数字页码**，没有「下一页」三个字
+                pager = "".join(f'<a href="{page(j)}">{j}</a>'
+                                for j in range(1, n_pages + 1) if j != k)
+            else:
+                pager = (f'<a href="{page(k + 1)}">下一页</a>'
+                         if k < n_pages else "")
+            html = f'<html><body><div id="list"><dl>{chap}</dl>{pager}</div></body></html>'
+            pages[page(k) if k > 1 or style != "xbi" else base] = html
+            if k == 1:
+                pages[base] = html
+        return base, page, pages
+
+    for _style, _name in (("jieke", "杰奇 `_2/`"), ("wodushu", "`/2/`"),
+                          ("xbi", "`index_2.html`")):
+        _base, _page, _pages = _shape_pages(_style)
+        _p1 = _pages[_base]
+        _toc = W.extract_toc(_p1, _base, min_items=3)
+        check(f"（前置）{_name} 第 1 页读出 3 章", len(_toc) == 3, f"{len(_toc)} 条")
+        _nxt = W._next_page_url(_p1, _base)
+        check(f"{_name} 的「下一页」认得出", _nxt == _page(2), repr(_nxt))
+        with FakeNet(_pages):
+            _m, _mu, _got, _pend = W._merge_paged(_toc, _p1, _base, budget=10)
+        check(f"{_name} 三页拼齐（9 章）且不再 pending",
+              _got == 6 and len(_m) == 9 and _pend is False,
+              f"got={_got} 共{len(_m)} pending={_pend}")
+        check(f"{_name} 拼完仍是页面的顺序（第 1、5、9 章）",
+              [W._chapter_num_of(c["title"]) for c in _m] == [1, 2, 3, 4, 5, 6, 7, 8, 9],
+              str([W._chapter_num_of(c["title"]) for c in _m]))
+
+    # 反证：**章节链接本身**也长成「前缀 + 数字 + .html」，绝不能被当成页码。
+    # 少了这条，一本 100 章的短书会被判成"还有 99 个后续页"，然后开始瞎跟。
+    _false_pages = {
+        "https://t.test/html/1/9001/": (
+            '<html><body><div id="list"><dl>'
+            + "".join(f'<dd><a href="/html/1/9001/{i}.html">第{i}章 喵</a></dd>'
+                      for i in range(1, 6))
+            + '</dl></div></body></html>'),
+    }
+    _fp = _false_pages["https://t.test/html/1/9001/"]
+    check("反证：只有章节链接、没有分页器 → 不许认出「下一页」",
+          W._next_page_url(_fp, "https://t.test/html/1/9001/") is None,
+          repr(W._next_page_url(_fp, "https://t.test/html/1/9001/")))
+
+    # ---- D2. 「最新九章」和「章节目录」同时挂在一个 <dl> 里 ----
+    # 实测 384g：两段同模板，`extract_toc` 并成一组 →「最新九章」排到第 101 章
+    # 前面；分页之后每页再插一段，第 101–118 章被挤到全书末尾。
+    _blk = ('<html><body><div id="list"><dl>'
+            '<dt>《X》最新九章</dt>'
+            + "".join(f'<dd><a href="/html/1/9001/{900 + i}.html">第{200 + i}章 尾</a></dd>'
+                      for i in range(1, 4))
+            + '<dt>《X》章节目录</dt>'
+            + "".join(f'<dd><a href="/html/1/9001/{i}.html">第{i}章 喵</a></dd>'
+                      for i in range(1, 9))
+            + '</dl></div></body></html>')
+    _main, _latest = W._split_toc_sections(_blk, "https://t.test/html/1/9001/")
+    check("正序列表只含「章节目录」那 8 条（最新块被切掉）",
+          [W._chapter_num_of(c["title"]) for c in _main] == list(range(1, 9)),
+          str([W._chapter_num_of(c["title"]) for c in _main]))
+    check("最新块单独交回（3 条，供调用方补到末尾）", len(_latest) == 3, f"{len(_latest)} 条")
+    check("切完的列表**页码是升序**（不再是「最新章节」打头）",
+          W._chapter_num_of(_main[0]["title"]) == 1)
+
+    # 反证：只有一个「章节列表」标题的普通页，不许被切（zxs8 那种形状）。
+    _plain = ('<html><body><h2>章节列表</h2><div id="list"><dl>'
+              + "".join(f'<dd><a href="/3_3316/{800000 + i}.html">第{i}章 喵</a></dd>'
+                        for i in range(1, 13))
+              + '</dl></div></body></html>')
+    _pm, _pl = W._split_toc_sections(_plain, "https://t.test/3_3316/")
+    check("反证：普通页的「章节列表」标题不许被当成切点",
+          len(_pm) == 12 and _pl == [], f"main={len(_pm)} latest={len(_pl)}")
+
+    # ---- D3. 「核实 3 页 / 下载跟到底」这条预算必须真的接上 ----
+    # 只验 `_merge_paged(budget=)` 是不够的：预算写在 `analyze` 那一行，
+    # 拔掉它照样绿 —— 那正是"下载只给 1/10"会复发的地方。
+    import inspect
+    _asrc = inspect.getsource(W.analyze)
+    check("`analyze(full=True)` 必须把「跟到底」的页数预算传下去",
+          "TOC_MERGE_FULL_PAGES if full" in _asrc, "analyze 里没看到 full 分支")
+    check("核实阶段的页数预算明显小于下载（3 vs 40）",
+          W.TOC_MERGE_PAGES < W.TOC_MERGE_FULL_PAGES,
+          f"{W.TOC_MERGE_PAGES} / {W.TOC_MERGE_FULL_PAGES}")
+
+    # 下载不能复用「只跟了 3 页」的缓存 —— 那等于把 1/10 的书交付出去。
+    import time as _time
+    from app import discovery as _D
+    _called: list[dict] = []
+    _old_analyze = _D.webfetch.analyze
+
+    def _fake_analyze(url, **kw):
+        _called.append(kw)
+        return {"kind": "toc", "url": url, "toc": [{"title": "第1章 喵", "url": url + "1.html"}],
+                "toc_pending": False}
+
+    _U = "https://t.test/res/1/"
+    try:
+        _D.webfetch.analyze = _fake_analyze
+        _D._pg_cache[_U] = (_time.time(), {"kind": "toc", "toc": [], "toc_pending": True})
+        _got = _D.page_of(_U, full=True)
+        check("`page_of(full=True)` 不吃「只跟了 3 页」的残缓存",
+              bool(_called) and _called[0].get("full") is True,
+              f"analyze 被调 {len(_called)} 次，full={_called[:1]}")
+        check("…重新解析后拿到的是整本目录", len(_got.get("toc") or []) == 1,
+              f"{len(_got.get('toc') or [])} 条")
+    finally:
+        _D.webfetch.analyze = _old_analyze
+        _D._pg_cache.pop(_U, None)
+
+    # ---- D4. 探测/抽样不许跟分页到底（跟了就把搜索预算吃穿）----
+    # 实测（2026-11-22）：`Source.probe()` 走 `get_chapters()` 时，
+    # 一个 2181 章的候选核实用掉 11.7 秒，当场出现
+    # 「探测超预算，剩余候选标记为未验证」—— 这是另一种"搜不到"。
+    from app.sources.base import Source as _Src
+    from app.models import BookResult as _BR
+
+    class _TocSrc(_Src):
+        name = "t"
+        display = "t"
+        homepage = ""
+
+        def __init__(self) -> None:
+            self.calls: list = []
+
+        def read_toc(self, result, *, full=False):
+            self.calls.append(("read_toc", full))
+            return [Chapter(index=1, title="第1章 喵", url="https://t.test/1.html")]
+
+        def get_chapters(self, result):
+            self.calls.append(("get_chapters", True))
+            return []
+
+        def search(self, keyword):        # 抽象方法，本用例用不到
+            return []
+
+        def fetch(self, result, progress=None, limit=None, stop=None):
+            raise AssertionError("本用例不该真的下载")
+
+    _s = _TocSrc()
+    _info = _s.probe(_BR(title="X", url="https://t.test/"))
+    check("探测只读「够判定」的目录，不跟分页到底",
+          _s.calls == [("read_toc", False)], str(_s.calls))
+    check("…而且探测结论是可用（1 章）", bool(_info.get("ok")), str(_info))
+
+    _s2 = _TocSrc()
+    _s2.sample(_BR(title="X", url="https://t.test/"))
+    check("抽样也只读「够判定」的目录",
+          ("read_toc", False) in _s2.calls and ("get_chapters", True) not in _s2.calls,
+          str(_s2.calls))
+
+    # ---- D5. 配置源：正则读得"看着完整"，也必须跟一次分页 ----
+    # 实测 xbiquge 的《大奉打更人》：`chapter_re` 抽出 113 章（1..113 连续），
+    # `toc_completeness` 判"完整" → 旧代码直接 return，全书 949 章只给 113。
+    _cbase = "https://t.test/0/98/"
+    _cpage = lambda k: f"https://t.test/0/98/index_{k}.html"
+    _c1 = ('<html><body><div id="list">'
+           + "".join(f'<a href="/0/98/{i}.html">第{i}章 喵</a>' for i in range(1, 9))
+           + '<a href="/0/98/index_2.html">2</a>'
+           + '</div></body></html>')
+    _c2 = ('<html><body><div id="list">'
+           + "".join(f'<a href="/0/98/{i}.html">第{i}章 喵</a>' for i in range(9, 13))
+           + '</div></body></html>')
+    _C = C.ConfiguredSource({"name": "_toc_cfg", "base_url": "https://t.test/"})
+    _cre = re.compile(r'<a href="(/0/98/\d+\.html)">([^<]+)</a>')
+    _cchs = [Chapter(index=i, title=m.group(2), url="https://t.test" + m.group(1))
+             for i, m in enumerate(_cre.finditer(_c1), 1)]
+    check("（前置）正则只读出 8 章，且自身判「完整」",
+          len(_cchs) == 8 and not W.toc_completeness(
+              [{"url": c.url, "title": c.title} for c in _cchs], _c1)[0],
+          f"{len(_cchs)} 章")
+    _old_cf = C.fetch_text
+    with FakeNet({_cbase: _c1, _cpage(2): _c2}) as _fn:
+        C.fetch_text = _fn
+        try:
+            _out = _C._repair_toc(_cchs, _c1, _cbase)
+        finally:
+            C.fetch_text = _old_cf
+    check("配置源也要跟分页（8 → 12 章，不是「看着完整」就收手）",
+          len(_out) == 12, f"{len(_out)} 章")
+
     print("\n" + "=" * 62)
     print(f"通过 {_passed} · 失败 {len(_fail)}")
     for f in _fail:

@@ -43,6 +43,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import time
 from typing import Callable, Optional
 from urllib.parse import urljoin, urlparse
 
@@ -791,15 +792,96 @@ def toc_entry_links(html: str, base_url: str, *, limit: int = 2) -> list[str]:
 #: 后者在详情页上一半指向目录、一半指向最新章节，跟错了会拿到更差的目录。
 _NEXT_TEXT_RE = re.compile(r"(下一页|下页|后一页|下一章|»|›|&gt;|＞)")
 _PREV_TEXT_RE = re.compile(r"(上一页|上页|前一页|首页|«|‹|&lt;|＜)")
+#: 分页器上的页码文字（`2` / `12`）。**必须同时**是同一前缀的兄弟页才采信，
+#: 否则每一条 `第5章` 的章节链接都会被当成"第 5 页"。
+_PAGE_NO_TEXT_RE = re.compile(r"^\d{1,3}$")
 
 
-def _next_page_url(html: str, base_url: str) -> Optional[str]:
+def _page_no(url: str, origin: str) -> Optional[int]:
+    """`url` 是 `origin` 的第几页？不是兄弟页就返回 None。
+
+    实测三种形状，页码在**三个不同位置**：
+
+        /html/41/41562/   →  /html/41/41562_2/      （杰奇 CMS，384g.com）
+        /book/57620/      →  /book/57620/2/         （wodushu.com）
+        /0/98/            →  /0/98/index_2.html     （xbiquge 克隆）
+
+    共同点只有一个：**origin 的路径 + 一截纯页码尾巴**。所以判据按前缀算，
+    不按 `_template` 相等算。
+
+    ⚠ 2026-11-22 复盘（这是「搜得到、下下来只有前 100 章」的正主）：
+      旧实现只认 `_template` 相等（数字归一化后一致），于是上面三家
+      **一个都认不出来** —— `41562_2` 归一化成 `#_#`、`index_2.html`
+      变成 `index_#.html`，都跟 `#` 不等。而 `toc_completeness` 只看章号
+      连续性（1..113 连续）就判"完整"，于是界面写着完整、用户只拿到全书 1/10。
+    """
+    ob, ub = urlparse(origin), urlparse(url)
+    if (ob.hostname or "").lower() != (ub.hostname or "").lower():
+        return None
+    op = ob.path.rstrip("/")
+    up = ub.path.rstrip("/")
+    if not op:
+        return None
+    if up == op:
+        return 1
+    if not up.startswith(op):
+        return None
+    rest = up[len(op):]
+    if rest.startswith("/"):
+        rest = rest[1:]
+    if not rest:
+        return 1
+    # `2` / `2/`（已 rstrip）、`index_2.html`、`page/2` 这一族
+    m = re.fullmatch(r"(?:index[_-]|page/)?(\d{1,3})(?:\.s?html?)?", rest)
+    if m:
+        return int(m.group(1))
+    # `_2` / `-2` / `_2.html` 这一族（杰奇 CMS 的 `/html/41/41562_2/`）
+    m = re.fullmatch(r"[_-](\d{1,3})(?:\.s?html?)?", rest)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _paged_siblings(
+    html: str, base_url: str, origin: Optional[str] = None
+) -> dict[int, str]:
+    """页面上所有「兄弟页码」链接 → `{页码: url}`。
+
+    只收**比当前页靠后**的页（`n > 当前页`），并且链接文字必须是
+    「下一页」这类词或纯页码 —— 章节链接的文字是「第 3 章 xxx」，
+    靠这一条就挡住了。
+    """
+    org = origin or base_url
+    cur = _page_no(base_url, org) or 1
+    out: dict[int, str] = {}
+    for url, txt in _abs_links(_prep(html), base_url):
+        n = _page_no(url, org)
+        if not n or n <= cur:
+            continue
+        t = (txt or "").strip()
+        if not t or len(t) > 6:
+            continue
+        if _PREV_TEXT_RE.search(t):
+            continue
+        if not (_NEXT_TEXT_RE.search(t) or _PAGE_NO_TEXT_RE.match(t)):
+            continue
+        out.setdefault(n, url)
+    return out
+
+
+def _next_page_url(
+    html: str, base_url: str, origin: Optional[str] = None
+) -> Optional[str]:
     """页面上的「下一页」—— 只认**和当前页同一路径形状**的兄弟页。
 
     为什么必须限定形状：`/3_3316/mulu/1.html` 的「下一页」是
     `/3_3316/mulu/2.html`（`_template` 数字归一化后一致），
     而正文页底部的「下一页」指向下一章、形状也一样 ——
     所以还要求文字必须是「下一页」这几个词，且**很短**。
+
+    `origin` 是**第一页**的地址：跟到第 2 页之后，当前页自己变成了
+    `41562_2`，此时「下一页」`41562_3` 跟当前页不同前缀，
+    只有拿第一页当地基才算得出页码（见 `_page_no`）。
     """
     cur = base_url.rstrip("/")
     want = _template(base_url)
@@ -815,11 +897,23 @@ def _next_page_url(html: str, base_url: str) -> Optional[str]:
             continue
         if _NEXT_TEXT_RE.search(t):
             return url
+    # 第二种形状：同一前缀 + 尾巴页码（杰奇 `_2` / `/2/` / `index_2.html`）。
+    # 2026-11-22 新增 —— 这三种形状原来一个都跟不下去，长书必然截断。
+    pages = _paged_siblings(html, base_url, origin)
+    if pages:
+        return pages[min(pages)]
     return None
 
 
 def _order_chapters(chapters: list[dict]) -> list[dict]:
-    """按章号重排（章号认不出来就保持原序 —— 至少顺序是页面给的）。"""
+    """按章号重排（章号认不出来就保持原序 —— 至少顺序是页面给的）。
+
+    ⚠ 判据是「**每一条**都认得出章号」才敢排。只覆盖 70% 也不行：
+      实测 384g 的《大奉打更人》949 条里有 32 条是「上架感言 / 番外 /
+      卷尾总结」，而这些条目的章号在站方数据里本身就是乱的
+      （第五十章出现 5 次、分别属于 5 个不同的连载段）——
+      一旦按章号排，反而把 5 段轮流交叉。页面的地址顺序才是这本书的顺序。
+    """
     nums = chapter_numbers(chapters)
     if len(nums) < 3 or len(nums) < len(chapters) * 0.7:
         return chapters
@@ -832,8 +926,83 @@ def _order_chapters(chapters: list[dict]) -> list[dict]:
     return [chapters[i] for i in order]
 
 
+#: 一个页面上同时挂着「最新章节」和「章节目录」两段时，后者的标题长这样。
+_LIST_SECTION_RE = re.compile(r"(章节目录|章节列表|全部章节|正文目录|目录列表)")
+
+
+def _split_toc_sections(
+    html: str, base_url: str, *, min_items: int = 8, tpl_hint: str = ""
+) -> tuple[list[dict], list[dict]]:
+    """把「章节目录」和「最新九章」两段分开，返回 (正序章节列表, 最新块)。
+
+    384g 的实测结构（杰奇 CMS 及其克隆到处是这套）：
+
+        <dl>
+          <dt>《大奉打更人》最新九章</dt>   ← 9 条，倒数几章 + 番外
+          <dt>《大奉打更人》章节目录</dt>   ← 100 条，第 101–200 章，按顺序
+        </dl>
+
+    两段是**同一个 `<dl>`、同一套地址模板**，`extract_toc` 会把它们并成一组：
+    于是「最新九章」排到了第 101 章前面。分页之后更糟 —— 每翻一页就再插一段，
+    实测《大奉打更人》第 101–118 章被挤到了全书末尾。
+
+    所以：正序列表取「章节目录」那一段；最新块**单独交回去**，
+    由调用方拼到末尾（那几章本来就是全书的最后几章）。只有一段时第二项为空。
+
+    判据只认「后者不比前者少一半」：切错了（标题里就带「目录」而正文在别处）
+    会让条数塌下来，那时宁可保留原样。
+    """
+    full = extract_toc(html, base_url, min_items=min_items, tpl_hint=tpl_hint)
+    best: list[dict] = []
+    # 最多试 8 处：`extract_toc` 是 O(整页链接)（实测 21KB 页 5ms），
+    # 但页面上「目录」字样一多（导航 + 页脚），逐个试会拖成几百毫秒。
+    # 取**前 8 处**而不是后 8 处：真正的「章节目录」标题在正文里，
+    # 页脚/导航里的那些在最后（实测 384g 一共只有 3 处）。
+    tries = 0
+    for m in _LIST_SECTION_RE.finditer(html):
+        if tries >= 8:
+            break
+        tries += 1
+        # 每一处都试着切一下，取**切得最干净的那一份**（条数最少但仍够半数的）。
+        #  ⚠ 不能取"条数最多"：标题/meta 里也有「章节列表」四个字，从那里切
+        #    等于切在页面最顶上 —— 抽出来还是整页（实测 384g 命中 pos=289，
+        #    切完仍是 109 条，"最新九章"一点没切掉）。
+        tail = extract_toc(html[m.start():], base_url, min_items=min_items)
+        if len(tail) < min_items:
+            continue
+        # 切得太碎（不到整页一半）说明切在了无关的标题上，不算数。
+        if full and len(tail) * 2 < len(full):
+            continue
+        if best and len(tail) >= len(best):
+            continue
+        best = tail
+    if len(best) < min_items or len(best) * 2 < len(full):
+        return full, []
+    seen = {c.get("url") for c in best if c.get("url")}
+    latest = [c for c in full if c.get("url") and c["url"] not in seen]
+    # 「最新块」必须**比正序列表小得多**（不到一半）。这一条是防止把普通的
+    # 「章节列表」小标题当成切点：zxs8 那种页面上「章节列表」就是整段章表的
+    # 标题，从那里切会把第 2 页切成 7 + 11 两半，拼接直接失效（实测）。
+    if len(latest) * 2 > len(best):
+        return full, []
+    return best, latest
+
+
+# ---- 目录分页的两种预算（2026-11-22）-------------------------------# 为什么要分两种：一章目录页普遍只给 100 条，一本 1100 章的书要跟 10 页、
+# 一本 2181 章的要跟 22 页，而每页 0.3~1.1s。
+#   · 核实阶段：12 秒预算要分给**所有**候选，跟 3 页/3 秒就到顶，
+#     剩下的如实标「还有几页没跟完」—— 少给但说真话。
+#   · 下载阶段（用户已经在等了）：40 页/25 秒，一路跟到底。
+# 旧实现在两个阶段都只给 5 页，且认不出主流分页形状 —— 见 `_page_no`。
+TOC_MERGE_PAGES = 3
+TOC_MERGE_WALL = 3.0
+TOC_MERGE_FULL_PAGES = 40
+TOC_MERGE_FULL_WALL = 25.0
+
+
 def _merge_paged(
-    toc: list[dict], html: str, base: str, *, budget: int = 5
+    toc: list[dict], html: str, base: str, *, budget: int = 5,
+    wall: Optional[float] = None, origin: Optional[str] = None,
 ) -> tuple[list[dict], str, int, bool]:
     """分页目录：跟着页面上的「下一页」把后面的页拼起来。
 
@@ -846,18 +1015,36 @@ def _merge_paged(
       **静默的不完整**，正是要消灭的那种错。
     所以：一直跟到「下一页」没了、或再也没有新章节为止（有上限，不会跑飞）。
 
+    `budget` 是页数上限、`wall` 是墙钟上限（秒）。**两个都要**：
+    大部分站一章目录页给 100 条，一本 1100 章的书要跟 10 页；
+    而核实阶段（12s 预算要给所有候选分）根本等不起，下载阶段等得起。
+    所以调用方按场景传：核实 3 页/3s，下载 40 页/25s。
+
     ⚠ 最后那个 `pending` 很关键：**页面上明明有「下一页」，但抓不到/抓回来
       是空的** —— 这时候必须让上层知道"可能还缺"，而不是假装完整。
       少这一位，"跟页失败"和"本来就是最后一页"就分不开了。
+      2026-11-22 又补了一种：**我们自己停在页数/墙钟上限**时也要置位。
     """
     if not toc:
         return toc, base, 0, False
+    org = origin or base
     want_tpl = toc[0].get("_tpl") or ""
     seen = {c.get("url") for c in toc if c.get("url")}
     merged = list(toc)
     cur_html, cur_base, got, pages, pending = html, base, 0, 0, False
+    t0 = time.time()
+    durs: list[float] = []
     for _ in range(max(0, budget)):
-        nxt = _next_page_url(cur_html, cur_base)
+        if wall is not None:
+            spent = time.time() - t0
+            if spent >= wall:
+                break
+            # 按"上一页用了多久"预估：这一页大概率来不及就先停，
+            # 否则单页 2 秒的站会把 3 秒的墙钟跑成 7 秒（实测 xbiquge 2.3s/页）。
+            if durs and spent + max(durs) * 1.2 >= wall:
+                break
+        t_page = time.time()
+        nxt = _next_page_url(cur_html, cur_base, org)
         if not nxt:
             break
         try:
@@ -865,8 +1052,11 @@ def _merge_paged(
         except Exception:  # noqa: BLE001
             pending = True
             break
+        durs.append(time.time() - t_page)
         # min_items 放低到 3：最后一页常常只有两三章，不能被"至少 8 条"挡掉。
-        n_toc = extract_toc(n_html, n_url, min_items=3)
+        # `_split_toc_sections`：每页顶部都会重挂一块「最新九章」，
+        # 不切掉就会在每一页交界处插一段乱序（实测第 101–118 章被挤到书末）。
+        n_toc, _n_latest = _split_toc_sections(n_html, n_url, min_items=3)
         # 必须和已有目录**同一套地址模板** —— 否则就是把别的东西（推荐位、
         # 其它书）拼进来了。这是比数量更硬的判据。
         if want_tpl and n_toc and (n_toc[0].get("_tpl") or "") != want_tpl:
@@ -880,18 +1070,28 @@ def _merge_paged(
         got += len(fresh)
         pages += 1
         cur_html, cur_base = n_html, n_url
-    # 撞到预算上限、而页面上**还有**「下一页」→ 是我们自己停下，不是目录到头了。
-    # 必须如实标"可能不全"，不能静默截断（>500 章的书曾经就这样少给）。
-    if pages >= budget and _next_page_url(cur_html, cur_base):
+    # 收尾时页面上**还有**下一页 → 不管是撞预算、撞墙钟、还是模板不符，
+    # 都说明"我们停下了，但目录没到头"。必须置 pending，否则上层会把它
+    # 当完整目录交出去（2026-11-22：这正是"界面写着完整、只下到 1/10"的第二半）。
+    more = _next_page_url(cur_html, cur_base, org)
+    if more:
         pending = True
-        logger.info("目录分页：已达 %d 页上限，后面还有「下一页」，如实标注可能不全", budget)
+        if pages >= budget:
+            logger.info("目录分页：已达 %d 页上限，后面还有「下一页」，如实标注可能不全",
+                        budget)
+        elif wall is not None and time.time() - t0 >= wall:
+            logger.info("目录分页：到墙钟上限 %.1fs，后面还有「下一页」，如实标注可能不全",
+                        wall)
     if got:
         merged = _order_chapters(merged)
         logger.info("目录分页：往后跟了 %d 页，合并后 %d 章", pages, len(merged))
     return merged, cur_base, got, pending
 
 
-def upgrade_toc(toc: list[dict], html: str, base: str) -> tuple[list[dict], str, str]:
+def upgrade_toc(
+    toc: list[dict], html: str, base: str, *, budget: int = 5,
+    wall: Optional[float] = None,
+) -> tuple[list[dict], str, str]:
     """目录像"只有一部分"时：先跟一次「完整目录」入口，再把分页目录拼齐。
 
     返回 (目录, 落地地址, 提示)——提示非空表示"这份目录可能不全，为什么"。
@@ -933,7 +1133,8 @@ def upgrade_toc(toc: list[dict], html: str, base: str) -> tuple[list[dict], str,
     # 分页拼齐。**即便没跟到新页面也要试** —— 因为分页的第 1 页看起来
     # 完全"正常"（第 1–100 章，首项就是第 1 章），判据 A/B/C 都发现不了
     # 它背后还有 19 章。这是"静默不完整"最隐蔽的一种。
-    merged, m_url, got, pending = _merge_paged(toc, page_html, base)
+    merged, m_url, got, pending = _merge_paged(
+        toc, page_html, base, budget=budget, wall=wall)
     if got:
         m_partial, m_why = toc_completeness(merged, judge_html)
         # ⚠ 只要**真的多拿到了章节**，就必须用更全的那份，哪怕它仍被判定为
@@ -1790,7 +1991,8 @@ def _img_inner(raw_tag: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # 页面级入口：给一个 URL，自己判断是详情页还是正文页
 # ---------------------------------------------------------------------------
-def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
+def analyze(url: str, *, log: Optional[Callable[..., None]] = None,
+            full: bool = False) -> dict:
     """抓一个页面并判断它是什么。
 
     返回::
@@ -1813,11 +2015,24 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
     host = host_of(base) or host_of(url)
     site = registry.known_site(host)
 
-    toc = extract_toc(html, base, tpl_hint=site.get("toc_tpl") or "")
+    toc, toc_latest = _split_toc_sections(html, base, tpl_hint=site.get("toc_tpl") or "")
     # 详情页常常只挂「最新章节」十几条 —— 目录像"只有一部分"时，
     # 去点一次页面上「完整目录」的入口，并把分页目录拼齐。
     # 见 upgrade_toc 的注释。
-    toc, base, toc_note = upgrade_toc(toc, html, base)
+    # ⚠ `full=False`（核实/探测）只跟 3 页：12 秒预算要分给所有候选；
+    #   `full=True`（真正下载）跟到底 —— 少给章节比慢更坏，但核实阶段
+    #   拖慢会把别的候选饿死，那是另一种"搜不到"。
+    toc, base, toc_note = upgrade_toc(
+        toc, html, base,
+        budget=TOC_MERGE_FULL_PAGES if full else TOC_MERGE_PAGES,
+        wall=TOC_MERGE_FULL_WALL if full else TOC_MERGE_WALL)
+    # 「最新九章」那一段是全书的最后几章，但它在页面上排在**最前面**。
+    # 拼完分页后再把它补到末尾 —— 不补就少 9 章；直接留在开头就是乱序。
+    if toc_latest:
+        _seen = {c.get("url") for c in toc if c.get("url")}
+        _tail = [c for c in toc_latest if c.get("url") and c["url"] not in _seen]
+        if _tail:
+            toc = toc + _tail
     meta = extract_meta(html)
     # 封面只在这里取一次，随 analyze 的返回值一起带出去 ——
     # 前端列表卡直接用，不必再为每本书单独打一次详情页。
@@ -1868,6 +2083,9 @@ def analyze(url: str, *, log: Optional[Callable[..., None]] = None) -> dict:
                 "cover": cover,
                 "toc": toc, "quality": quality, "size": len(html),
                 "partial": partial, "chapter_note": chapter_note,
+                # 「这次只跟了几页、后面还有」——给 `page_of(full=True)` 用：
+                # 下载时**不能**复用核实阶段那份残目录（那是 1/10 的书）。
+                "toc_pending": bool(toc_note),
             }
         registry.note_site(host, ok=False, name=sname, why=registry.FAIL_SHAPE)
         return {

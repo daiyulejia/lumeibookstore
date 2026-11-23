@@ -64,8 +64,10 @@ class DiscoveredSource(Source):
     # ------------------------------------------------------------------
     # 目录
     # ------------------------------------------------------------------
-    def get_chapters(self, result: BookResult) -> list[Chapter]:
-        data = discovery.page_of(result.url)
+    def read_toc(self, result: BookResult, *, full: bool = False) -> list[Chapter]:
+        # `full=True`（下载）要整本目录；`full=False`（探测/抽样）只跟 3 页
+        # （见 webfetch.TOC_MERGE_PAGES）—— 探测跟到底会把搜索预算吃穿。
+        data = discovery.page_of(result.url, full=full)
         if data.get("kind") != "toc":
             raise RuntimeError("这个地址不是目录页（没解析到章节列表）")
 
@@ -83,6 +85,10 @@ class DiscoveredSource(Source):
         toc = data.get("toc") or []
         return [Chapter(index=i, title=c["title"], url=c["url"])
                 for i, c in enumerate(toc, 1)]
+
+    def get_chapters(self, result: BookResult) -> list[Chapter]:
+        """交付给用户的目录：整本（分页跟到底）。"""
+        return self.read_toc(result, full=True)
 
     # ------------------------------------------------------------------
     # 单章
@@ -170,7 +176,7 @@ class DiscoveredSource(Source):
         t0 = time.time()
         if chapters is None:
             try:
-                chapters = self.get_chapters(result)
+                chapters = self.read_toc(result)   # 抽样只要"够判定"的目录
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "chars": 0,
                         "note": note_for_exception(e), "ms": _ms(t0)}

@@ -209,6 +209,19 @@ class Source(ABC):
     # ------------------------------------------------------------------
     # 可用性探测：搜索之后立刻验证「这个候选到底打不打得开、有没有目录」
     # ------------------------------------------------------------------
+    def read_toc(self, result: BookResult, *, full: bool = False) -> list:
+        """取目录。`full=True` = **要整本**（下载用）；`False` = 够判定就行。
+
+        为什么必须分两种（2026-11-22）：一章目录页普遍只给 100 章，
+        一本 2000 章的书要跟 20 页、每页 0.5~1 秒。探测只想知道
+        "有没有目录、大概多少章"，跟到底会把搜索预算吃穿
+        （实测一个候选 11.7 秒，当场出现「探测超预算，剩余候选标记为未验证」）。
+        真正交付给用户的那一刻（`fetch`）才需要整本。
+
+        默认实现没有这个区分（单页来源本来就一次抓完），所以忽略 `full`。
+        """
+        return self.get_chapters(result)
+
     def probe(self, result: BookResult) -> ProbeInfo:
         """快速验证候选是否真的能下载。
 
@@ -220,7 +233,8 @@ class Source(ABC):
         """
         t0 = time.time()
         try:
-            chapters = self.get_chapters(result)
+            # 只取"够判定"的那份目录，不跟分页到底（见 read_toc）。
+            chapters = self.read_toc(result)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "chapters": 0,
                     "note": note_for_exception(e), "ms": _ms(t0)}
@@ -250,7 +264,7 @@ class Source(ABC):
         """
         if chapters is None:
             try:
-                chapters = self.get_chapters(result)
+                chapters = self.read_toc(result)   # 抽样只要"够判定"的目录
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "chars": 0, "note": note_for_exception(e)}
         if not chapters:

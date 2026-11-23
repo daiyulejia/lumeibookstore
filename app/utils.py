@@ -580,6 +580,93 @@ def normalize_title(s: str) -> str:
 
 
 # --------------------------------------------------------------------------
+# 在飞合并（single-flight）：同一个 key 的并发请求只干一遍活
+# --------------------------------------------------------------------------
+# 为什么要单独有它（2026-11-23 复盘，这是同一条母题的第三次）：
+#   缓存只在**跑完之后**才有值。冷缓存下一瞬间来 N 个同一个 key 的请求，
+#   N 个全部 miss、N 个都去干同一件事 —— 缓存挡不住这种重复。
+#     · 2026-11-01：16 个同名搜索各起一轮引擎 → 搜索引擎被我们打成
+#       「不认识这个词」，单独搜有 2 条，并发 8 个时 7 个拿 0 条。
+#     · 2026-11-22：长书目录要跟 21 页分页，预览与搜索同时打同一个书页
+#       → 两份完整分页（线上一次 107 秒），日志里 `候选=1 成书=1` 全绿。
+#     · 今天：`page_of()` 两个线程同时进来抓了 2 遍（复现脚本实测
+#       analyze 调用次数 = 2），`cached()` 的 producer 更是完全没有合并
+#       —— 它下面挂的正是「整本目录」这种最贵的活（7 个调用点：configured / kunnu8×2 / template_source / wikisource / wyshu / xbqg5200）。
+# ⚠ 它**不是缓存**：跑完就摘，下一次调用照样重新干。合并的只是
+#   **同一时刻正在跑**的那一份 —— 否则「刚学会新站却还返回旧空结果」
+#   就会变成常态（见 2026-10-24 那条）。
+FLIGHT_WAIT = 60.0          # 等领跑者的上限；超时就自己跑，别把请求挂死
+_flight_lock = threading.Lock()
+_flights: dict[str, "_Flight"] = {}
+flight_stats = {"started": 0, "joined": 0, "timeout": 0}
+
+
+class _Flight:
+    """一份正在跑的工作：跑完把结果（或异常）交给等着的人。"""
+
+    __slots__ = ("owner", "ev", "val", "err")
+
+    def __init__(self, owner: int):
+        self.owner = owner
+        self.ev = threading.Event()
+        self.val = None
+        self.err: BaseException | None = None
+
+
+def single_flight(key: str, producer, *, wait: float = FLIGHT_WAIT):
+    """同一个 key 的并发调用只跑一遍 `producer`，其余等它跑完拿同一份结果。
+
+    返回值与 `producer()` 完全一致。`producer` 抛异常时，等着的人会**自己
+    再跑一遍**（而不是集体继承领跑者的失败）：一次网络抖动不该按并发人数
+    放大成 N 个失败。领跑者卡死超过 `wait` 秒时也一样 —— 自己跑，
+    宁可重复一次也不能把请求永久挂住（那正是 107 秒的来源）。
+    """
+    tid = threading.get_ident()
+    mine: _Flight | None = None
+    for _attempt in range(3):
+        with _flight_lock:
+            cur = _flights.get(key)
+            if cur is None or cur.owner == tid:
+                # 没有人在跑，或者**就是本线程**（递归重入同一个 key）：
+                # 自己当领跑者。不能让同一个线程等自己 —— 那是死锁。
+                mine = _Flight(tid)
+                _flights[key] = mine
+                break
+        if cur.ev.wait(wait):
+            if cur.err is None:
+                flight_stats["joined"] += 1
+                logger.info("同一个 key 的抓取已合并（等领跑者）：%s", key)
+                return cur.val
+            with _flight_lock:
+                if _flights.get(key) is cur:
+                    _flights.pop(key, None)
+            continue          # 领跑的失败了 → 再争一次自己来
+        flight_stats["timeout"] += 1
+        logger.warning("同一个 key 的抓取等了 %.0fs 还没完，自己重跑：%s", wait, key)
+        break
+
+    if mine is not None:
+        flight_stats["started"] += 1
+    try:
+        val = producer()
+    except BaseException as e:          # noqa: BLE001 — 连 KeyboardInterrupt 也要放行
+        if mine is not None:
+            mine.err = e
+            with _flight_lock:
+                if _flights.get(key) is mine:
+                    _flights.pop(key, None)
+            mine.ev.set()               # 先摘牌再唤醒：别让新来的人挂到尸首上
+        raise
+    if mine is not None:
+        mine.val = val
+        with _flight_lock:
+            if _flights.get(key) is mine:
+                _flights.pop(key, None)
+        mine.ev.set()
+    return val
+
+
+# --------------------------------------------------------------------------
 # 进程内缓存：目录页抓一次就够了 —— 预览一次、下载一次不必抓两遍
 # --------------------------------------------------------------------------
 _cache_lock = threading.Lock()
@@ -587,15 +674,17 @@ _mem_cache: dict[str, tuple[float, object]] = {}
 
 
 def cached(key: str, ttl: float, producer):
-    """带 TTL 的进程内缓存。producer 在未命中时调用。"""
+    """带 TTL 的进程内缓存。producer 在未命中时调用（并发未命中只跑一遍）。"""
     now = time.time()
     with _cache_lock:
         hit = _mem_cache.get(key)
         if hit and now - hit[0] < ttl:
             return hit[1]
-    val = producer()
+    val = single_flight(key, producer)
     with _cache_lock:
-        _mem_cache[key] = (now, val)
+        # 记**完成时刻**，不是开始时刻：producer 跑 20 秒时用开始时刻记账，
+        # 等于凭空扣掉 20 秒 TTL（同一本书的第二次预览又从头抓一遍）。
+        _mem_cache[key] = (time.time(), val)
     return val
 
 

@@ -170,6 +170,13 @@ ERRORS = ROOT / "app" / "errors.py"
 # 2026-11-17。⚠ 失败方式：把我方限流记成站挂了 → 可搜源单向缩水；
 # 越过死亡线即永久冻结（`down == 2*ok+1`）→ 缩到 0 之后没有自动化能找回来。
 SITE_FAULT_TEST = ROOT / "tools" / "test_site_fault.py"
+# 「同一个页面/目录被并发抓 N 遍」（tools/test_page_flight.py）—— 2026-11-23。
+# ⚠ 反证要点：单飞**退化成缓存**是最像"修好了"的坏法（所有合并断言都绿），
+#   所以专门有一条「跑完不摘牌」的突变，靠"下一次必须重跑"那条反向判据抓它。
+PAGE_FLIGHT_TEST = ROOT / "tools" / "test_page_flight.py"
+# 反证工具**自己**的残留还原（tools/test_ship_chain.py 的「残留」组）。
+# ⚠ 这条是"判据的判据"：它坏了的表现是别的测试莫名基线红，而它自己不报错。
+MUTATE_SELF = ROOT / "tools" / "mutate.py"
 
 
 @dataclass
@@ -253,10 +260,50 @@ MUTATIONS: list[Mutation] = [
              TOC_TEST),
     Mutation("toc", "`_merge_paged` 撞页数上限也不标 pending（静默截断）",
              WEB,
-             "    if pages >= budget and _next_page_url(cur_html, cur_base):\n"
+             "    more = _next_page_url(cur_html, cur_base, org)\n"
+             "    if more:\n"
              "        pending = True",
+             "    more = _next_page_url(cur_html, cur_base, org)\n"
              "    if False:\n"
              "        pending = True",
+             TOC_TEST),
+    # ---- 2026-11-22：长书只下到前 100 章（三种分页形状一个都不认）----
+    Mutation("toc", "分页只认同模板（`_2` / `/2/` / `index_2.html` 全不认）",
+             WEB,
+             "    pages = _paged_siblings(html, base_url, origin)\n"
+             "    if pages:\n"
+             "        return pages[min(pages)]",
+             "    pages = _paged_siblings(html, base_url, origin)\n"
+             "    if False:\n"
+             "        return pages[min(pages)]",
+             TOC_TEST),
+    Mutation("toc", "「最新九章」和「章节目录」不分开（第 101 章被挤到书末）",
+             WEB,
+             "    return best, latest",
+             "    return full, []",
+             TOC_TEST),
+    Mutation("toc", "下载时也用核实阶段的 3 页预算（只交付全书 1/10）",
+             WEB,
+             "        budget=TOC_MERGE_FULL_PAGES if full else TOC_MERGE_PAGES,",
+             "        budget=TOC_MERGE_PAGES,",
+             TOC_TEST),
+    Mutation("toc", "下载直接吃核实阶段那份残目录缓存",
+             DISCOVERY,
+             '                if not (full and old.get("toc_pending")):',
+             "                if True:",
+             TOC_TEST),
+    Mutation("toc", "探测也跟分页到底（一个候选吃掉整个搜索预算）",
+             BASE,
+             "            # 只取\"够判定\"的那份目录，不跟分页到底（见 read_toc）。\n"
+             "            chapters = self.read_toc(result)",
+             "            # 只取\"够判定\"的那份目录，不跟分页到底（见 read_toc）。\n"
+             "            chapters = self.get_chapters(result)",
+             TOC_TEST),
+    Mutation("toc", "配置源正则一读就收手（看着完整就不再跟分页）",
+             CONF,
+             "        if len(merged) <= len(chapters):\n"
+             "            return chapters",
+             "        return chapters",
              TOC_TEST),
     Mutation("toc", "「目录可能不全」只写日志、不写进用户看得见的那一步",
              ADAP,
@@ -2527,6 +2574,57 @@ MUTATIONS: list[Mutation] = [
              '            cur["search_kwblind"] = int(cur.get("search_kwblind") or 0) + 1',
              '            cur["search_kwblind"] = 0',
              SITE_FAULT_TEST),
+
+    # ---------------- 同一个页面/目录被并发抓 N 遍（tools/test_page_flight.py）--
+    # 2026-11-23。缓存只在**跑完之后**才有值，所以冷缓存下的并发请求会各自
+    # 把同一件最贵的活重做一遍：长书目录 = 两份 21 页分页（线上一次 107 秒），
+    # 而日志一直写 `候选=1 成书=1`。这条母题已经第三次出现（11-01 搜索、
+    # 11-22 分页、今天 page_of/cached），所以每一处都要有独立的牙。
+    Mutation("单飞", "`cached()` 不走单飞（并发未命中各自跑一遍 producer）",
+             UTILS,
+             "    val = single_flight(key, producer)",
+             "    val = producer()",
+             PAGE_FLIGHT_TEST),
+    Mutation("单飞", "登记簿永远当「没人跑」（每个调用都自己当领跑者）",
+             UTILS,
+             "            cur = _flights.get(key)",
+             "            cur = None",
+             PAGE_FLIGHT_TEST),
+    Mutation("单飞", "`page_of` 的 key 里没有 `full`（下载与探测合成一份）",
+             DISCOVERY,
+             'f"pg{int(bool(full))}:{url}"',
+             'f"pg:{url}"',
+             PAGE_FLIGHT_TEST),
+    Mutation("单飞", "跑完不摘牌（单飞退化成缓存：新站学会了还返回旧空结果）",
+             UTILS,
+             "        mine.val = val\n"
+             "        with _flight_lock:\n"
+             "            if _flights.get(key) is mine:\n"
+             "                _flights.pop(key, None)\n"
+             "        mine.ev.set()",
+             "        mine.val = val\n"
+             "        mine.ev.set()",
+             PAGE_FLIGHT_TEST),
+    Mutation("单飞", "领跑的失败后不唤醒等着的人（请求挂到超时才回来）",
+             UTILS,
+             "            mine.ev.set()               # 先摘牌再唤醒：别让新来的人挂到尸首上",
+             "            pass",
+             PAGE_FLIGHT_TEST),
+    Mutation("单飞", "缓存时间记成开始时刻（producer 比 TTL 慢时等于没缓存）",
+             UTILS,
+             "        _mem_cache[key] = (time.time(), val)",
+             "        _mem_cache[key] = (now, val)",
+             PAGE_FLIGHT_TEST),
+
+    # ---------------- 反证残留回写（tools/test_ship_chain.py）---------------
+    # 2026-11-23 实测：昨天的残留把今天新加的代码静默回滚，工具只打一行「已还原」。
+    Mutation("残留", "过期残留照样回写（把今天的改动静默回滚成昨天那版）",
+             MUTATE_SELF,
+             # ⚠ 必须拼串：本文件里的突变清单也会被"唯一命中"扫描扫到，
+             #   直接写成整句就会命中 2 处（定义 + 这条清单），基线当场红。
+             "_RECOVER_FRESH = " + "60 * 60",
+             "_RECOVER_FRESH = " + "10 ** 9",
+             CHAIN_TEST),
 ]
 
 
@@ -2571,6 +2669,9 @@ def _write(path: Path, text: str) -> None:
 #     整个反证步骤当场判失败 —— 而且报错出现在 mutate 的日志里，看起来像
 #     测试烂了，其实是我自己在删文件）。留个空壳既等效，也不触发护栏。
 _PENDING = ROOT / "dist" / "tmp" / "mutate_pending.json"
+# 残留多久算「不可信」：崩掉的那一轮几分钟内就会被发现，一小时前的残留
+# 说明这中间工作区大概率已经往前走了（见 `_recover_pending`）。
+_RECOVER_FRESH = 60 * 60
 # 上一次写进 `_PENDING` 的内容（内存里去重，避免上百次重复写盘）
 _PENDING_LAST: str | None = None
 
@@ -2654,12 +2755,36 @@ def _clear_pending() -> None:
 
 
 def _recover_pending() -> list[str]:
-    """上次跑了一半被杀？先把残留的突变还原掉，再拿干净内容当基准。"""
+    """上次跑了一半被杀？先把残留的突变还原掉，再拿干净内容当基准。
+
+    ⚠ **过期残留不许回写**（2026-11-23 真被它吃掉一次）：
+      `_PENDING` 存的是"写坏之前的原文"，它只对**同一轮**有意义。
+      昨天的残留意味着这中间工作区可能已经往前走了 —— 照着昨天的原文
+      回写，等于把今天的改动**静默回滚**，而工具只打一行「已还原」。
+      实测代价：`app/discovery.py` 里刚加的一段单飞改动当场消失，
+      报错却是"基线就是红的，跳过"，看起来像测试烂了。
+      所以超过 `_RECOVER_FRESH` 的残留只点名、不回写，让人自己看 `git diff`。
+    """
     try:
         data = json.loads(_PENDING.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not data:
+        return []
+    try:
+        age = time.time() - _PENDING.stat().st_mtime
+    except OSError:
+        age = 0.0
+    if age > _RECOVER_FRESH:
+        try:
+            names = " / ".join(str(Path(p).relative_to(ROOT)) for p in data)
+        except ValueError:
+            names = " / ".join(data)
+        print(f"⚠ 残留突变是 {int(age / 60)} 分钟前的（超过 "
+              f"{int(_RECOVER_FRESH / 60)} 分钟）—— **不回写**，它当时保存的是"
+              f"更早的原文，回写会把今天的改动静默回滚。")
+        print(f"  请自己核对这几个文件的 `git diff`：{names}")
+        _clear_pending()
         return []
     fixed: list[str] = []
     for p, text in data.items():

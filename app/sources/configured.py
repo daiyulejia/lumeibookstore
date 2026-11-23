@@ -177,6 +177,17 @@ class ConfiguredSource(Source):
         return out
 
     # ---------- 目录 ----------
+    def read_toc(self, result: BookResult, *, full: bool = False) -> list[Chapter]:
+        """`full=False`（探测/抽样）：只跟 3 页、且**不写整本缓存**。"""
+        if full:
+            return self.get_chapters(result)
+        data = self._load_detail(result, fast=True)
+        if data.get("title"):
+            result.title = data["title"]
+        if data.get("author") and not result.author:
+            result.author = data["author"]
+        return data["chapters"]
+
     def get_chapters(self, result: BookResult) -> list[Chapter]:
         """取目录。书名/作者每次都回填（不能只写在被缓存的函数里）。"""
         data = cached(
@@ -190,10 +201,10 @@ class ConfiguredSource(Source):
             result.author = data["author"]
         return data["chapters"]
 
-    def _load_detail(self, result: BookResult) -> dict:
+    def _load_detail(self, result: BookResult, *, fast: bool = False) -> dict:
         html = fetch_text(result.url, encoding=self.encoding)
         chapters = self._chapters_by_regex(html, result.url)
-        chapters = self._repair_toc(chapters, html, result.url)
+        chapters = self._repair_toc(chapters, html, result.url, fast=fast)
         title = ""
         author = ""
         if self.cfg.get("book_title_re"):
@@ -232,7 +243,7 @@ class ConfiguredSource(Source):
         return chapters
 
     def _repair_toc(
-        self, chapters: list[Chapter], html: str, base: str
+        self, chapters: list[Chapter], html: str, base: str, *, fast: bool = False
     ) -> list[Chapter]:
         """目录太少、或明显只有一部分时，退回**通用启发式**再取一次。
 
@@ -250,20 +261,43 @@ class ConfiguredSource(Source):
         """
         like = [{"url": c.url, "title": c.title} for c in chapters]
         partial, why = webfetch.toc_completeness(like, html)
-        if len(chapters) >= MIN_TOC and not partial:
+        picked = like
+        if len(chapters) < MIN_TOC or partial:
+            better = webfetch.extract_toc(html, base)
+            if len(better) > len(like):
+                picked = better
+                logger.info(
+                    "目录兜底：%s 正则只拿到 %d 章（%s），通用启发式拿到 %d 章",
+                    base, len(chapters), why or "条数偏少", len(better))
+        # ⚠ 即便正则读得"看起来很完整"，也**必须**跟一次分页（2026-11-22）：
+        #   `toc_completeness` 只看章号连不连续 —— 1..113 连续它就说完整，
+        #   而这本书实际 949 章（站方每 100 章分一页）。
+        #   原来这里在"够多且不 partial"时直接 return，于是配置源的长书
+        #   永远只交付前 100 章。跟分页本身很便宜（没分页器就一次都不发）。
+        #
+        # ⚠ 同时要把页面顶部那块「最新章节」挪到末尾：它排在正文目录前面，
+        #   用户从第 1 章开始读到的其实是结局（实测 xbiquge 的《大奉打更人》
+        #   第 1 条是「新书已肥」）。结构判据见 `_split_toc_sections`。
+        tail: list[dict] = []
+        main, latest = webfetch._split_toc_sections(html, base)
+        if latest and len(main) >= max(8, len(picked) // 2):
+            picked, tail = main, latest
+        merged, _url, _note = webfetch.upgrade_toc(
+            picked, html, base,
+            budget=(webfetch.TOC_MERGE_PAGES if fast
+                    else webfetch.TOC_MERGE_FULL_PAGES),
+            wall=(webfetch.TOC_MERGE_WALL if fast
+                  else webfetch.TOC_MERGE_FULL_WALL))
+        if tail:
+            _seen = {c.get("url") for c in merged if c.get("url")}
+            merged = list(merged) + [c for c in tail if c.get("url") not in _seen]
+        if len(merged) <= len(chapters):
             return chapters
-
-        better = webfetch.extract_toc(html, base)
-        picked = better if len(better) > len(like) else like
-        picked, _url, _note = webfetch.upgrade_toc(picked, html, base)
-        if len(picked) <= len(chapters):
-            return chapters
-        logger.info(
-            "目录兜底：%s 正则只拿到 %d 章（%s），通用启发式拿到 %d 章",
-            base, len(chapters), why or "条数偏少", len(picked))
+        logger.info("目录兜底：%s 正则 %d 章 → 合并分页后 %d 章",
+                    base, len(chapters), len(merged))
         return [
             Chapter(index=i, title=str(c.get("title") or ""), url=str(c.get("url") or ""))
-            for i, c in enumerate(picked, 1)
+            for i, c in enumerate(merged, 1)
         ]
 
     # ---------- 正文 ----------

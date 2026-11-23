@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 from . import registry, sitelearn, webfetch, websearch
 from .models import BookResult
 from .relevance import score as score_result
-from .utils import fast_mode, fetch_text, host_of
+from .utils import fast_mode, fetch_text, host_of, single_flight
 
 logger = logging.getLogger("novel.discovery")
 
@@ -57,8 +57,21 @@ _pg_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # 页面缓存
 # ---------------------------------------------------------------------------
-def page_of(url: str, *, force: bool = False) -> dict:
-    """抓并解析一个页面，成功的结果缓存起来。"""
+def page_of(url: str, *, force: bool = False, full: bool = False) -> dict:
+    """抓并解析一个页面，成功的结果缓存起来。
+
+    `full=True` 是**下载**这条路：要求把分页目录一路跟到底。
+    ⚠ 不能复用核实阶段那份缓存 —— 那一份只跟了 3 页（核实阶段 12 秒预算
+      要分给所有候选），拿它去下载等于"把 100 页的书当 3 页交付"。
+      2026-11-22 之前更糟：连分页都认不出来，长书全都只下到前 100 章。
+
+    ⚠ **未命中时按 (地址, 要不要整本) 走单飞**（2026-11-23）：
+      缓存是"跑完之后"才有的，冷缓存下同一个书页被两处同时要，
+      原先会各自完整解析一遍 —— 长书就是两份 21 页分页（线上一次 107 秒）。
+      实测复现：两个线程同时进来 → `webfetch.analyze` 被调用 **2 次**。
+      `full` 必须进 key：探测只要 3 页、下载要 40 页，合成一份要么让下载
+      拿到残目录，要么让探测陪着跑 25 秒。
+    """
     url = (url or "").strip()
     if not url:
         return {"kind": "unknown", "url": url}
@@ -67,16 +80,20 @@ def page_of(url: str, *, force: bool = False) -> dict:
         with _pg_lock:
             hit = _pg_cache.get(url)
             if hit and now - hit[0] < PAGE_TTL:
-                return hit[1]
-    data = webfetch.analyze(url)
+                old = hit[1]
+                # 要整本、而缓存那份后面还有页没跟 → 重新解析（不返回残目录）。
+                if not (full and old.get("toc_pending")):
+                    return old
+    data = single_flight(f"pg{int(bool(full))}:{url}",
+                         lambda: webfetch.analyze(url, full=full))
     if data.get("kind") in ("toc", "chapter"):
         with _pg_lock:
             # 请求地址和重定向后的地址都存一份 —— 核实阶段用的是原始地址，
             # 之后按书抓目录用的是最终地址，不存两份就要多抓一次。
-            _pg_cache[url] = (now, data)
+            _pg_cache[url] = (time.time(), data)
             real = data.get("final_url")
             if real and real != url:
-                _pg_cache[real] = (now, data)
+                _pg_cache[real] = (time.time(), data)
     return data
 
 
