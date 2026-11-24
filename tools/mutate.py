@@ -2160,9 +2160,9 @@ MUTATIONS: list[Mutation] = [
              WEBSEARCH_TEST),
     Mutation("候选供给", "百度被反爬时当成「没搜到」（两个引擎的死法又混成一笔）",
              WEBSEARCH,
-             "                          wall_max=_BAIDU_WALL_MAX, url=str(r.url))\n"
+             "        wall_max=_BAIDU_WALL_MAX)\n"
              "    if why:",
-             "                          wall_max=_BAIDU_WALL_MAX, url=str(r.url))\n"
+             "        wall_max=_BAIDU_WALL_MAX)\n"
              "    if False:",
              WEBSEARCH_TEST),
     Mutation("候选供给", "新站第一笔账也判升降级（复活日志又变成噪声）",
