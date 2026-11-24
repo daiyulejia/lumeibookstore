@@ -391,6 +391,13 @@ def web_ledger(tally: Optional[dict]) -> dict:
     eng = tally.get("engines") or {}
     if eng:
         s += " 引擎=" + ",".join(f"{k}{v}" for k, v in eng.items())
+    # 「谁拒绝了我们」单独一格（2026-11-24）。`引擎=` 是**候选来源**统计，
+    # 全员被拒时候选为空、那一格根本不打印 → `0→0 失败=0 非目录=0` 读起来
+    # 就是"这本书网上没有"。今天这三本就栽在这里：一次 0 字节抖动把必应
+    # 关了 600 秒（百度早已被反爬），剩下的搜索全是静默的 0。
+    refused = list(tally.get("refused") or [])
+    if refused:
+        s += " 拒=" + ",".join(refused)
     return {"联网核": s}
 
 

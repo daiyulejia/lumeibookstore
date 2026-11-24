@@ -862,7 +862,10 @@ def discover(
 
     tally: dict = {"cands": len(uniq), "hit": [], "fetch_fail": [],
                    "not_toc": [], "skipped_dead": [], "dup": [], "unchecked": 0,
-                   "recheck": [], "engines": engines}
+                   "recheck": [], "engines": engines,
+                   # 「谁拒绝了我们」—— 候选为空时 `引擎=` 那一格压根不打印，
+                   # 不留这一项的话「0→0」与"网上没有这本书"同形（2026-11-24）。
+                   "refused": websearch.last_refused()}
     # 复核名额：候选几乎全是我们自己判死的站时，放 1 个进来试
     # （必须在建线程表之前定，不能在线程里抢 —— 那取决于调度顺序，
     #  同一份输入两次跑出的账会不一样，判据也就没法写）。
@@ -929,14 +932,15 @@ def discover(
         return f"{head}(+{len(names) - 6})" if len(names) > 6 else head
 
     logger.info("联网核实账: 候选=%d 命中=%d 打开失败=%d(%s) 不是目录=%d(%s) "
-                "已死站跳过=%d 复核=%d(%s) 重复=%d 未核=%d",
+                "已死站跳过=%d 复核=%d(%s) 重复=%d 未核=%d 被拒=%s",
                 tally["cands"], len(results),
                 len(tally["fetch_fail"]), _nm(tally["fetch_fail"]),
                 len(tally["not_toc"]), _nm(tally["not_toc"]),
                 len(tally["skipped_dead"]),
                 len(tally["recheck"]), _nm(tally["recheck"]),
                 len(tally["dup"]),
-                tally["unchecked"])
+                tally["unchecked"],
+                ",".join(tally.get("refused") or []) or "-")
     _tally_local.tally = tally
 
     if results:

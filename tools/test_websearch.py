@@ -641,6 +641,150 @@ ok("但日志里明写「全部拒绝了我们 / 候选供给为 0」",
    any("全部拒绝了我们" in ln and "候选供给为 0" in ln for ln in _wlines),
    str(_wlines[-3:]))
 
+# ---------------------------------------------------------------------------
+# ⑨ 「抖动」≠「被封」（2026-11-24）
+# ---------------------------------------------------------------------------
+# 线上/本机实测的病因（本机 8000，三本书全中）：
+#   同一问法连打 5 次，第 4 次拿到 **HTTP 200 + 0 字节**；另有「新建连接池后
+#   头几次请求 3/3 都是 14.6KB 空壳页（标题只有『搜索 - Microsoft 必应』）」。
+#   这两种都被 `_refused_cooldown` 判成「被反爬」→ 必应关 600 秒。
+#   而百度那条早就被反爬打死 → 整整十分钟全网候选供给为 0，日志只剩
+#   `联网核=0→0 失败=0 非目录=0`，读起来和"这本书网上没有"一模一样。
+#   《一句顶一万句》《马桥词典》《钟鼓楼》就是这么丢的。
+#
+# 判据三问：
+#   ① 会不会只因环境变？—— 全用假客户端；重试次数用**请求计数**断言，
+#      冷却只断言"落哪一档"，不量墙钟。（把重试延时压到 0.02s 只是为了
+#      不给 ship 增加 2 秒，不是判据的一部分。）
+#   ② 拆掉功能还绿吗？—— `tools/mutate.py`「引擎抖动」组。
+#   ③ 只验正向吗？—— 反向三条：验证页**不许**重试、验证页**必须**长冷却、
+#      正常页不许留下任何冷却。
+_old_client5 = W.get_client
+_old_delay = W.ENGINE_RETRY_DELAY
+
+
+def _seq_client(resps):
+    """按顺序返回一串响应；用完了就一直返回最后一个。"""
+    state = {"i": 0}
+
+    def _get(url, **kw):
+        _hits["n"] += 1
+        i = min(state["i"], len(resps) - 1)
+        state["i"] += 1
+        return resps[i]
+
+    return type("C", (), {"get": staticmethod(_get)})()
+
+
+W.ENGINE_RETRY_DELAY = 0.02
+try:
+    # ---- ① 0 字节：必须重试一次，再决定 ----
+    _reset_cooldowns()
+    _n0 = _hits["n"]
+    W.get_client = lambda: _seq_client([_Resp("", 200, "https://cn.bing.com/search")])
+    _e11 = None
+    try:
+        W._bing("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e11 = exc
+    _tries = _hits["n"] - _n0
+    ok("0 字节 → 抛 EngineBlocked（不是「没这本书」）",
+       isinstance(_e11, W.EngineBlocked), f"{type(_e11).__name__}: {_e11}")
+    ok("0 字节 → **重试过 1 次**（共 2 个请求）", _tries == 2, f"{_tries} 个请求")
+
+    # ---- ② 关键：一次抖动**不该**把引擎关十分钟 ----
+    _left = W._bing_blocked_until - time.time()
+    ok("0 字节的冷却落在短档（≤ BING_ERROR_COOLDOWN），不是 600 秒",
+       0 < _left <= W.BING_ERROR_COOLDOWN + 2, f"{_left:.0f}s")
+    ok("短档确实比「被反爬」那档短（两档没混成一档）",
+       W.BING_ERROR_COOLDOWN < W.BING_BLOCK_COOLDOWN,
+       f"{W.BING_ERROR_COOLDOWN} vs {W.BING_BLOCK_COOLDOWN}")
+
+    # ---- ③ 抖一下就恢复：第一次空壳、第二次正常页 → 出候选、零冷却 ----
+    #    这是今天这三本书唯一的出路：引擎明明第二次就能给东西，
+    #    原来第一次空壳就放弃 + 关十分钟，等于把答案一起关掉。
+    _reset_cooldowns()
+    _cl13 = _seq_client([_Resp("", 200, "https://cn.bing.com/search"),
+                         _Resp(BING_PAGE, 200, "https://cn.bing.com/search")])
+    W.get_client = lambda: _cl13
+    _g12 = None
+    _e12 = None
+    try:
+        _g12 = W._bing("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e12 = exc
+    ok("第一次 0 字节、第二次正常 → 照样拿到候选（重试真的救回来了）",
+       _e12 is None and [g["host"] for g in (_g12 or [])] == ["www.bingbook.test"],
+       f"{type(_e12).__name__}: {_e12} / {_g12}")
+    ok("救回来之后**不许**留下冷却（否则下一本书白等）",
+       W._bing_blocked_until == 0.0, str(W._bing_blocked_until))
+
+    # ---- ④ 反向：验证页是**真的被封**，不许重试、必须长冷却 ----
+    _reset_cooldowns()
+    _n1 = _hits["n"]
+    W.get_client = lambda: _seq_client([_Resp("验证你是人类", 200, "https://cn.bing.com/search")])
+    _e13 = None
+    try:
+        W._bing("三体")
+    except Exception as exc:  # noqa: BLE001
+        _e13 = exc
+    _tries2 = _hits["n"] - _n1
+    _left2 = W._bing_blocked_until - time.time()
+    ok("验证页 → 不重试（越打越死）", _tries2 == 1, f"{_tries2} 个请求")
+    ok("验证页 → 长冷却（≈ BING_BLOCK_COOLDOWN）", _left2 > W.BING_ERROR_COOLDOWN,
+       f"{_left2:.0f}s")
+
+    # ---- ⑤ 同一条路两个引擎都得走：百度的 0 字节也要重试 ----
+    _reset_cooldowns()
+    _n2 = _hits["n"]
+    W.get_client = lambda: _seq_client([_Resp("", 200, "https://www.baidu.com/s")])
+    try:
+        W._baidu("三体")
+    except Exception:  # noqa: BLE001
+        pass
+    _tries3 = _hits["n"] - _n2
+    ok("百度：0 字节也重试一次（判据不是只装在必应上）", _tries3 == 2, f"{_tries3} 个请求")
+
+    # ---- ⑥ 账本：有引擎被拒时 `last_refused()` 必须点名 ----
+    _reset_cooldowns()
+    _old_bing3 = W._bing
+    _old_baidu3 = W._baidu
+    try:
+        # 百度给一条正常结果，把「谁被拒」从"两个都被拒"里分离出来 ——
+        # 否则这条判据分不清"点名了"和"全点名了"。
+        W._bing = lambda kw: (_ for _ in ()).throw(
+            W.EngineBlocked("返回异常页（0 字节，不是结果页）"))
+        W._baidu = lambda kw: [{"url": "https://www.baidubook.test/b/1",
+                                "host": "www.baidubook.test", "title": "三体", "engine": "baidu"}]
+        W.find_book_pages("三体")
+        _ref = W.last_refused()
+    finally:
+        W._bing = _old_bing3
+        W._baidu = _old_baidu3
+    ok("引擎被拒 → `last_refused()` 点名（否则 `引擎=` 那格压根不打印）",
+       _ref == ["Bing"], str(_ref))
+
+    # ---- ⑦ 引擎请求必须自带墙钟（结构判据，不量耗时）----
+    # `utils.get_client()` 的默认超时是 25s，等于整轮联网预算（32s）；
+    # 撞满一次 + 重试一次就把预算吃穿，而 `fetch_text` 那条"默认超时是
+    # 隐形墙钟"的教训已经踩过（2026-11-15）。这里只断言"传了、且不长"。
+    _got_kw: dict = {}
+
+    def _get_kw(url, **kw):
+        _got_kw.update(kw)
+        return _Resp(BING_PAGE, 200, "https://cn.bing.com/search")
+
+    _reset_cooldowns()
+    W.get_client = lambda: type("C", (), {"get": staticmethod(_get_kw)})()
+    W._bing("三体")
+    ok("引擎请求带自己的墙钟（默认 25s 会把联网预算吃穿）",
+       isinstance(_got_kw.get("timeout"), (int, float)) and _got_kw["timeout"] <= 12,
+       str(_got_kw.get("timeout")))
+finally:
+    W.get_client = _old_client5
+    W.ENGINE_RETRY_DELAY = _old_delay
+    _reset_cooldowns()
+
 print("=" * 62)
 print(f"{'全部通过' if not fails else '有失败'}（{ok_n} 通过 / {bad_n} 失败）")
 if fails:

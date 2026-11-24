@@ -129,13 +129,11 @@ def _bing(keyword: str) -> list[dict]:
     until = _bing_blocked_until
     if now < until:
         raise EngineBlocked(f"冷却中（{int(until - now)}s 后再试）")
-    r = get_client().get("https://cn.bing.com/search", params={"q": keyword},
-                         headers={"Accept-Language": "zh-CN,zh;q=0.9"})
-    body = r.text or ""
-    why = _engine_refused(r.status_code, body, marks=_BING_WALL_MARKS,
-                          min_bytes=BING_RESULT_MIN_BYTES)
+    body, why, status = _fetch_engine(
+        "必应", "https://cn.bing.com/search", {"q": keyword},
+        marks=_BING_WALL_MARKS, min_bytes=BING_RESULT_MIN_BYTES)
     if why:
-        _bing_refused(why, r.status_code, len(body))
+        _bing_refused(why, status, len(body))
     out: list[dict] = []
     for url, title in _H2_LINK.findall(body):
         _add(out, url, _clean_title(title), "bing")
@@ -165,16 +163,42 @@ BAIDU_RESULT_MIN_BYTES = 5000  # 正常结果页几十上百 KB；1~5KB 的壳�
 _baidu_blocked_until = 0.0
 
 
+def refused_transient(why: str) -> bool:
+    """这次「拒绝」是**一次抖动**，还是**对方真的封了我们**？
+
+    为什么必须分开（2026-11-24，本机实测，代价大到离谱）：
+      原来这里只认 `why.startswith("HTTP ")` 当"临时故障"，其余**一律**按
+      「被反爬」停 10 分钟。于是这两种响应都算"被封"：
+
+        · HTTP 200 + **0 字节**（连 `content-length` 都没有，body 就是空）——
+          实测同一问法连打 5 次，第 4 次就是 0 字节；停 10 分钟。
+        · HTTP 200 + **14.6KB 空壳页**（标题只有「搜索 - Microsoft 必应」、
+          0 个结果块）—— 实测**新建连接池后的头几次请求 3/3 都是它**。
+          也就是说：进程一重启，第一个必应查询就会被判"被封"，随后
+          10 分钟内所有搜索的候选供给都是 0。
+
+      后果不是"慢"，是**整整 10 分钟的全网静默**：百度那条早就被反爬打死了，
+      必应一关，`联网核` 只剩 `引擎=-`，而日志读起来和"网上没有这本书"
+      一模一样。今天量《一句顶一万句》《马桥词典》《钟鼓楼》三本全中。
+
+    判据只看**有没有反爬证据**（验证页指纹 / 验证域），不看体量：
+    体量小也可能是"这次它没给我们结果"，那既不该长冷却，也不该拒一次就死心。
+    """
+    return not why.startswith("被反爬")
+
+
 def _refused_cooldown(engine: str, why: str, size: int, *,
                       block: float, error: float) -> float:
-    """被拒之后**停多久**：被反爬/被限流停得久，5xx 只是等一下。
+    """被拒之后**停多久**：被反爬/被限流停得久，空壳/5xx 只是等一下。
 
     两档分开的理由：把"它临时崩了"当成"它封了我们"会白等十分钟，
     反过来把"它封了我们"当成临时故障，就会越打越死、封得越来越长。
     冷却期内的调用**不发请求**，所以也不会把同一件事刷几百行日志。
     """
-    cd = error if why.startswith("HTTP ") else block
-    logger.info("%s拒绝了我们（%s / %d 字节），%.0f 秒内不再试", engine, why, size, cd)
+    cd = error if refused_transient(why) else block
+    kind = "抖动" if refused_transient(why) else "被反爬"
+    logger.info("%s拒绝了我们（%s / %d 字节，判为%s），%.0f 秒内不再试",
+                engine, why, size, kind, cd)
     return cd
 
 # 百度反爬页的指纹。都是实测见过的（2026-11-19 本机）：
@@ -195,14 +219,13 @@ def _baidu(keyword: str) -> list[dict]:
         raise EngineBlocked(
             f"冷却中（{int(_baidu_blocked_until - now)}s 后再试）")
     out: list[dict] = []
-    r = get_client().get("https://www.baidu.com/s", params={"wd": keyword},
-                         headers={"Accept-Language": "zh-CN,zh;q=0.9"})
-    body = r.text or ""
-    # 判据与必应**同一份实现**（`_engine_refused`）。以前这里手写一遍、
-    # 必应那边手写一遍，结果 11-19 只修了这一半（见函数注释）。
-    why = _engine_refused(r.status_code, body, marks=_BAIDU_WALL_MARKS,
-                          min_bytes=BAIDU_RESULT_MIN_BYTES,
-                          wall_max=_BAIDU_WALL_MAX, url=str(r.url))
+    # 判据与必应**同一份实现**（`_engine_refused` + `_fetch_engine`）。
+    # 以前这里手写一遍、必应那边手写一遍，结果 11-19 只修了这一半；
+    # 11-24 又把「发请求 + 抖动重试」也收进 `_fetch_engine`，两个引擎才真正同源。
+    body, why, status = _fetch_engine(
+        "百度", "https://www.baidu.com/s", {"wd": keyword},
+        marks=_BAIDU_WALL_MARKS, min_bytes=BAIDU_RESULT_MIN_BYTES,
+        wall_max=_BAIDU_WALL_MAX)
     if why:
         _baidu_blocked_until = time.time() + _refused_cooldown(
             "百度", why, len(body), block=BAIDU_BLOCK_COOLDOWN,
@@ -258,6 +281,63 @@ def _engine_refused(status: int, body: str, *, marks: tuple[str, ...],
     return ""
 
 
+# ---------------------------------------------------------------------------
+# 「发一次请求 + 判是不是被拒 + 抖动重试一次」——**两个引擎共用这一份**
+# ---------------------------------------------------------------------------
+# 为什么必须收成一份（2026-11-24）：
+#   同一件事（"这次没拿到结果页，要不要当故障"）在 `_bing` 和 `_baidu` 里
+#   各写一遍，而 11-19 的教训就是"按上次改过的符号 grep"只修了一半。
+#   收成一份以后，`test_websearch.py` 按 `ENGINES` 表遍历就有意义了。
+#
+# 为什么要**重试一次**：今天实测同一问法连打 5 次，第 4 次拿到 0 字节、
+#   后面的请求全被 600 秒冷却挡住 —— 而前 3 次都是完全正常的 3 条真书页。
+#   空壳/0 字节是不可复现的抖动，一次重试就能救回来；不重试的代价是
+#   **10 分钟全网静默**（百度那条早就死了，必应是唯一供给）。
+#   只重试 1 次，不是 N 次 —— 11-01 踩过"16 个一模一样请求把搜索引擎
+#   打成返回别的页面"，重复问同一句话本身是有风险的。
+ENGINE_RETRY_DELAY = 0.6
+# 引擎请求的墙钟。默认 25s（`utils.get_client`）对一个搜索引擎来说太长：
+# 它撞满一次就把整轮联网预算（32s）吃掉，而重试还会再来一次。
+ENGINE_TIMEOUT = 8.0
+
+
+def _fetch_engine(engine: str, url: str, params: dict, *,
+                  marks: tuple[str, ...], min_bytes: int,
+                  wall_max: Optional[int] = None) -> tuple[str, str, int]:
+    """发一次请求并判「这是不是结果页」。
+
+    返回 `(body, why, status)`；`why == ""` 表示是正常结果页。
+    **抖动**（空壳 / 0 字节 / 5xx / 传输异常）会原地重试一次再定，
+    「被反爬」不重试 —— 那种情况越打越死。
+    """
+    body, why, status = "", "", 0
+    for attempt in (0, 1):
+        try:
+            r = get_client().get(url, params=params,
+                                 headers={"Accept-Language": "zh-CN,zh;q=0.9"},
+                                 timeout=ENGINE_TIMEOUT)
+        except Exception as e:  # noqa: BLE001
+            # 传输层直接炸（连接被重置 / 读超时）：这**同样**是抖动，
+            # 不能当成"这本书它没有"。第二次还炸就如实报出去。
+            why, status, body = f"传输异常（{type(e).__name__}）", 0, ""
+            if attempt:
+                return body, why, status
+            logger.info("%s：%s —— 按一次瞬时故障重试（第 2 次请求）", engine, why)
+            time.sleep(ENGINE_RETRY_DELAY)
+            continue
+        body = r.text or ""
+        status = r.status_code
+        why = _engine_refused(status, body, marks=marks, min_bytes=min_bytes,
+                              wall_max=wall_max, url=str(r.url))
+        if not why:
+            return body, why, status
+        if not refused_transient(why) or attempt:
+            return body, why, status
+        logger.info("%s：%s —— 按一次瞬时故障重试（第 2 次请求）", engine, why)
+        time.sleep(ENGINE_RETRY_DELAY)
+    return body, why, status
+
+
 # 必应的三个数（同上：实测，不是拍脑袋）。
 BING_RESULT_MIN_BYTES = 20000
 BING_BLOCK_COOLDOWN = 600.0    # 被反爬/被限流：越打越死，停 10 分钟
@@ -284,6 +364,20 @@ def _bing_refused(why: str, status: int, size: int) -> None:
 #   `tools/test_websearch.py` 换桩以后 `_ask` 还会去调真的（见 `_ask` 的注释）。
 #   顺带它也是"每个引擎都得过「被拦判据」"这条闸门的名单（H2 组按它遍历）。
 ENGINES: tuple[tuple[str, str], ...] = (("Bing", "_bing"), ("百度", "_baidu"))
+
+# 上一轮 `find_book_pages()` 里**拒绝了我们**的引擎名（2026-11-24）。
+#
+# 为什么不能只靠 `引擎=bing6,baidu6` 这一格：那是**候选来源**的统计，
+# 全员被拒时候选为空 → `引擎=` 那一格直接不打印 → `联网核=0→0 失败=0 非目录=0`。
+# 读完的结论只能是"这本书网上没有"，而事实是"我们两个引擎今天都没拿到东西"。
+# 同一母题 11-19（百度 `[]`）、11-20（必应 `[]`）各栽过一次，这次栽在
+# **冷却档位**上：一次抖动把引擎关了十分钟，日志里连"被拒"都不留。
+_LAST_REFUSED: list[str] = []
+
+
+def last_refused() -> list[str]:
+    """上一轮联网发现里拒绝/坏掉的引擎名（没有就返回空列表）。"""
+    return list(_LAST_REFUSED)
 
 
 # 第一轮候选少于这个数，就**换一种问法再问一次**（2026-11-19）。
@@ -313,6 +407,7 @@ def _ask(keyword: str, say) -> tuple[list[dict], list[list[dict]], list[str]]:
       而不是先取成局部变量），否则 `tools/test_websearch.py` 把它们换桩以后
       这里还在调真的 —— 测试会去打真站点。
     """
+    global _LAST_REFUSED
     found: list[dict] = []
     per_engine: list[list[dict]] = []
     names: list[str] = []
@@ -335,6 +430,7 @@ def _ask(keyword: str, say) -> tuple[list[dict], list[list[dict]], list[str]]:
         per_engine.append(got)
     # 全员被拦时把话说明白：这一轮"候选=0"是**我们的供给断了**，
     # 不是"这本书网上没有"。没有这一行，复盘只能看到 `Bing=0 百度=0`。
+    _LAST_REFUSED = list(refused)
     if refused and len(refused) == len(ENGINES):
         logger.info("联网发现: %d 个引擎全部拒绝了我们（%s），本轮候选供给为 0"
                     "（不是「网上没有这本书」）", len(ENGINES), "/".join(refused))
@@ -401,6 +497,7 @@ def find_book_pages(
     keyword = (keyword or "").strip()
     if not keyword:
         return []
+    global _LAST_REFUSED
 
     def say(title: str, detail: str = "", ok: bool = True) -> None:
         if not log:
@@ -429,14 +526,19 @@ def find_book_pages(
                 len(found), first_n,
                 " ".join(f"{n}={len(e)}" for n, e in zip(names, per_engine)))
 
+    # 这一轮「谁拒绝了我们」要跨两次问法累计：第二轮被拒同样等于"少一半供给"，
+    # 只看最后一次 `_ask` 会把第一轮的死掉整个抹掉。
+    refused_all = set(last_refused())
+
     if first_n < SECOND_QUERY_MIN:
         query2 = keyword + SECOND_QUERY_SUFFIX
         say("换一种说法再搜", f"第一轮只有 {first_n} 条，加问「{query2}」")
         found2, per_engine2, names2 = _ask(query2, say)
+        refused_all |= set(last_refused())
         _pick(per_engine2, keyword=keyword, per_host=per_host, limit=limit,
               out=out, host_n=host_n, seen=seen)
         logger.info("联网候选（第二次问法）: 第一轮=%d 加问=《%s》 新增=%d 合计=%d",
                     first_n, query2, len(out) - first_n, len(out))
 
+    _LAST_REFUSED = sorted(refused_all)
     return out[:limit]
-

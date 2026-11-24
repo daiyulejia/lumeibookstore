@@ -176,6 +176,16 @@ ok("账本带候选数→命中数", s.startswith("5→0"), s)
 ok("失败带名字", "失败=1(www.99csw.com)" in s, s)
 ok("不是目录带名字", "非目录=2(leshu8.com,tv.cctv.com)" in s, s)
 
+# 「谁拒绝了我们」必须单独一格（2026-11-24）。
+# `引擎=` 是**候选来源**统计：全员被拒时候选为空，那一格压根不打印，
+# 于是 `0→0 失败=0 非目录=0` 读起来就是"这本书网上没有"。
+led2 = web_ledger({"cands": 0, "hit": [], "fetch_fail": [], "not_toc": [],
+                   "unchecked": 0, "refused": ["Bing"]})
+s2 = led2["联网核"]
+ok("引擎被拒时账本点名 `拒=Bing`", "拒=Bing" in s2, s2)
+ok("没被拒时不许出现空的 `拒=`（免得读成「拒了谁？」）",
+   "拒=" not in s, s)
+
 # _verify 的「不是目录」分支：日志 + 账本，两样都要
 _orig_page = D.page_of
 _orig_note = D.registry.note_site

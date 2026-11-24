@@ -93,6 +93,8 @@ RANKS_JS = ROOT / "app" / "static" / "js" / "ranks.js"
 APP_CSS = ROOT / "app" / "static" / "css" / "app.css"
 
 TOC_TEST = ROOT / "tools" / "test_toc_full.py"
+# 目录识别 + 联网账本（`web_ledger` 的 `拒=` 那一格在这里验）。
+ANCHOR_TEST = ROOT / "tools" / "test_toc_anchor.py"
 SAVE_TEST = ROOT / "tools" / "test_adapt_save.py"
 LAUNCH_TEST = ROOT / "tools" / "test_chrome_launcher.py"
 DIRECT_TEST = ROOT / "tools" / "test_adapt_direct.py"
@@ -2176,7 +2178,7 @@ MUTATIONS: list[Mutation] = [
     #   判据的四个面：不判空壳、不判非 200、冷却失效、全员被拦时闭嘴。
     Mutation("引擎静默", "必应拿到「被拒」的响应也照旧返回空列表（又一个静默入口）",
              WEBSEARCH,
-             "        _bing_refused(why, r.status_code, len(body))",
+             "        _bing_refused(why, status, len(body))",
              "        pass",
              WEBSEARCH_TEST),
     Mutation("引擎静默", "取消体量判据（3KB 空壳当成「这本书没有」）",
@@ -2199,6 +2201,36 @@ MUTATIONS: list[Mutation] = [
              "    if refused and len(refused) == len(ENGINES):",
              "    if False:",
              WEBSEARCH_TEST),
+
+    # ---------------- 「抖动」不许当「被封」（tools/test_websearch.py ⑨）--------
+    # 失败方式（2026-11-24 本机实测）：一次 HTTP 200 + 0 字节被当成「被反爬」
+    # → 必应关 600 秒；百度本就死着 → 十分钟全网候选供给 0，日志只剩
+    # `联网候选: 各引擎=Bing=0 百度=0` + `联网核=0→0`，和"网上没有这本书"同形。
+    Mutation("引擎抖动", "把空壳/0 字节也当「被封」（一次抖动关掉引擎十分钟）",
+             WEBSEARCH,
+             '    return not why.startswith("被反爬")',
+             "    return False",
+             WEBSEARCH_TEST),
+    Mutation("引擎抖动", "抖动不重试（第一次空壳就放弃，答案就在第二次）",
+             WEBSEARCH,
+             "        if not refused_transient(why) or attempt:",
+             "        if True:",
+             WEBSEARCH_TEST),
+    Mutation("引擎抖动", "被拒之后不在账本里点名（`引擎=` 那格压根不打印）",
+             WEBSEARCH,
+             "    _LAST_REFUSED = list(refused)",
+             "    _LAST_REFUSED = []",
+             WEBSEARCH_TEST),
+    Mutation("引擎抖动", "引擎请求不带墙钟（退回默认 25s，一次就吃穿联网预算）",
+             WEBSEARCH,
+             "                                 timeout=ENGINE_TIMEOUT)",
+             "                                 )",
+             WEBSEARCH_TEST),
+    Mutation("引擎抖动", "`联网核` 里不写「谁拒了我们」（0→0 读成「网上没有」）",
+             ENGINE,
+             '    if refused:\n        s += " 拒=" + ",".join(refused)',
+             "",
+             ANCHOR_TEST),
 
     # ---------------- 「学会 → 被判死」循环要有终点（tools/test_registry.py ⑨）--
     # ⚠ 失败方式（2026-11-06 复盘）：5 个站每天 03:19 学会、22:51 被判死、
