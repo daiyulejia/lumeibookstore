@@ -689,6 +689,119 @@ def main() -> int:
               _HBudgetExpired.name not in srcsX, f"来源={srcsX}")
         check("H3 收手落在 0.12s 那个重判点上，没有被拖到 0.30s",
               elX < 0.28, f"耗时={elX:.2f}s")
+
+        # ---- H4：① 也得让路（2026-11-25 主线）----
+        # 现场（本地真机，旧代码）：
+        #   搜索收手：已返回 2/7 …放弃 5 个还没回来的慢源（gutenberg, kunnu8,
+        #             registry, …）；按自身预算等过 registry
+        # 同一行里既说"等过 registry"、又说把它扔了。因为 ① 数的 `len(raw)`
+        # **不是**确切命中数 —— "11 条撞词 + 1 条确切" 就能让它在 1.5s 收手，
+        # 而 registry 要 2.2~3.5s 才交卷（单独调它 12 条 / 2.8s）。
+        #
+        # 场景结构：噪声源刷满 12 条（不确切）+ 一个快源给 1 条确切
+        #          + 一个**宣告了 budget_s** 的慢源 + 一个不回来的源。
+        # 旧实现：0.05s 时 raw=13 已够 → ① 收手 → 慢源那条被弃。
+        # 新实现：慢源还在自己预算里 → ①②③ 全部让路 → 0.45s 等它交卷。
+        # 反向由场景②承担（没有预算源时必须仍然 1.5s 内收手，速度不许整体牺牲）。
+        print("\n  ④ ① 「原始条数够」也必须让路给还在自己预算里的源")
+        _h_setup()
+
+        class _HNoiseRaw(Source):
+            """秒回一屏撞词，一条确切都没有 —— 只负责把 `raw` 喂过 SEARCH_ENOUGH。"""
+            name = "recall_h_noise_raw"
+            display = "噪声源"
+            priority = 1
+            enabled = True
+
+            def search(self, keyword):
+                return [BookResult(title=t, url=f"http://noise/{i}",
+                                   source=self.name, source_display=self.display,
+                                   author="某人")
+                        for i, t in enumerate(NOISE)]
+
+            def get_chapters(self, url): return []
+            def fetch(self, *a, **k): raise AssertionError("不该走到这")
+
+        stQ: dict = {}
+        capQ = _Cap()
+        lg.addHandler(capQ)
+        t0 = time.time()
+        try:
+            resQ = E.Engine(sources=[_HNoiseRaw, _HFastA, _HBudget,
+                                     _HHang]).search(
+                KW, stats=stQ, discover=False, probe=False, sample=False)
+            errQ = ""
+        except Exception as e:  # noqa: BLE001
+            resQ, errQ = [], repr(e)
+        elQ = time.time() - t0
+        lg.removeHandler(capQ)
+        srcsQ = [r.source for r in resQ]
+        check("H4 引擎跑完了（跑不完下面全是空转）", not errQ, errQ)
+        check("★ H4 前置：噪声确实把 raw 喂过了 SEARCH_ENOUGH（否则 ① 压根不参与判定）",
+              stQ.get("raw", 0) >= E.SEARCH_ENOUGH,
+              f"raw={stQ.get('raw')} 需要 >= {E.SEARCH_ENOUGH}")
+        check("★ H4 ① 让路：还在自身预算里的慢源，它的结果必须进最终结果"
+              "（旧实现 0.05s 就收手，它还在睡）",
+              _HBudget.name in srcsQ, f"来源={srcsQ} 耗时={elQ:.2f}s")
+        check("H4 是「等到它就收」，不是撞软截止蒙过去的",
+              elQ < E.SEARCH_SOFT_DEADLINE, f"耗时={elQ:.2f}s")
+        # 日志口径：被放弃的源不许再出现在「等过」那一格里 ——
+        # 这两句出自同一个 `waited_for` / `pending`，写错就会自相矛盾。
+        _logQ = capQ.text()
+        _drop_line = next((ln for ln in _logQ.splitlines() if "搜索收手" in ln), "")
+        _cut_names = []
+        if "放弃" in _drop_line and "（" in _drop_line:
+            _seg = _drop_line.split("放弃", 1)[1]
+            if "（" in _seg and "）" in _seg:
+                _cut_names = [x.strip() for x in
+                              _seg.split("（", 1)[1].split("）", 1)[0].split(",")]
+        check("★ H4 收手日志不许自相矛盾：被放弃的源不能同时出现在「等过」里",
+              not any(n and n in _drop_line.split("；")[-1] for n in _cut_names),
+              _drop_line[-200:] or "（没抓到收手日志，判据空转）")
+
+        # ---- H5：让路让到软截止也没回来 → 日志必须说实话 ----
+        # 反向的另一半：④ 是唯一无条件收手的那条，它确实会切断还在预算里的源。
+        # 那种情况下「等过 X」和「放弃 X」**同时成立**（我们真为它多等了），
+        # 但读起来像矛盾。所以口径要分成两句：「等过」= 已交卷，
+        # 「到软截止仍未回来」= 等到了头还没来。
+        # 这一组同时给上面那条日志判据一把反向的尺：合并回去就红。
+        print("\n  ⑤ 让路到软截止仍未回来 → 日志分得清是「等过」还是「等到头了」")
+        _h_setup()
+
+        class _HNeverBudget(_HSlow):
+            """宣告了 5s 预算，但 3s 才回来 —— 软截止 1.2s 时仍在预算内。"""
+            name = "recall_h_never"
+            display = "等不到头的慢源"
+            priority = 6
+            enabled = True
+            budget_s = 5.0
+            delay = 3.0
+
+        stR: dict = {}
+        capR = _Cap()
+        lg.addHandler(capR)
+        t0 = time.time()
+        try:
+            resR = E.Engine(sources=[_HNoiseRaw, _HFastA, _HNeverBudget]).search(
+                KW, stats=stR, discover=False, probe=False, sample=False)
+            errR = ""
+        except Exception as e:  # noqa: BLE001
+            resR, errR = [], repr(e)
+        elR = time.time() - t0
+        lg.removeHandler(capR)
+        check("H5 引擎跑完了（跑不完下面全是空转）", not errR, errR)
+        _logR = next((ln for ln in capR.text().splitlines() if "搜索收手" in ln), "")
+        check("H5 前置：软截止确实切断了这个还在预算里的源（不是被别的条件切断的）",
+              _HNeverBudget.name in _logR and elR < 2.0,
+              f"耗时={elR:.2f}s 日志={_logR[-160:] or '（空）'}")
+        check("★ H5 说清楚是「等满预算仍未回来」，不许写成「等过」"
+              "（旧口径两句话共用一笔账 → 自相矛盾）",
+              "等满预算仍未回来" in _logR
+              and _HNeverBudget.name in _logR.split("等满预算仍未回来")[0][-60:],
+              _logR[-220:] or "（空）")
+        check("H5 这两笔账互斥：同一行里「等过」后面不许再跟着同一个源名",
+              "按自身预算等过" not in _logR,
+              _logR[-220:] or "（空）")
     finally:
         (E.SEARCH_SOFT_DEADLINE, E.SEARCH_MIN_WAIT, E.SEARCH_GRACE,
          E.SEARCH_ANSWERED_RATIO, E.SEARCH_ENOUGH,

@@ -81,6 +81,8 @@ PROBE_ENOUGH = 4
 #      慢源不是「没用了」而是「来不及了」—— 它晚到的结果对本次没意义。
 #   ② 够用即停 SEARCH_ENOUGH：已经攒够候选，且最慢的还在跑，
 #      就不必再等 —— 快源通常 1~2s 就答完了。
+#      ⚠ 例外：那个慢源**自己宣告了预算**（`Source.budget_s`）且还在预算内，
+#        就得让它跑完 —— 否则声明等于没声明（2026-11-25 补，原来 ① 漏了这道门）。
 #   ③ 没结果时用硬上限 SEARCH_HARD_DEADLINE：一条都还没搜到的 `elapsed` 里
 #      **不允许**被软截止收手。因为源内部是串行多请求的（wyshu 试十来个路径
 #      才死心），「答完」天然可能 8~10s；6 秒就收只会把所有源饿死、返回空。
@@ -797,6 +799,26 @@ class Engine:
                 if elapsed < float(bud):
                     out.append(getattr(s, "name", "?"))
             return sorted(out)
+        def _wait_note() -> str:
+            """收手行里那句「为谁多等了」——**两笔账必须分开写**（2026-11-25）。
+
+            原来只在「够用了」那一行拼这句话，用的是 `waited_for` 全集；
+            而 `waited_for` 里既有**已经交卷**的源、也有**被切断时还在预算里**
+            的源。两笔混成一句，于是出现真机上的自相矛盾：
+                「放弃 5 个还没回来的慢源（… registry …）；按自身预算等过 registry」
+            拆分后：已交卷 → 「按自身预算等过 X」；被切断 → 「X 等满预算仍未回来」。
+            两笔互斥，同一行的「放弃」名单和「等过」名单不会再重叠。
+            """
+            pend_now = _pend_names()
+            ok = sorted(n for n in waited_for if n not in pend_now)
+            cut = sorted(n for n in waited_for if n in pend_now)
+            note = ""
+            if ok:
+                note += "；按自身预算等过 %s" % ", ".join(ok)
+            if cut:
+                note += "；%s 等满预算仍未回来" % ", ".join(cut)
+            return note
+
         # 「是不是等到了墙钟上限才结束的」—— 见下面 need_web 的注释。
         # 默认 False = 因为「已经有结果」提前收手；True = 真的等到了头。
         hit_deadline = False
@@ -873,17 +895,29 @@ class Engine:
                     #   ⚠ 软截止那条④必须**无条件**保留：它是唯一的兜底上界，
                     #     否则"永远没有确切命中的书"会把总预算吃穿。
                     _tight_ok = tight_streamed > 0
-                    # ⚠ ②③ 还得让路给「宣告了预算、还在自己预算里跑着」的源。
-                    #   不这么写的话，一个内部要跑 5 秒的源必然在半路被扔掉，
+                    # ⚠ ①②③ 都得让路给「宣告了预算、还在自己预算里跑着」的源。
+                    #   不这么写的话，一个内部要跑 3~5 秒的源必然在半路被扔掉，
                     #   它声明的预算就永远用不满 —— 声明等于没声明。
-                    #   ①（真的攒够 12 条确切命中）**不让路**：那种情况下
-                    #   多等一秒是纯损失；④ 软截止更是无条件兜底。
+                    #   ④ 软截止是唯一无条件的那条（否则总预算会被吃穿）。
+                    #
+                    # ⚠ 2026-11-25：① 原来**不让路**，注释写的理由是「真的攒够
+                    #   12 条确切命中，多等一秒是纯损失」。可它数的其实是
+                    #   `len(raw)`（原始候选条数），**不是**确切命中数 —— 门在
+                    #   "11 条撞词 + 1 条确切" 上就能成立。本地真机当场抓到：
+                    #     22:16:52 搜索收手：已返回 2/7 …放弃 5 个还没回来的
+                    #       慢源（gutenberg, kunnu8, registry, …）；按自身预算等过 registry
+                    #   同一行里既说"等过 registry"、又说把它扔了：`_wait_honored`
+                    #   为真（所以 ②③ 让路了）但 ① 照样在 1.5s 收手，而 registry
+                    #   要 2.2~3.5s 才交卷（单独调它 12 条 / 2.8s）。
+                    #   10 本书里 3 本的中途账本是 `未回=(… registry …)`。
+                    #   这是 10-24「够多≠够好」那个洞的最后一个入口。
                     _honored_names = _honored(elapsed)
                     _wait_honored = bool(_honored_names)
                     if _wait_honored:
                         waited_for.update(_honored_names)
                     if (
-                        (_tight_ok and len(raw) >= SEARCH_ENOUGH)
+                        (_tight_ok and not _wait_honored
+                            and len(raw) >= SEARCH_ENOUGH)
                         or (_tight_ok and not _wait_honored
                             and answered_ratio >= SEARCH_ANSWERED_RATIO)
                         or (_tight_ok and not _wait_honored
@@ -895,6 +929,10 @@ class Engine:
                         # 分不出来，在处置上（该补源 / 该不管）完全相反。
                         # ⚠ 「为谁多等了几秒」也要写：否则复盘只能看到耗时变长，
                         #   看不到这是**故意的**（2026-11-09 新增的那条让路）。
+                        # ⚠ 2026-11-25：「等过 X」和「放弃 X」必须在**同一行里**
+                        #   分得开。原来两句都从 `waited_for` / `pending` 各取一次，
+                        #   于是出现「放弃 registry …；按自身预算等过 registry」
+                        #   这种自相矛盾的行（真机上就是这样把 ① 的漏门藏了 10 天）。
                         logger.info(
                             "搜索收手：已返回 %d/%d 个源（%.0f%%）、原始 %d 条/"
                             "推给前端 %d 条（其中确切 %d 条）、耗时 %.1fs，"
@@ -903,8 +941,7 @@ class Engine:
                             len(raw), streamed, tight_streamed, elapsed,
                             len(pending),
                             ", ".join(_pend_names()) or "-",
-                            ("；按自身预算等过 %s" % ", ".join(sorted(waited_for)))
-                            if waited_for else "")
+                            _wait_note())
                         break
                 # 有结果了 → 最多等到软截止；还没结果 → 放宽到硬上限再等。
                 # 这个区分是必须的：源内部会串行发多次请求（wyshu 试十来个
@@ -981,14 +1018,15 @@ class Engine:
                     #   所以三态：推了 N 条 / 有候选但没有一条到推送门槛 / 真空。
                     logger.info(
                         "搜索收手（墙钟 %.1fs 到点，%s）：已返回 %d/%d 个源、原始 %d 条、"
-                        "没回来的是 %s",
+                        "没回来的是 %s%s",
                         time.time() - t_search,
                         (f"已推给前端 {streamed} 条" if streamed else
                          (f"原始 {len(raw)} 条但没有一条够推送门槛"
                           f"（{STREAM_FLOOR:.0f} 分），用户这 {time.time() - t_search:.1f}s"
                           " 里什么都没看到" if raw else "一条候选都没拿到")),
                         done_count, total, len(raw),
-                        ", ".join(_pend_names()) or "-")
+                        ", ".join(_pend_names()) or "-",
+                        _wait_note())
                     break
                 pending.difference_update(batch)
 

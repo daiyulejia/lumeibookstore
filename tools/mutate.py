@@ -2286,6 +2286,24 @@ MUTATIONS: list[Mutation] = [
     # 现场：`RegistrySource` 内部要跑 3~5s（26~32 个站一起扇出），而 ②③ 两条
     # 收手条件在 1.5~3.5s 就成立 → 它每次半路被判「未回」，抓回来的候选全废。
     # 线上 11-06 的 17 次搜索里出现 12 次。
+    # 2026-11-25：① 原来不在这条让路链上 —— 「原始条数够 12」就收手，
+    # 而它数的是 `len(raw)`（撞词也算），于是「11 条噪声 + 1 条确切」在 1.5s
+    # 就把还要跑 2~3s 的 registry 切断；收手行还自相矛盾地写着
+    # 「放弃 registry …；按自身预算等过 registry」。牙在召回测试 H4/H5。
+    Mutation("源预算让路", "① 「原始条数够」不再给声明预算的源让路（1.5s 就切断 registry）",
+             ENGINE,
+             "                        (_tight_ok and not _wait_honored\n"
+             "                            and len(raw) >= SEARCH_ENOUGH)",
+             "                        (_tight_ok\n"
+             "                            and len(raw) >= SEARCH_ENOUGH)",
+             RECALL_TEST),
+    Mutation("源预算让路", "收手行把「等过」和「等到头仍未回来」混成一笔（自相矛盾）",
+             ENGINE,
+             "            if cut:\n"
+             '                note += "；%s 等满预算仍未回来" % ", ".join(cut)',
+             "            if cut:\n"
+             '                note += "；按自身预算等过 %s" % ", ".join(cut)',
+             RECALL_TEST),
     Mutation("源预算让路", "②③ 不再给「声明了预算的源」让路（回到每天扔掉 30 个站的老样子）",
              ENGINE,
              "                        or (_tight_ok and not _wait_honored\n"
