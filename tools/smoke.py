@@ -32,8 +32,12 @@ for r in results[:8]:
 books = group(results)
 print(f"\n=== 3. 聚合后：{len(books)} 本 ===")
 for b in books[:6]:
+    # ⚠ 2026-11-26：原来这里把 `available_count` 打成「可读」—— 那个数只说明
+    #   目录能打开。真能读要看 `readable_count`（正文抽样通过）。两个数都打，
+    #   免得人工冒烟时把"目录能开"读成"能看"。
     print(f"   {b['title'][:24]:26s} {b['author'][:8]:10s} 源={b['source_count']} "
-          f"可读={b['available_count']} 最多={b['chapter_count']}章")
+          f"可达={b['available_count']} 可读={b['readable_count']} "
+          f"最多={b['chapter_count']}章")
 
 if not books:
     print("!! 没有结果，跳过后续"); sys.exit(0)

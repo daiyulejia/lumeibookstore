@@ -339,6 +339,8 @@ def web_skip_label(*, need_web: bool, web_gave: int) -> str:
     三个返回值，每个都对应一件真事：
       `""`        联网真跑了（串行那条路），结果在 `联网发现=` 里
       `preempt`   并行那一路跑的，而且**交回了候选**（不是"没跑"）
+      `late`      本地候选正文全被判假之后补跑的那一次（2026-11-26 新增，
+                  见 search() 里「本地有结果、但正文一条都读不了」那一段）
       `not_needed` 本地有可读结果，联网一次都没跑
     """
     if not need_web:
@@ -401,6 +403,37 @@ def web_ledger(tally: Optional[dict]) -> dict:
     if refused:
         s += " 拒=" + ",".join(refused)
     return {"联网核": s}
+
+
+def sample_ledger(stats: Optional[dict]) -> dict:
+    """把「正文抽样」这一轮摊成 `search.done` 里的一格 `正文=`。
+
+    为什么需要它（2026-11-26 复盘）：
+      当天本地真机搜《我们仨》，`search.done` 写的是 `可读=1`
+      （那时这一格数的是 available = **目录能打开**），而唯一那本书
+      正文抽样回 `sample_ok=False note=连接被拒绝`，**日志里一个字都没有**。
+      用户拿到一张点进去不能读的卡，日报照着日志写"这一轮成功"。
+
+    格式：`验3/真1/假2(axxsw.net:连接被拒绝,xxx:登录页)/未验4`
+      · 验 = 真的抽过几本（`sample` 关掉时打 `-`）
+      · 真 = 判真几本    · 假 = 判假几本（**点名 host + 原因**）
+      · 未验 = 抽过但没结论（来源没有单章接口） + 压根没轮到抽的
+
+    ⚠ 判假必须点名。只给数字的话，复盘知道"有一本读不了"，
+      却不知道是哪个站 —— 下一轮还会把它当可用候选端给用户。
+    """
+    if not stats or not stats.get("sampled"):
+        # 没跑过抽样（调用方关掉了 sample）→ 打 `-`，不补 0：
+        # `验0/真0/假0` 会被读成"抽了但都不行"，那是另一件事。
+        return {"正文": "-"}
+    failed = list(stats.get("sample_failed") or [])
+    head = ",".join(f"{h}:{(w or '')[:12]}" for h, w in failed[:3])
+    tail = f"+{len(failed) - 3}" if len(failed) > 3 else ""
+    fail_s = f"{len(failed)}({head}{tail})" if failed else "0"
+    return {"正文": (f"验{stats.get('sampled', 0)}"
+                     f"/真{stats.get('sample_ok_n', 0)}"
+                     f"/假{fail_s}"
+                     f"/未验{stats.get('sample_unverified', 0)}")}
 
 
 def _pool_note(pool_before: int) -> str:
@@ -1126,6 +1159,17 @@ class Engine:
         # ---- 等并行发起的联网兜底（如果触发了） ----
         # 它和本地慢源是并行跑的，到这里时通常已经跑完或快好了。
         # 给一个上限别无限挂 —— 联网兜底内部有 fetch timeout，正常会自己结束。
+        #
+        # ⚠ `web_gave` 的默认值必须写在**这里**（join 之前），不能写在下面那段
+        #   「分支默认值」里。2026-11-26 复盘抓到的账本事故：
+        #     search.web.preempt … 已等=1.5s
+        #     并行联网兜底回收 1 条候选（与本地扇出并行跑）
+        #     search.done … 联网发现=0 联网=not_needed
+        #   同一轮里"回收了 1 条候选"和"联网=not_needed（一次都没跑）"
+        #   同时成立。原因是下面那段默认值写成了 `web_gave = 0`（无条件），
+        #   而它排在 join **之后** —— 把已经数好的真值冲掉了。
+        #   **默认值的唯一职责是"分支没赋值时兜底"，它绝对不能覆盖真值。**
+        web_gave = 0
         if web_thread is not None:
             web_thread.join(timeout=SEARCH_HARD_DEADLINE + 5)
             with web_box_lock:
@@ -1256,11 +1300,9 @@ class Engine:
         web_skipped_budget = False
         # 联网核实的账本（候选几个、几个失败、几个不是目录）。None = 没跑过。
         web_tally = None
-        # 并行那一路**实际交回几条候选**。为什么要在 1100 行这里先置 0：
-        #   `web_extra` 只在「起了并行线程」的分支里赋值（979 行），
-        #   在这条 if/elif 里直接读它就是 10-31 那个 500（`web` 未定义）的翻版。
-        #   凡是在分支里赋值的变量，跨分支使用前必须先有个默认值。
-        web_gave = 0
+        # 并行那一路**实际交回几条候选** —— 它的默认值在 1128 行（join 之前）
+        # 就置好了，这里**不许**再写一次 `web_gave = 0`：那是在真值之后执行，
+        # 等于把「并行兜底真交回了候选」这件事抹掉（2026-11-26 的账本事故）。
         # ---- 「这轮为什么没联网」也要留字段 ----
         # 线上 `联网发现=0` 同时对应四件处置完全不同的事：
         #   not_needed 本地有能读的结果（好事，不必联网）
@@ -1373,9 +1415,85 @@ class Engine:
                 aborted = self.verify_samples(results, on_verified=on_verified,
                                               should_stop=_stop, budget=sb)
 
+        # ---- 「本地有结果、但正文一条都读不了」→ 再出去找一次 ----
+        # 门票的每一条都必须**有证据**，不能靠猜：
+        #   · 抽样真的做了结论，且**每一条被抽的都判了假**（sample_ok is False）；
+        #   · 最终结果里一条 readable 都没有；
+        #   · 并行那一路没跑过（跑过的话它的候选已经在 results 里，
+        #     再搜一遍是白烧一次联网预算）；
+        #   · discover 开着，且没因为预算被跳过。
+        #
+        # 2026-11-26 本地实测（《我们仨》），这条链路的原样：
+        #   registry 交来的 https://www.axxsw.net/index/18/18700/ 目录能开
+        #   （20 章）→ `available=True`；正文抽样回 `sample_ok=False
+        #   note=连接被拒绝`。收手门认为这一轮成功了，联网那条分支
+        #   （门票是 `not any(r.available)`）一次都进不去 ——
+        #   用户拿到一张点进去一个字都没有的卡，而日志写着 `可读=1`。
+        #
+        # ⚠ 为什么不能把上面那条门票直接改成 readable：抽样比探测贵，
+        #   它排在联网门**之后**，判定那一刻所有 readable 都还不存在。
+        #   所以只能等抽样出结论后**补**这一道门。
+        web_late = False
+        # 「本地这批候选正文全被判假」这件事的**证据**单独算一次：
+        # 它既要决定"去不去补联网"，也要决定"没去的时候账上该写什么"。
+        late_evidence = (bool(results) and bool(sample) and not already_web
+                         and not any(r.readable for r in results)
+                         and any(r.sample_ok is False for r in results))
+        if late_evidence and not discover:
+            # 该补一次联网，但调用方把 discover 关了 —— 必须记成 `disabled`
+            # （落在 `not_needed` 上会被读成"本地够用"，而事实是本地不能用）。
+            web_skip = "disabled"
+        elif (discover and late_evidence
+                and not web_skipped_budget):
+            late_src = self._find_source(DISCOVER_SOURCE)
+            lb = budget_slice(t_start, 30.0, DISCOVER_TOTAL_BUDGET)
+            if late_src is None:
+                web_skip = "no_source"
+                logger.info("本地正文全被判假，但装配里没有联网来源 —— 只能如实返回")
+            elif lb <= 0.0:
+                web_skipped_budget = True
+                web_skip = "budget"
+                logger.info(
+                    "本地正文全被判假，本该补一次联网，但总预算 %.0fs 已用完"
+                    "（已耗 %.1fs）—— 本轮不联网，返回既有结果",
+                    DISCOVER_TOTAL_BUDGET, time.time() - t_start)
+            else:
+                logger.info("本地 %d 条候选的正文全被判假 —— 补一次联网（剩余预算 %.1fs）",
+                            len(results), lb)
+                extra = self._discover(late_src, keyword, on_result, on_progress,
+                                       search_kw=search_kws, should_stop=_stop)
+                web_late = True
+                web_skip = "late"
+                web_tally = getattr(late_src, "last_tally", None) or None
+                if extra:
+                    if probe:
+                        # 联网换来的候选必须探测（同串行那条分支的理由）
+                        self.probe_all(
+                            extra, on_verified=on_verified, top=len(extra),
+                            should_stop=_stop,
+                            budget=budget_slice(t_start, PROBE_BUDGET,
+                                                DISCOVER_TOTAL_BUDGET),
+                            tally=probe_tally)
+                    results = self.refine(rank(results + extra, keyword), keyword)
+                    if sample:
+                        # 补来的候选也得验正文，否则"可读"标签永远出不来，
+                        # 用户仍然只会看到一张不能读的卡（等于没修）。
+                        sb2 = budget_slice(t_start, SAMPLE_BUDGET,
+                                           DISCOVER_TOTAL_BUDGET)
+                        if sb2 > 0.0:
+                            aborted = self.verify_samples(
+                                extra, on_verified=on_verified,
+                                should_stop=_stop, budget=sb2) or aborted
+                    logger.info("补联网补充 %d 条候选，结果 %d 条（其中可读 %d 条）",
+                                len(extra), len(results),
+                                sum(1 for r in results if r.readable))
+                else:
+                    logger.info("补联网也没找到可用页面 —— 如实返回既有的 %d 条",
+                                len(results))
+
         if stats is not None:
             # 这一轮适用哪个上限：走了联网兜底就有更大的额度（见 DISCOVER_TOTAL_BUDGET）
-            _allow_s = (DISCOVER_TOTAL_BUDGET if (discover and need_web)
+            _allow_s = (DISCOVER_TOTAL_BUDGET if (discover and (need_web or web_late))
                         else SEARCH_TOTAL_BUDGET)
             # ---- 源账：四格互斥，加起来必须等于总数 ----
             with outcome_lock:
@@ -1447,6 +1565,22 @@ class Engine:
                 "filtered": max(0, len(raw) - len(results)),
                 "available": sum(1 for r in results if r.available),
                 "readable": sum(1 for r in results if r.readable),
+                # ---- 正文抽样的三格账（2026-11-26 新增）----
+                # 为什么必须单列：`readable` 只给出"几条能读"，回答不了
+                # "剩下的为什么不能读"。2026-11-26《我们仨》线上原样是
+                # `可读=1`（那是 available 数的），而唯一那本正文抽样
+                # 回 `连接被拒绝` —— 日志里一个字都没有，日报只能读到"成功"。
+                #   sampled    真的抽过几本（sample 关掉时恒 0）
+                #   sample_ok_n  判真的几本
+                #   sample_failed 判假点名（host + 原因），**必须有名字**
+                #   sample_unver  抽过但没结论（来源没有单章接口 / 抛异常）
+                "sampled": sum(1 for r in results if r.sampled),
+                "sample_ok_n": sum(1 for r in results if r.sample_ok is True),
+                "sample_failed": [
+                    (host_of(r.url) or r.source, r.sample_note or "无结论")
+                    for r in results if r.sample_ok is False],
+                "sample_unverified": sum(
+                    1 for r in results if r.sampled and r.sample_ok is None),
                 "sources_queried": len(targets),
                 # 开搜时的「可搜源」个数（-1 = 没取到）。收尾时再数一遍，
                 # `pool_note` 就是 `22→15` —— 差值 = **这次搜索顺手废掉的
@@ -1504,8 +1638,12 @@ class Engine:
                 # 与「联网了但没找到」是两件处置相反的事，必须分开记。
                 "web_skipped_budget": bool(web_skipped_budget),
                 # 这轮**为什么**没联网（""=真的跑了）。见上面 web_skip 的注释：
-                # not_needed / preempt / budget / no_source / disabled。
+                # not_needed / preempt / late / budget / no_source / disabled。
                 "web_skip": web_skip,
+                # 「本地全被判假 → 补了一次联网」是否真的跑了。
+                # 与 need_web 分开：need_web 是"本地一条都打不开"，这一条是
+                # "打得开、但正文一段都读不了"，两者的证据完全不同。
+                "web_late": bool(web_late),
                 # 联网核实这一轮的账（候选/命中/失败点名/不是目录点名）。
                 # None = 这轮没跑联网，`web_ledger()` 会把它打成 `-`。
                 "web_verify": web_tally,

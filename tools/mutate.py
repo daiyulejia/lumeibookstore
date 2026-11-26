@@ -131,6 +131,7 @@ DISCOVERY = ROOT / "app" / "discovery.py"
 # 自有来源（学到的模板 → 真的能搜出书）
 REGISTRY_SOURCE = ROOT / "app" / "sources" / "registry_source.py"
 FALLBACK_TEST = ROOT / "tools" / "test_discover_fallback.py"
+LEDGER_TEST = ROOT / "tools" / "test_search_ledger.py"
 # 联网核实的账目（tools/test_discover_async.py 第 4 组）—— 「超预算」那条
 # ⚠ 失败方式：日志只剩「超预算」半句话，复盘分不清"全核完了只是都不可用"
 #   和"还有 N 个压根没核"，两者处置相反。
@@ -2675,6 +2676,38 @@ MUTATIONS: list[Mutation] = [
              "_RECOVER_FRESH = " + "60 * 60",
              "_RECOVER_FRESH = " + "10 ** 9",
              CHAIN_TEST),
+
+    # ---------------- 账本的含义（tools/test_search_ledger.py）----------------
+    # 2026-11-26。这一组破坏的全是**账**，不是行为：搜索照跑，只是
+    # search.done 那一行开始说反话。日报每天照着它下结论，所以它比
+    # 行为 bug 更危险 —— 行为 bug 用户会叫，账本说谎**没人会叫**。
+    Mutation("账本", "`可读=` 数回目录可达（把「打不开正文」写成「能读」）",
+             MAIN,
+             "可读=sum(1 for r in results if r.readable),",
+             "可读=sum(1 for r in results if r.available),",
+             LEDGER_TEST),
+    Mutation("账本", "判假的 host 不点名（只剩一个数字，复盘查不到是哪个站）",
+             ENGINE,
+             '    head = ",".join(f"{h}:{(w or \'\')[:12]}" for h, w in failed[:3])',
+             '    head = ""',
+             LEDGER_TEST),
+    Mutation("账本", "判假超过 3 个时沉默截断（不写 +N）",
+             ENGINE,
+             '    tail = f"+{len(failed) - 3}" if len(failed) > 3 else ""',
+             '    tail = ""',
+             LEDGER_TEST),
+    Mutation("账本", "并行兜底交回几条被默认值冲成 0（联网= 永远说「没跑」）",
+             ENGINE,
+             "            web_gave = len(web_extra)",
+             "            web_gave = 0",
+             FALLBACK_TEST),
+    Mutation("账本", "正文全判假时不再补联网（用户只拿到一张读不了的卡）",
+             ENGINE,
+             "        late_evidence = (bool(results) and bool(sample) and not already_web\n"
+             "                         and not any(r.readable for r in results)",
+             "        late_evidence = (False and bool(results) and bool(sample) and not already_web\n"
+             "                         and not any(r.readable for r in results)",
+             FALLBACK_TEST),
 ]
 
 

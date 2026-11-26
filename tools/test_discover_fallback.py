@@ -166,16 +166,79 @@ class FakeWeb:
     def note_probe(self, ms):
         pass
 
+    def sample(self, r, chapters=None):
+        # 联网候选在「本地正文全判假 → 补联网」那条路上也会被抽一次正文
+        # （2026-11-26）。没有这个方法，`_sample_one` 会抛 AttributeError
+        # 并被吞成 sample_ok=None —— 断言看起来还是绿的，但在测另一个东西。
+        return {"ok": True, "chars": 320, "note": ""}
+
+
+class FakeTocSrc:
+    """目录能打开、但**正文抽不出来**的源 —— 2026-11-26《我们仨》的原样。
+
+    线上那一轮：registry 交来 https://www.axxsw.net/index/18/18700/，
+    探测回 20 章（`available=True`），正文抽样回 `连接被拒绝`
+    （`sample_ok=False`）。旧逻辑认为"本地有结果"→ 联网门不进 →
+    用户拿到一张点进去一个字都没有的卡，而日志写着 `可读=1`。
+    """
+    name = "faketoc"
+    display = "假目录源"
+    priority = 4
+    lazy = False
+    enabled = True
+
+    def set_log(self, cb):
+        pass
+
+    def search(self, kw):
+        r = BookResult(title=KW, author="杨绛", source=self.name,
+                       url="http://faketoc/1")
+        r.tightness = 1.0        # 线上那条就是确切命中，收手门被它喂饱
+        return [r]
+
+    def probe(self, r):
+        return {"ok": True, "chapters": 20, "ms": 1, "note": ""}
+
+    def probe_limit(self):
+        return 4
+
+    def note_probe(self, ms):
+        pass
+
+    def sample(self, r, chapters=None):
+        return {"ok": False, "chars": 0, "note": "连接被拒绝"}
+
+
+class FakeTocGoodSrc(FakeTocSrc):
+    """和上一条一模一样，只有正文能抽出来 —— 反向断言用。
+
+    没有它，「正文全判假就联网」可以被改写成「有结果就联网」而测试照样绿：
+    那会让每一次搜索都白多花 3~10 秒。
+    """
+    name = "faketocgood"
+
+    def sample(self, r, chapters=None):
+        return {"ok": True, "chars": 2800, "note": ""}
+
 
 class HangSrc8(HangSrc):
     """给场景 8 专用的挂起源。
-
     ⚠ 必须换个 name（`hang8`），不能复用 `hang`：熔断器是**跨 search 累积**的，
       前面 7 个场景里 `hang` 已经连续超时 3 次被拉黑 —— 场景 8 一开搜就把它
       跳过（`sources_breaker=1`），根本没有源挂起，preempt 分支一次都进不去。
       测试会"绿"，但绿的是空转；反证当场证明了这一点（把 `web` 改回去也不红）。
     """
     name = "hang8"
+
+
+class HangSrc9(HangSrc):
+    """给场景 9 专用的挂起源 —— 同 `hang8` 的理由，换名字。
+
+    场景 9 要的是「扇出还在等，并行预取已经起跑，而且它**交回了候选**」。
+    没有挂起源，扇出会在 0.05s 之前就结束，web 会从串行那条路被调用，
+    断言就变成"联网跑了"而不是"preempt 跑了"。
+    """
+    name = "hang9"
 
 
 class FakeWebNothing(FakeWeb):
@@ -290,6 +353,9 @@ def _run() -> int:
         ok(f"stats.discovered = {st['discovered']}（联网来的候选进了结果）")
     else:
         bad(f"stats.discovered = {st.get('discovered')} —— 联网结果没进 stats")
+    # 这一轮的联网是**串行**那条路（并行预取在 1.5s 才起，本地源更早就答完了），
+    # 所以 `联网=` 应该是空串。账本与"到底走了哪条路"必须一致，断言放在场景 9
+    # —— 那里用 0.05s 的预取阈值**保证**走 preempt 分支。
 
     if res:
         ok(f"最终返回 {len(res)} 条：《{res[0].title}》（{dt:.1f}s）")
@@ -575,9 +641,14 @@ def _run() -> int:
     web10 = FakeWeb()
     st15: dict = {}
     try:
-        run_case([EmptySrc(), web10], discover=True, stats=st15, probe=True)
+        # ⚠ 必须挂一个源，否则扇出会在 0.05s 之前就结束、**并行预取根本来不及起**
+        #   （2026-11-26 实测：这一段原来只用 EmptySrc，web 是被**串行**那条路
+        #   调用的，而断言只看 `calls>=1` —— 绿的是"联网跑了"，不是"preempt 跑了"）。
+        #   用一个没被熔断过的新名字，否则开搜就被跳过，同样进不去。
+        run_case([HangSrc9(), web10], discover=True, stats=st15, probe=True)
     finally:
         E.SEARCH_WEB_PREEMPT = old_preempt
+        HangSrc.release()
 
     if web10.calls >= 1:
         ok(f"并行那路确实跑了（web 被调 {web10.calls} 次）")
@@ -587,10 +658,87 @@ def _run() -> int:
         ok(f"联网确实交回了候选（discovered={st15.get('discovered')}）")
     else:
         bad("联网没交回候选 —— 构造失败，测不到「联网给了结果」这件事")
+
+    # ⚠ 2026-11-26 账本事故的回归点，必须放在这里：只有这个场景**保证**
+    #   走 preempt（预取阈值被压到 0.05s）。原来的 `web_gave = 0` 默认值
+    #   写在 join **之后**，把刚数好的真值冲掉 → 并行那路明明交回了候选，
+    #   `联网=not_needed`（"一次都没跑"），与上一行「回收 N 条候选」当场矛盾。
+    if st15.get("web_skip") == "preempt":
+        ok("并行兜底交回了候选 → 联网=preempt（没有说成「不需要/没跑」）")
+    else:
+        bad(f"并行兜底交了 {st15.get('discovered')} 条候选，"
+            f"web_skip={st15.get('web_skip')!r} —— 账本在说反话（应为 preempt）")
     # ⚠ 这里刻意**不**断言「discovered>0 就不许 not_needed」—— 那两格口径不同
     #   （discovered 含库里上次抓的），按它判会把合法状态判成 bug。
     # 上面那一段的时序很难在单测里稳定造出来（要并行那路恰好先交付），
     # 真正钉住这条判据的是**纯函数**：`web_skip_label()` 的三个返回值。
+
+    # --------------------------------------------------------------
+    section("10. 目录能开、正文全判假 → 必须再出去找一次")
+    # 2026-11-26《我们仨》线上原样（本地真机复现）：
+    #   registry 的 https://www.axxsw.net/index/18/18700/ 目录能开（20 章）
+    #   → `available=True`；正文抽样回 `连接被拒绝` → `sample_ok=False`。
+    #   旧逻辑见 available 就以为成功 → 联网门一次都进不去 →
+    #   用户拿到一张点进去一个字都没有的卡，日志还写着 `可读=1`。
+    # 把并行预取关掉（调成 999s），确保测的是「抽样之后补的那一道门」。
+    _old_preempt10 = getattr(E, "SEARCH_WEB_PREEMPT", 1.5)
+    E.SEARCH_WEB_PREEMPT = 999.0
+    web11 = FakeWeb()
+    st16: dict = {}
+    try:
+        res16 = run_case([FakeTocSrc(), web11], discover=True, stats=st16,
+                         probe=True, sample=True)
+    finally:
+        E.SEARCH_WEB_PREEMPT = _old_preempt10
+
+    if web11.calls >= 1:
+        ok(f"正文全被判假 → 补了一次联网（web 被调 {web11.calls} 次）")
+    else:
+        bad("目录能开、正文全判假，却没有联网 —— 用户只会拿到一张读不了的卡")
+    if st16.get("web_late") is True and st16.get("web_skip") == "late":
+        ok("stats.web_late=True、web_skip=late（出去找过这件事留下了账）")
+    else:
+        bad(f"web_late={st16.get('web_late')!r} web_skip={st16.get('web_skip')!r}"
+            f" —— 补联网这一步没有账")
+    if any(r.source == E.DISCOVER_SOURCE for r in res16):
+        ok("联网补来的候选进了最终结果")
+    else:
+        bad(f"最终 {len(res16)} 条里没有一条来自联网 —— 补联网白跑了")
+
+    # 反向 ①：正文能抽出来 → 一条都不许联网。
+    # 少了它，「正文全判假才联网」可以被改写成「有结果就联网」而全绿。
+    web12 = FakeWeb()
+    st17: dict = {}
+    run_case([FakeTocGoodSrc(), web12], discover=True, stats=st17,
+             probe=True, sample=True)
+    if web12.calls == 0 and not st17.get("web_late"):
+        ok("正文抽得出来 → 没补联网（没有把 flaky 站变成常规路径）")
+    else:
+        bad(f"正文明明能读，却联网了 {web12.calls} 次、"
+            f"web_late={st17.get('web_late')!r}")
+
+    # 反向 ②：调用方关了 sample（压根没验正文）→ 不许联网。
+    # “没验过”和“验过是假的”是两件事，前者去联网就是每搜一次多花 10 秒。
+    web13 = FakeWeb()
+    st18: dict = {}
+    run_case([FakeTocSrc(), web13], discover=True, stats=st18,
+             probe=True, sample=False)
+    if web13.calls == 0 and not st18.get("web_late"):
+        ok("sample=0（未验正文）→ 不补联网（没把「没验过」当成「读不了」）")
+    else:
+        bad(f"sample=0 却联网了 {web13.calls} 次 —— 把「未验证」判成了「不可读」")
+
+    # 反向 ③：discover=False → 不补联网（开关必须真的关得住）。
+    web14 = FakeWeb()
+    st19: dict = {}
+    run_case([FakeTocSrc(), web14], discover=False, stats=st19,
+             probe=True, sample=True)
+    if web14.calls == 0 and st19.get("web_skip") == "disabled":
+        ok("discover=False 时不补联网，web_skip=disabled")
+    else:
+        bad(f"discover=False 却联网了 {web14.calls} 次、"
+            f"web_skip={st19.get('web_skip')!r}")
+
     lab = E.web_skip_label
     cases = [
         (False, 2, "preempt", "联网交回 2 条 → 不能说「不需要联网」"),

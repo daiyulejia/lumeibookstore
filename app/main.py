@@ -81,7 +81,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import history, security, tunnel, visits
-from .engine import Engine, probe_ledger, source_ledger, source_meta, web_ledger
+from .engine import (Engine, probe_ledger, sample_ledger, source_ledger,
+                     source_meta, web_ledger)
 from .errors import Cancelled, SourceBlocked
 from .exporter import DOWNLOAD_DIR, export as export_book
 
@@ -1006,7 +1007,17 @@ async def search(kw: str = Query(..., min_length=1), sources: str = "",
                           # "用户盯了 20 秒空屏、最后却是有结果的"——旧日志里
                           # 这件事只剩一行 `耗时ms=20009`，与"真没有"分不开。
                           推送=int(stats.get("pushed", 0)),
-                          可读=sum(1 for r in results if r.available),
+                          # ---- 「可读」这个词必须只有一种含义 ----
+                          # ⚠ 2026-11-26 复盘修正：这一格原来数的是 `r.available`
+                          #   （**目录能打开**），而前端给绿标看的是
+                          #   `readable_count`（**正文抽样通过**）。两个不同的
+                          #   东西共用一个词，后果是当天《我们仨》
+                          #   `可读=1`，而唯一那本正文抽样回「连接被拒绝」——
+                          #   日报照着日志写"用户能读"，实际一个字都读不到。
+                          #   现在拆成两格，各自只答自己的问题：
+                          可达=sum(1 for r in results if r.available),
+                          可读=sum(1 for r in results if r.readable),
+                          **sample_ledger(stats),
                           联网发现=stats.get("discovered", 0),
                           # `联网发现=0` 同时对应四件处置完全不同的事（跑了没找到 /
                           # 并行已跑 / 预算没了 / 压根不需要）。2026-10-27《我的阿勒泰》
