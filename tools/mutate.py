@@ -1012,8 +1012,19 @@ MUTATIONS: list[Mutation] = [
              BUDGET_TEST),
     Mutation("源账", "联网兜底没跑却不记账（「没联网」和「联网没找到」混为一谈）",
              ENGINE,
-             "                web_skipped_budget = True",
-             "                web_skipped_budget = False",
+             # ⚠ 靶点必须带上下文（2026-11-26 重锚）：原文只写
+             #   `web_skipped_budget = True` 一行，而那天新增的「正文全判假 →
+             #   补一次联网」分支里也有一行同样的赋值 → 同一句命中 2 处，
+             #   反证基线当场红（`test_ship_chain` 抓到）。锚到 logger 文案上，
+             #   因为只有这句是**串行联网**那条路独有的。
+             '                web_skipped_budget = True\n'
+             '                web_skip = "budget"\n'
+             '                logger.info(\n'
+             '                    "跳过联网兜底：总预算',
+             '                web_skipped_budget = False\n'
+             '                web_skip = "budget"\n'
+             '                logger.info(\n'
+             '                    "跳过联网兜底：总预算',
              BUDGET_TEST),
 
     # ------- 探测：不许重探 / 断连要立刻停（2026-11-02 复盘，tools/test_engine_budget.py ⑨⑩）
