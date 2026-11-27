@@ -2279,6 +2279,48 @@ MUTATIONS: list[Mutation] = [
              "TPL_DEAD_COOLDOWN = 7 * 86400",
              "TPL_DEAD_COOLDOWN = 0",
              REGISTRY_TEST),
+
+    # ---------------- 「不认关键词」必须有出口（tools/test_registry.py ⑨e）----
+    # ⚠ 失败方式（2026-11-27 复盘）：`sk.3qdu.org/.com/.net`（同一个站的 3 个
+    #   host）被判中「不认关键词」31/47/58 次，却一直占着 10 个可搜源里的 3 个。
+    #   病根是「命中过一次」= 两条出口同时关闭：既不再做控制实验，模板也永不
+    #   作废。而这几个站实测对「三体」「斗破苍穹」「乱码词」返回同一页 42 条
+    #   推荐位 —— 那次"命中"只是推荐位里恰好有这本书，不是模板认词的证据。
+    Mutation("不认词出口", "判中「不认词」也不作废（回到只看 search_hit==0）",
+             REGISTRY,
+             "        _blind_dead = _kwblind_n >= KWBLIND_MAX",
+             "        _blind_dead = False",
+             REGISTRY_TEST),
+    Mutation("不认词出口", "一票毙命（阈值降到 1，单个样本就撤模板）",
+             REGISTRY,
+             "KWBLIND_MAX = 2",
+             "KWBLIND_MAX = 1",
+             REGISTRY_TEST),
+    Mutation("不认词出口", "死因两支合成一支（不认词也写「不是搜索页」）",
+             REGISTRY,
+             '            _why = ("模板不按关键词过滤" if _blind_dead\n'
+             '                    else "模板打开的不是搜索页")',
+             '            _why = "模板打开的不是搜索页"',
+             REGISTRY_TEST),
+    Mutation("不认词出口", "重学成功后不清 kwblind（新模板替旧模板背债）",
+             REGISTRY,
+             '        cur["search_shape"] = 0\n        cur["search_kwblind"] = 0',
+             '        cur["search_shape"] = 0',
+             REGISTRY_TEST),
+    Mutation("不认词出口", "控制实验入口退回只看 search_hit（抓过一次就再也不问）",
+             REGISTRY,
+             '    return (int(s.get("search_hit") or 0) <= 0\n'
+             '            or int(s.get("search_kwblind") or 0) > 0)',
+             '    return int(s.get("search_hit") or 0) <= 0',
+             REGISTRY_TEST),
+    # 闸门本身：`search_kwblind` 11-18 起被记了 31/47/58 次却没有一个读者 ——
+    # "埋点有、判据没有" 是这次排查花最久的一段。改个账本字段名却不改读者，
+    # 是它最容易复发的形态（新字段一加、老判据还读旧名字）。
+    Mutation("账本读者", "改账本字段名却不改读者（新字段只写不读）",
+             REGISTRY,
+             '            cur["search_kwblind"] = int(cur.get("search_kwblind") or 0) + 1',
+             '            cur["search_kwblind_n"] = int(cur.get("search_kwblind_n") or 0) + 1',
+             LEDGER_TEST),
     # 2026-11-11：体检会删站删书（全局状态变更），日志必须点名。
     # 原来只有一句推给客户端的进度，落盘日志零字段 —— 复盘时
     # 「某个站每晚被学一遍却不在库里」到底是没写进去还是被删了，只能猜。
@@ -2609,7 +2651,8 @@ MUTATIONS: list[Mutation] = [
     # 阈值够不够保守、判不出来时会不会当判假、以及有没有留下能复盘的那一格。
     Mutation("认词", "闸门放宽成「所有站都做控制实验」（冷门书会给每个站多打一个请求）",
              REGISTRY,
-             '    return int(s.get("search_hit") or 0) <= 0',
+             '    return (int(s.get("search_hit") or 0) <= 0\n'
+             '            or int(s.get("search_kwblind") or 0) > 0)',
              "    return True",
              SITE_FAULT_TEST),
     Mutation("认词", "判中了仍按真实条数记 raw（只会记成 search_miss，模板永远作废不了）",

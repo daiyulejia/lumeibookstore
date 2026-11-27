@@ -1062,6 +1062,93 @@ def main() -> int:
 
 
         # -----------------------------------------------------------------
+        print("\n—— ⑨e 「不认关键词」必须有出口（偶然命中过一次也一样） ——")
+        # 2026-11-27 复盘（本地实例 sites_searchable=10）：
+        #   `sk.3qdu.org` / `.com` / `.net` 是同一个站的三个 host，被控制实验
+        #   判中「不认关键词」31 / 47 / 58 次，**却一直占着 3 个可搜源名额**。
+        #   实测它对「三体」「斗破苍穹」「zzqqxxbukCunZaiDeShu」给的是同一页
+        #   （42 条书链接、标题都是"推荐小说/玄幻小说/…"）—— 完全不认词。
+        # 为什么死不掉：作废条件要求 `search_hit == 0`，而"不认词"的站回的是
+        # 整站推荐位，用户搜的那本碰巧在里面就记一次命中 → 模板终身免疫；
+        # 同时 `needs_keyword_control()` 也要求 `search_hit == 0` →
+        # 判中过一次之后连再问一句控制词都不做，票数永远涨不上去。
+        # **一次偶然命中把两条出口同时关上了。**
+        import logging as _lg2
+
+        class _Cap2(_lg2.Handler):
+            def __init__(self) -> None:
+                super().__init__()
+                self.lines: list[str] = []
+
+            def emit(self, rec) -> None:      # noqa: ANN001
+                try:
+                    self.lines.append(rec.getMessage())
+                except Exception:  # noqa: BLE001
+                    pass
+
+        _cap2 = _Cap2()
+        _lgr = _lg2.getLogger("novel.registry")
+        _lvl = _lgr.level
+        _lgr.addHandler(_cap2)
+        _lgr.setLevel(_lg2.INFO)
+        try:
+            b_hit = "blindhit.example.com"
+            R.note_search_tpl(b_hit, "/?s={kw}", enc="utf-8")
+            R.note_search_result(b_hit, hits=1, raw=3)          # 偶然命中过一次
+            R.note_search_result(b_hit, hits=0, raw=0, kwblind=True)
+            _one = R.known_site(b_hit)
+            check("判中一次还留着模板（不一票毙命）",
+                  bool((_one.get("search_tpl") or "").strip())
+                  and R.has_search_tpl(_one), str(_one)[:120])
+            R.note_search_result(b_hit, hits=0, raw=0, kwblind=True)
+            _two = R.known_site(b_hit)
+            check("★ 命中过 1 次 + 判中 2 次 → 模板必须作废（旧版永久免疫）",
+                  not (_two.get("search_tpl") or "").strip()
+                  and not R.has_search_tpl(_two), str(_two)[:160])
+            check("★ 死因写的是「不按关键词过滤」，不许写成「不是搜索页」",
+                  _two.get("search_fail_why") == "模板不按关键词过滤",
+                  repr(_two.get("search_fail_why")))
+            _dead_lines = [x for x in _cap2.lines if b_hit in x]
+            check("★ 作废日志点名了这个站，且说的是「不认关键词」",
+                  bool(_dead_lines) and "不认关键词" in _dead_lines[-1],
+                  str(_dead_lines[-1:]))
+            check("站级判死账记了一次（跨模板累计，供 7 天冷却用）",
+                  R.tpl_dead_count(_two, b_hit) >= 1,
+                  str(R.tpl_dead_count(_two, b_hit)))
+
+            # 反向：判中 1 次但从未命中过、形态票也不满 → 不许死
+            b_ok = "blindone.example.com"
+            R.note_search_tpl(b_ok, "/?s={kw}", enc="utf-8")
+            R.note_search_result(b_ok, hits=0, raw=0, kwblind=True)
+            check("只判中 1 次、形态票不满 → 模板必须还在（不许错杀）",
+                  R.has_search_tpl(R.known_site(b_ok)),
+                  str(R.known_site(b_ok))[:140])
+
+            # 出口②：重学之后新模板不许背旧模板的债
+            R.note_search_tpl(b_hit, "/?s={kw}", enc="utf-8")
+            _re = R.known_site(b_hit)
+            check("★ 重学成功后 kwblind 计数清零（新模板＝新假设）",
+                  int(_re.get("search_kwblind") or 0) == 0, str(_re)[:140])
+            check("重学后还要继续做控制实验（否则又是一次免疫）",
+                  R.needs_keyword_control(b_hit), str(_re)[:140])
+
+            # 入口条件本身：不许放宽成"所有零命中的站"
+            b_live = "healthyhit.example.com"
+            R.note_search_tpl(b_live, "/?s={kw}", enc="utf-8")
+            R.note_search_result(b_live, hits=1, raw=5)
+            check("正常搜出过书的站**不**做控制实验（别给每轮搜索加请求）",
+                  not R.needs_keyword_control(b_live),
+                  str(R.known_site(b_live))[:140])
+            R.note_search_result(b_live, hits=0, raw=0, kwblind=True)
+            check("★ 被控制实验抓过一次的站，命中过也要接着问",
+                  R.needs_keyword_control(b_live),
+                  str(R.known_site(b_live))[:140])
+        finally:
+            _lgr.removeHandler(_cap2)
+            _lgr.setLevel(_lvl)
+
+
+        # -----------------------------------------------------------------
         print("\n—— 护栏：全清要显式确认 ——")
         # 先落一次盘：缩水护栏是拿「盘上那份」当基准的，
         # 上面这些 note_* 都还压在内存里（落盘有 1 秒节流）

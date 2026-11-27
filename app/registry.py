@@ -108,6 +108,31 @@ UNHEALTHY_FAILS = 3
 #   `SEARCH_LEARN_MAX_TRIES` 自然放弃 —— 有终点，不会每晚白查。
 SEARCH_SHAPE_MAX = 3
 
+# 「不按关键词过滤」判中几次就作废模板（2026-11-27）。
+#
+# 为什么这条不能跟 `search_shape` 合并（线上实测，本地实例 `sites_searchable=10`）：
+#   `sk.3qdu.org` / `.com` / `.net` 是同一个站（3Q中文网）的三个 host，
+#   各被判中「不认关键词」31 / 47 / 58 次，**却一直占着 10 个可搜源里的 3 个**
+#   （30%）。实测它对本轮的三组问法给的是同一页：
+#       三体 / 斗破苍穹 / zzqqxxbukCunZaiDeShu → 都是 42 条书链接、
+#       标题都是「推荐小说 / 玄幻小说 / 仙侠小说 / 都市小说」
+#   也就是说它回的是整站推荐位，跟关键词毫无关系。于是每次搜索白打 3 个请求、
+#   白解析 3 页，`raw` 被这堆推荐位灌到 35（`kept` 只有 5），而界面上的
+#   「10 个可搜源」实际只有 7 个能用。
+#
+# 为什么它们死不掉 —— **两个出口被同一次偶然命中一起关上了**：
+#   ① 作废条件要求 `search_hit == 0`（"这份模板从来没搜出过东西"）。
+#      不认词的站回的是整站最新更新，用户搜的那本书**碰巧在列表里**时
+#      `search_hit` 就会 +1。此后无论被判中多少次，模板永久免疫。
+#   ② `needs_keyword_control()` 同样要求 `search_hit == 0` → 判中过一次之后
+#      连"再问一句控制词"都不做了，所以票数再也涨不上去。
+#   命中一次 = 两条出口同时关闭，而那次命中根本不是"模板认词"的证据。
+#
+# 判中给**两票**才作废（不是一票）：`_ignores_keyword()` 的判定是保守的
+# （控制词要抽回真词的 80% 且 ≥8 条），但它终究只是两次抓页的比对；
+# 留一票的余量，宁可让一个真坏的模板多白打一轮，也别把好源错杀。
+KWBLIND_MAX = 2
+
 # 「连续 N 次」的观测去重窗口（秒）：同一个站在这么短的时间内重复失败，
 # 只算**一次**观察。
 #
@@ -924,11 +949,18 @@ def needs_keyword_control(host: str) -> bool:
     ⚠ 不许放宽成"所有零命中的站"：线上一次搜索会问十几个站，冷门书让
       大多数站零命中，那样每轮会凭空多出十几个请求，而它们中的绝大多数
       只是"真的没有这本书"。
+
+    ⚠ 但**已经被判中过一次的站要接着问**（2026-11-27）。原来只看
+      `search_hit == 0`，于是「被控制实验抓过一次 + 后来偶然命中一次」的站
+      从此既不再被问、也永远凑不满 `KWBLIND_MAX` 票 —— 一次偶然命中就把
+      两条出口同时关上。问它的成本是有界的：`search_kwblind` 一到
+      `KWBLIND_MAX` 模板就作废，之后要么重学一遍，要么被 `tpl_dead` 关 7 天。
     """
     s = known_site(host)
     if not (s.get("search_tpl") or "").strip():
         return False
-    return int(s.get("search_hit") or 0) <= 0
+    return (int(s.get("search_hit") or 0) <= 0
+            or int(s.get("search_kwblind") or 0) > 0)
 
 
 def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
@@ -1027,8 +1059,13 @@ def note_search_tpl(host: str, tpl: str, *, enc: str = "utf-8", via: str = "",
         #     · 旧模板曾经搜出过东西（`search_hit > 0`）→ 新模板再烂也不会被
         #       作废（判据要求 `search_hit == 0`），坏模板永久留着、每次搜索白打。
         #   所以学到一个**新**模板 = 一次新假设 = 证据重采。
+        #   `search_kwblind` 同理（2026-11-27）：它是「**这份**模板不按关键词
+        #   过滤」的证据，不清就会让学到的第一份模板替上一份背债 —— 新模板
+        #   只要被问一句控制词就直接满票作废，等于根本没给它机会。
+        #   站级的"判死几次"另外记在 `tpl_dead` 里，不受这里影响。
         cur["search_hit"] = 0
         cur["search_shape"] = 0
+        cur["search_kwblind"] = 0
         cur["ok"] = int(cur.get("ok", 0)) + 1
         cur["last_ok"] = _now()
         if "first_seen" not in cur:
@@ -1129,28 +1166,50 @@ def note_search_result(host: str, *, hits: int, raw: int,
         #   重学失败会记 `search_fail`，顶到 `SEARCH_LEARN_MAX_TRIES` 就自然放弃。
         # ⚠ 写 `""` 不 `pop` —— 落盘 `_merge()` 逐键覆盖，内存里没的键会从盘上复活
         #   （和 `note_book(note=)` 那条三态教训同一个坑）。
-        if (int(cur.get("search_hit") or 0) == 0
-                and int(cur.get("search_shape") or 0) >= SEARCH_SHAPE_MAX
+        # ⚠ 两种死刑互相独立，不能合成一个条件（2026-11-27）：
+        #   · `shape` 说的是「打开的不是搜索页」—— 它必须配 `search_hit == 0`：
+        #     一个真能搜出书的模板偶尔开错页（拦截页/限速页）不该被弄死。
+        #   · `kwblind` 说的是「打开的是页面，但它不认关键词」—— **它不配
+        #     `search_hit == 0`**。不认词的站回的是整站推荐位，用户搜的那本
+        #     碰巧在列表里就会记一次命中，于是"命中过"被当成了"这模板认词"，
+        #     模板从此永久免疫（线上 3 个 host 各被判中 31/47/58 次却一直在池子里）。
+        #     何况判中过之后 `needs_keyword_control()` 也不再问它，
+        #     票数根本涨不上去 —— 两条出口被同一次偶然命中一起关上了。
+        _kwblind_n = int(cur.get("search_kwblind") or 0)
+        _blind_dead = _kwblind_n >= KWBLIND_MAX
+        _shape_dead = (int(cur.get("search_hit") or 0) == 0
+                       and int(cur.get("search_shape") or 0) >= SEARCH_SHAPE_MAX)
+        if ((_shape_dead or _blind_dead)
                 and (cur.get("search_tpl") or "").strip()):
             dead_tpl = (cur.get("search_tpl") or "").strip()
+            # 死因必须只说自己有资格说的那句话：被判中「不认词」的模板
+            # 打开的是**正常搜索页**，写「打开的不是搜索页」会让复盘
+            # 去查一个根本不存在的拦截问题。
+            _why = ("模板不按关键词过滤" if _blind_dead
+                    else "模板打开的不是搜索页")
             cur["search_tpl"] = ""
             cur["search_ver"] = 0
             cur["search_fail"] = int(cur.get("search_fail") or 0) + 1
             cur["search_fail_ver"] = LEARN_VER
-            cur["search_fail_why"] = "模板打开的不是搜索页"
+            cur["search_fail_why"] = _why
             # ⚠ 站级账：跨模板累计，`save_search_tpl()` **不清**它。
             #   `search_fail` 会在重学成功时清零（那是对的，它说的是"这份
             #   模板失败了几次"），所以放弃门槛不能读它 —— 见 `TPL_DEAD_MAX`。
             # ⚠ 2026-11-12：收进 `note_tpl_dead()`（同时写台账，见那里的注释）。
-            _dead_n = note_tpl_dead(host, why="模板打开的不是搜索页")
+            _dead_n = note_tpl_dead(host, why=_why)
             if _dead_n >= TPL_DEAD_MAX:
                 _tail = "（已到上限：%d 天内不再为它花学站预算）" % (TPL_DEAD_COOLDOWN // 86400)
             else:
                 _tail = ""
-            logger.info("站 %s 连续 %d 次打开的不是搜索页（模板 %s），"
-                        "作废该模板让它重学（本次模板已失败 %d 次，该站累计被判死 %d 次%s）",
-                        host, int(cur.get("search_shape") or 0), dead_tpl[:60],
-                        int(cur.get("search_fail") or 0), _dead_n, _tail)
+            if _blind_dead:
+                logger.info("站 %s 被判中「不认关键词」%d 次（控制词抽回的条数与真词持平，"
+                            "模板 %s），作废该模板让它重学（该站累计被判死 %d 次%s）",
+                            host, _kwblind_n, dead_tpl[:60], _dead_n, _tail)
+            else:
+                logger.info("站 %s 连续 %d 次打开的不是搜索页（模板 %s），"
+                            "作废该模板让它重学（本次模板已失败 %d 次，该站累计被判死 %d 次%s）",
+                            host, int(cur.get("search_shape") or 0), dead_tpl[:60],
+                            int(cur.get("search_fail") or 0), _dead_n, _tail)
         cur["updated"] = _now()
         global _dirty
         _dirty = True

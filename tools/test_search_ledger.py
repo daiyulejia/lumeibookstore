@@ -93,6 +93,45 @@ def _find_line(path: Path, needle: str) -> int:
     return -1
 
 
+def _counters(src: str) -> dict[str, list[int]]:
+    """找出所有「累加计数器」：`cur["x"] = int(cur.get("x") or 0) + 1`。
+
+    只认这一种写法 —— 它是本项目里记"这件事发生了几次"的唯一姿势
+    （`search_hit` / `search_kwblind` / `tpl_dead` …都是它）。
+    动态拼出来的键（`f"fail_{why}"`）不在其中：那种键本来就没有固定判据。
+    """
+    out: dict[str, list[int]] = {}
+    for node in ast.walk(ast.parse(src)):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        target = node.targets[0]
+        if not (isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "cur"
+                and isinstance(target.slice, ast.Constant)
+                and isinstance(target.slice.value, str)):
+            continue
+        val = node.value
+        if (isinstance(val, ast.BinOp) and isinstance(val.op, ast.Add)
+                and isinstance(val.right, ast.Constant) and val.right.value == 1):
+            out.setdefault(target.slice.value, []).append(node.lineno)
+    return out
+
+
+def _write_only(src: str) -> list[str]:
+    """在**同一份源码**里，写了却一次都没被读的计数器（按名字排序）。"""
+    tree = ast.parse(src)
+    counters = _counters(src)
+    dead: list[str] = []
+    for key, lines in counters.items():
+        readers = [n.lineno for n in ast.walk(tree)
+                   if isinstance(n, ast.Constant) and n.value == key
+                   and n.lineno not in lines]
+        if not readers:
+            dead.append(key)
+    return sorted(dead)
+
+
 def _run() -> int:
     print("=" * 62)
     print("search.done 账本语义（可读 / 可达 / 联网 / 正文）")
@@ -198,6 +237,59 @@ def _run() -> int:
             ok(f"守卫在：`{needle}`（{why}）")
         else:
             bad(f"守卫 `{needle}` 不见了 —— {why}")
+
+    # -----------------------------------------------------------------
+    section("6. 账本计数器必须有读者（只写不读 = 埋点等于没埋）")
+    # 2026-11-27 复盘：`search_kwblind`（"这个模板不按关键词过滤"）11-18 就加上了，
+    # 之后连着被写进库 31/47/58 次，**却没有任何一处代码读它** ——
+    # 于是三次判定一个处置都没触发，`sk.3qdu.org/.com/.net` 一直占着
+    # 10 个可搜源里的 3 个。复盘时查不到原因，因为日志里根本没有这一格。
+    #
+    # 这条闸门是通用的：凡 `cur["x"] = int(cur.get("x") or 0) + 1` 这种
+    # "累加计数器"，模块里必须至少有一处把它当判据读（比较/参与算术），
+    # 否则它只是往库里堆数字。
+    # ⚠ 例外必须**写进下面的白名单并说明理由** —— 白名单本身就是复盘材料：
+    #   "这个字段我明确不参与任何决策"，比"忘了读"诚实得多。
+    informational = {
+        # `note_search_result` 的文档写死了：「`search_miss` 永远不参与任何淘汰
+        # —— '没这本书'不是站的错」。它只给 /api/registry 和复盘看。
+        "search_miss": "只做展示：「站里没这本书」不许参与任何淘汰",
+    }
+    scanned = ["app/registry.py", "app/sources/registry_source.py"]
+    write_only: list[str] = []
+    checked = 0
+    for rel in scanned:
+        path = ROOT / rel
+        src_text = path.read_text(encoding="utf-8")
+        for key, lines in _counters(src_text).items():
+            if key in informational:
+                continue
+            checked += 1
+            if key in _write_only(src_text):
+                write_only.append(f"{rel}::{key}（写在第 {lines} 行，全模块零读取）")
+    if write_only:
+        bad("这些计数器只写不读，等于白记：" + "；".join(write_only))
+    else:
+        ok(f"{checked} 个计数器都有读者（{len(informational)} 个"
+           f"「只做展示」的已登记理由：{', '.join(informational)}）")
+    # ⚠ 扫描器自己也要有牙：拿一段**合成**源码（一个只写不读、一个有读者）
+    #   喂给它，两种都必须判对。否则"0 个问题"可能只是"它什么都不看"。
+    sample = (
+        "def f(cur):\n"
+        "    cur['nobody_reads_me'] = int(cur.get('nobody_reads_me') or 0) + 1\n"
+        "    cur['has_reader'] = int(cur.get('has_reader') or 0) + 1\n"
+        "    return cur.get('has_reader') or 0\n"
+    )
+    flagged = _write_only(sample)
+    if flagged == ["nobody_reads_me"]:
+        ok("扫描器自检：只写不读的被抓、有读者的不误报")
+    else:
+        bad(f"扫描器自检失败：{flagged!r}，应为 ['nobody_reads_me'] "
+            f"—— 这条坏了，上面那个「0 个问题」就没意义")
+    # 反向：白名单里的字段若后来真的参与了决策，说明理由过期了，也要叫一声。
+    for key, reason in informational.items():
+        if not reason.strip():
+            bad(f"白名单 `{key}` 没写理由 —— 没有理由的例外就是漏读")
 
     print("\n" + "=" * 62)
     print(f"通过 {OK} · 失败 {BAD}")
