@@ -1148,12 +1148,26 @@ def note_search_result(host: str, *, hits: int, raw: int,
             _last_shape = int(cur.get("search_shape_at") or 0)
             if _now_ts - _last_shape > SHAPE_BURST_WINDOW:
                 cur["search_shape"] = int(cur.get("search_shape") or 0) + 1
+                # ⚠ 时间戳只能在**真记了一票**时往下锚（2026-11-28）。
+                #   原来这行写在 if 外面，被合并的观察也会把它刷成"刚刚" ——
+                #   于是窗口是**滑动**的：同一个站每 10 秒失败一次，
+                #   每一次都在"距上次仅 10 秒"里被合并，票数**永远停在 0**，
+                #   而日志每轮都写一句"按同一次观察合并，不计入死刑"。
+                #   现场（本机 11-28 09:23:55~09:24:01，三次搜索）：
+                #     www.axxsw.net / www.nana00.com 每次都"打开的不是搜索页"，
+                #     库里 search_shape 却一直是 0（axxsw hit=31/fail=0），
+                #     search_shape_at 永远比现在只早 160 余秒 —— 窗口被推着走。
+                #   后果：可搜源 7 个里至少 2 个（29%）每次搜索白打一次请求、
+                #   没有任何产出，却因为"凑不满 3 票"永不作废，
+                #   `已返回 N/M 个源` 也被它们撑得像"源还很多"。
+                #   窗口的语义是"同一场风暴只算一次"，所以锚点必须是**那一场
+                #   风暴的第一枪**，不能是最近一枪 —— 否则风暴永远不结束。
+                cur["search_shape_at"] = _now_ts
             else:
                 # 沉默地合并就等于"票数为什么没涨"永远查不出来，所以要说一句。
                 logger.info("站 %s 又一次打开的不是搜索页，但距上次仅 %ds"
                             "（< %ds 窗口）—— 按同一次观察合并，不计入死刑",
                             host, _now_ts - _last_shape, SHAPE_BURST_WINDOW)
-            cur["search_shape_at"] = _now_ts
         else:
             cur["search_miss"] = int(cur.get("search_miss") or 0) + 1
         # 连续「不是搜索页」到顶，且从来没搜出过 → 模板作废、回重学队列。

@@ -827,6 +827,66 @@ def main() -> int:
               f"shape={R.known_site('storm.example.com').get('search_shape')}")
 
         # -----------------------------------------------------------------
+        print("\n—— ⑧b 观测窗口的锚点不许往后滑 ——")
+        # 现场（2026-11-28 09:23:55~09:24:01，本机三次搜索）：www.axxsw.net /
+        # www.nana00.com **每一次**都「打开的不是搜索页」，日志连打三行
+        # 「距上次仅 13s / 22s / 6s —— 按同一次观察合并」，而库里
+        # search_shape 一直是 0、search_shape_at 永远只比现在早 160 余秒。
+        # 根因：`search_shape_at` 写在 if 外面，被合并的观察也把它刷成"刚刚"
+        # → 180 秒窗口是**滑动**的 → 只要失败间隔 < 180s（用户重试、探针、
+        # 高频流量），同一个站就**永远凑不满 3 票**，模板永不作废。
+        # 语病在于"同一场风暴只算一次"的锚点必须是**风暴的第一枪**。
+        _mk("slide.example.com")
+        R.note_search_result("slide.example.com", hits=0, raw=0)   # 第一枪：记一票
+        _t0 = int(R.known_site("slide.example.com").get("search_shape_at") or 0)
+        check("前提：第一次失败就记一票", 
+              int(R.known_site("slide.example.com").get("search_shape") or 0) == 1,
+              str(R.known_site("slide.example.com").get("search_shape")))
+        # 把"上一次观察"摆到 100 秒前（仍在窗口内）→ 这一次属于同一场风暴
+        _cur = R._load()["sites"]["slide.example.com"]
+        _cur["search_shape_at"] = _t0 - 100
+        R.note_search_result("slide.example.com", hits=0, raw=0)
+        _after = R.known_site("slide.example.com")
+        check("窗口内的重复失败仍然只算一次观察（风暴保护不能坏）",
+              int(_after.get("search_shape") or 0) == 1,
+              f"shape={_after.get('search_shape')}")
+        check("★ 被合并的观察**不许**刷新窗口起点（原样保留第一次观察的时刻）",
+              int(_after.get("search_shape_at") or 0) == _t0 - 100,
+              f"锚点 {_t0 - 100} → {_after.get('search_shape_at')}"
+              "（被刷新＝窗口永远滑不到头）")
+
+        # 反向：10 秒 / 170 秒的重复失败都还在同一场风暴里（1 票），
+        # 过了窗口就真的是一枪新的（第 2 票）。少了后半条，"窗口设成无穷大"
+        # 也能通过 —— 那等于永不作废，就是今天这个 bug 的另一个写法。
+        def _fail_at(host: str, gap: int) -> int:
+            """把"上一次观察"摆到 gap 秒前，再记一次失败（模拟真实的搜索间隔）。"""
+            c = R._load()["sites"].get(host)
+            if isinstance(c, dict):
+                c["search_shape_at"] = int(time.time()) - gap
+            R.note_search_result(host, hits=0, raw=0)
+            return int(R.known_site(host).get("search_shape") or 0)
+
+        _mk("pace.example.com")
+        check("前提：没有任何历史时，第一次失败就记一票",
+              _fail_at("pace.example.com", 999) == 1, "首次记账失败")
+        check("10 秒后又失败 → 同一场风暴，仍是 1 票",
+              _fail_at("pace.example.com", 10) == 1)
+        check("170 秒后又失败 → 仍在窗口内，仍是 1 票",
+              _fail_at("pace.example.com", R.SHAPE_BURST_WINDOW - 10) == 1)
+        check("★ 过了窗口就记第 2 票（窗口必须能走到头）",
+              _fail_at("pace.example.com", R.SHAPE_BURST_WINDOW + 1) == 2)
+        check("★ 再隔一个窗口 → 第 3 票 → 模板作废",
+              (_fail_at("pace.example.com", R.SHAPE_BURST_WINDOW + 1)
+               >= R.SEARCH_SHAPE_MAX
+               and (R.known_site("pace.example.com").get("search_tpl") or "") == ""),
+              f"shape={R.known_site('pace.example.com').get('search_shape')} "
+              f"tpl={R.known_site('pace.example.com').get('search_tpl')!r}")
+        check("死因说的是它自己那句话（不是「不按关键词过滤」）",
+              (R.known_site("pace.example.com").get("search_fail_why") or "")
+              == "模板打开的不是搜索页",
+              repr(R.known_site("pace.example.com").get("search_fail_why")))
+
+        # -----------------------------------------------------------------
         print("\n—— ⑨ 「学会 → 被判死」的循环必须有终点 ——")
         # 线上实证（2026-11-06 复盘）：这 5 个站从 10-31 起**每天**走一遍同一个圈：
         #   m.kudushu.org / www.jcxs.cc / www.xizids.com /

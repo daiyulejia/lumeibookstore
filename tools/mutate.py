@@ -2280,6 +2280,26 @@ MUTATIONS: list[Mutation] = [
              "TPL_DEAD_COOLDOWN = 0",
              REGISTRY_TEST),
 
+    # ---------------- 观测窗口的锚点（tools/test_registry.py ⑧b）--------------
+    # ⚠ 失败方式（2026-11-28 现场）：www.axxsw.net / www.nana00.com **每一次**
+    #   搜索都「打开的不是搜索页」，日志连打「距上次仅 13s / 22s / 6s ——
+    #   按同一次观察合并」，而库里 search_shape 一直是 0、search_shape_at
+    #   永远只比现在早 160 余秒。窗口是**滑动**的 → 只要失败间隔 < 180s，
+    #   票永远凑不满 3 张 → 模板永不作废 → 可搜源里 2/7（29%）每轮白打一次。
+    Mutation("观测窗口", "被合并的观察也刷新锚点（旧 bug：窗口往后滑，票永不满）",
+             REGISTRY,
+             '            else:\n'
+             '                # 沉默地合并就等于"票数为什么没涨"永远查不出来，所以要说一句。',
+             '            else:\n'
+             '                cur["search_shape_at"] = _now_ts\n'
+             '                # 沉默地合并就等于"票数为什么没涨"永远查不出来，所以要说一句。',
+             REGISTRY_TEST),
+    Mutation("观测窗口", "窗口设成几乎无穷大（等于永不作废）",
+             REGISTRY,
+             "SHAPE_BURST_WINDOW = 180",
+             "SHAPE_BURST_WINDOW = 10 ** 9",
+             REGISTRY_TEST),
+
     # ---------------- 「不认关键词」必须有出口（tools/test_registry.py ⑨e）----
     # ⚠ 失败方式（2026-11-27 复盘）：`sk.3qdu.org/.com/.net`（同一个站的 3 个
     #   host）被判中「不认关键词」31/47/58 次，却一直占着 10 个可搜源里的 3 个。
